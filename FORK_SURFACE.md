@@ -22,7 +22,7 @@ the upstream project name, license, attribution, package paths, and metadata.
      strings. It does not change the OIDC protocol or status API.
 3. `ci: publish TokenDance gateway candidate`
    - Builds the official Dockerfile on GitHub-hosted runners for this public
-     fork and publishes an immutable candidate to private GHCR.
+     source and publishes an immutable GHCR candidate.
    - Does not contain SSH, production credentials, compose files, or deployment.
 4. `ci: run public fork automation on GitHub-hosted runners`
    - Keeps tag builds and weekly upstream checks off private infrastructure.
@@ -44,5 +44,6 @@ the upstream project name, license, attribution, package paths, and metadata.
 This clean stack is published as a public GitHub fork. The historical TokenDance
 repository remains private because its old history contains operational
 topology. Compose files, runtime pins, host details, and deployment logs remain
-in the private deployment and server repositories. GHCR visibility is managed
-separately and remains private.
+in the private deployment and server repositories. The GHCR image is public
+because it contains only this public source; production still deploys by an
+immutable digest recorded in the private repositories.
