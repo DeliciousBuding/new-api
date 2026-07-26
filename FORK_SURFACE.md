@@ -41,8 +41,8 @@ the upstream project name, license, attribution, package paths, and metadata.
    recorded. Production deployment remains an operator action behind the idle
    gate.
 
-This clean stack is published as a public GitHub fork. The historical TokenDance
-repository remains private because its old history contains operational
+This clean stack is published as a public GitHub source mirror. The historical
+TokenDance repository remains private because its old history contains operational
 topology. Compose files, runtime pins, host details, and deployment logs remain
 in the private deployment and server repositories. The GHCR image is public
 because it contains only this public source; production still deploys by an
