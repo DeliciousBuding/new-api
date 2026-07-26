@@ -35,12 +35,21 @@ jobs:
           git remote add official https://github.com/QuantumNous/new-api.git 2>/dev/null || \
             git remote set-url official https://github.com/QuantumNous/new-api.git
           git fetch --quiet official '+refs/tags/*:refs/remotes/official/tags/*'
-          LATEST_TAG=$(
+          mapfile -t TAGS < <(
             git for-each-ref --sort=-version:refname \
-              --format='%(refname:strip=4)' refs/remotes/official/tags \
-              | grep -vE '(-alpha|-nightly|-td[.-])' \
-              | head -1
+              --format='%(refname:strip=4)' refs/remotes/official/tags
           )
+          LATEST_TAG=''
+          for TAG in "${TAGS[@]}"; do
+            if [[ ! "$TAG" =~ (-alpha|-nightly|-td[.-]) ]]; then
+              LATEST_TAG="$TAG"
+              break
+            fi
+          done
+          if [ -z "$LATEST_TAG" ]; then
+            echo '::error::No eligible official release tag found'
+            exit 1
+          fi
           LATEST=$(git rev-parse "refs/remotes/official/tags/$LATEST_TAG^{}")
           {
             echo '### Upstream status'
