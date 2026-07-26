@@ -1,0 +1,56 @@
+name: Check upstream release
+
+on:
+  schedule:
+    - cron: '37 4 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: upstream-check-${{ github.repository }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: [self-hosted, us1]
+    timeout-minutes: 10
+    steps:
+      - name: Check out TokenDance source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Compare fixed base with official upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=$(tr -d '\r\n' < UPSTREAM_BASE)
+          if [[ ! "$BASE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::UPSTREAM_BASE must contain one 40-character lowercase SHA'
+            exit 1
+          fi
+
+          git remote add official https://github.com/QuantumNous/new-api.git 2>/dev/null || \
+            git remote set-url official https://github.com/QuantumNous/new-api.git
+          git fetch --quiet official '+refs/tags/*:refs/remotes/official/tags/*'
+          LATEST_TAG=$(
+            git for-each-ref --sort=-version:refname \
+              --format='%(refname:strip=4)' refs/remotes/official/tags \
+              | grep -vE '(-alpha|-nightly|-td[.-])' \
+              | head -1
+          )
+          LATEST=$(git rev-parse "refs/remotes/official/tags/$LATEST_TAG^{}")
+          {
+            echo '### Upstream status'
+            echo
+            echo "- fixed base: \`$BASE\`"
+            echo "- latest official tag: \`$LATEST_TAG\`"
+            echo "- latest official commit: \`$LATEST\`"
+            echo "- commits behind: \`$(git rev-list --count "$BASE..$LATEST")\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$BASE" != "$LATEST" ]; then
+            echo '::warning::A newer upstream revision is available; rebuild from the new fixed tag and replay the topic commits.'
+          fi
