@@ -1,5 +1,5 @@
 # TokenDance Gateway Fork Surface
-最后更新：2026-07-27 03:00
+最后更新：2026-07-27 03:30
 
 This branch is rebuilt from a fixed official NewAPI release and keeps the
 TokenDance delta as a short, ordered topic stack. It intentionally preserves
@@ -21,9 +21,13 @@ the upstream project name, license, attribution, package paths, and metadata.
    - Owns only the built-in OIDC button/callback presentation, icon, and locale
      strings. It does not change the OIDC protocol or status API.
 3. `ci: publish TokenDance gateway candidate`
-   - Builds the official Dockerfile on the free self-hosted runner and publishes
-     an immutable candidate to private GHCR.
+   - Builds the official Dockerfile on GitHub-hosted runners for this public
+     fork and publishes an immutable candidate to private GHCR.
    - Does not contain SSH, production credentials, compose files, or deployment.
+4. `ci: run public fork automation on GitHub-hosted runners`
+   - Keeps tag builds and weekly upstream checks off private infrastructure.
+   - Excludes TokenDance tags from the upstream multi-platform binary release,
+     so each TokenDance release has one intentional image build.
 
 ## Updating
 
@@ -37,6 +41,8 @@ the upstream project name, license, attribution, package paths, and metadata.
    recorded. Production deployment remains an operator action behind the idle
    gate.
 
-The current GitHub repository and its historical branches remain private because
-their history contains operational topology. A future public source mirror must
-start from this clean first-parent stack and must not copy the legacy history.
+This clean stack is published as a public GitHub fork. The historical TokenDance
+repository remains private because its old history contains operational
+topology. Compose files, runtime pins, host details, and deployment logs remain
+in the private deployment and server repositories. GHCR visibility is managed
+separately and remains private.
