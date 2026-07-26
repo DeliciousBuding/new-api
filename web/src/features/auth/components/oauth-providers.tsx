@@ -24,12 +24,14 @@ import {
   IconGithub,
   IconLinuxDo,
   IconTelegram,
+  IconTokenDance,
   IconWeChat,
 } from '@/assets/brand-icons'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
 import { useOAuthLogin } from '../hooks/use-oauth-login'
+import { tokenDanceIdentity } from '../lib/identity-branding'
 import type { SystemStatus } from '../types'
 import { TelegramLoginDialog } from './telegram-login-dialog'
 
@@ -114,6 +116,7 @@ export function OAuthProviders({
         name: oidcDisplayName,
       }),
       onClick: handleOIDCLogin,
+      icon: <IconTokenDance className='h-4 w-4' />,
     })
   }
 
