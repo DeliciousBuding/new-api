@@ -286,13 +286,8 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
 	otherStr := common.MapToJsonStr(other)
-	// 判断是否需要记录 IP
-	needRecordIp := false
-	if settingMap, err := GetUserSetting(userId, false); err == nil {
-		if settingMap.RecordIpLog {
-			needRecordIp = true
-		}
-	}
+	// 判断是否需要记录 IP（TokenDance audit topic：全局开关，默认记录；用户级 RecordIpLog 保留兼容）
+	needRecordIp := common.LogRecordIpEnabled
 	log := &Log{
 		UserId:           userId,
 		Username:         username,
@@ -350,13 +345,8 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
 	createdAt := common.GetTimestamp()
 	otherStr := common.MapToJsonStr(params.Other)
-	// 判断是否需要记录 IP
-	needRecordIp := false
-	if settingMap, err := GetUserSetting(userId, false); err == nil {
-		if settingMap.RecordIpLog {
-			needRecordIp = true
-		}
-	}
+	// 判断是否需要记录 IP（TokenDance audit topic：全局开关，默认记录；用户级 RecordIpLog 保留兼容）
+	needRecordIp := common.LogRecordIpEnabled
 	log := &Log{
 		UserId:           userId,
 		Username:         username,

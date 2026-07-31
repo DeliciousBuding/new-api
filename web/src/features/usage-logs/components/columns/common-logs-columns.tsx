@@ -531,6 +531,21 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
             </button>
           )
         },
+      },
+      {
+        id: 'ip',
+        header: t('IP Address'),
+        accessorKey: 'ip',
+        cell: function IpCell({ row }) {
+          const { sensitiveVisible } = useUsageLogsContext()
+          const ip = row.original.ip
+          if (!ip) return null
+          return (
+            <span className='text-muted-foreground font-mono text-xs tabular-nums'>
+              {sensitiveVisible ? ip : '••••'}
+            </span>
+          )
+        },
       }
     )
   }
@@ -676,6 +691,13 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
                 {cacheReadTokens > 0 && (
                   <span className='text-muted-foreground/60'>
                     {t('Cache')}↓ {cacheReadTokens.toLocaleString()}
+                    {promptTokens > 0 && (
+                      <span className='text-muted-foreground/40'>
+                        {' '}
+                        ({Math.round((cacheReadTokens / promptTokens) * 100)}
+                        %)
+                      </span>
+                    )}
                   </span>
                 )}
                 {cacheWriteTokens > 0 && (
