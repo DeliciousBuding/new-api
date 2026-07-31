@@ -295,6 +295,32 @@ export interface TieredBillingSummary {
 }
 
 /**
+ * Display labels for client_profile values produced by the backend
+ * DetectClientProfile (service/log_info_generate.go). Unknown values fall
+ * back to the raw id.
+ */
+export const CLIENT_PROFILE_LABELS: Record<string, string> = {
+  codex_cli: 'Codex CLI',
+  codex_desktop: 'Codex Desktop',
+  codex_app: 'Codex App',
+  claude_cli: 'Claude CLI',
+  claude_desktop: 'Claude Desktop',
+  claude_plugin: 'Claude Plugin',
+  claude_app: 'Claude App',
+  claude_sdk: 'Claude SDK',
+  openai_sdk: 'OpenAI SDK',
+  gohttp: 'Go HTTP',
+  cliproxyapi: 'CLIProxyAPI',
+  newapi: 'NewAPI',
+  chat: 'Chat',
+}
+
+export function clientProfileLabel(profile: string | undefined): string {
+  if (!profile) return ''
+  return CLIENT_PROFILE_LABELS[profile] ?? profile
+}
+
+/**
  * Whether the request payload reports any cache-related token usage. Used to
  * suppress cache pricing rows from the tiered breakdown when the request did
  * not exercise the cache path.

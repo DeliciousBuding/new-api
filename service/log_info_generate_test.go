@@ -25,18 +25,26 @@ func TestDetectClientProfile(t *testing.T) {
 		want    string
 	}{
 		{
-			name: "codex turn state header",
-			headers: map[string]string{
-				"X-Codex-Turn-State": "abc",
-			},
-			want: "codex",
-		},
-		{
-			name: "codex originator value prefix",
+			name: "codex cli originator",
 			headers: map[string]string{
 				"Originator": "codex_cli_rs",
 			},
-			want: "codex",
+			want: "codex_cli",
+		},
+		{
+			name: "codex desktop originator",
+			headers: map[string]string{
+				"Originator": "codex_desktop",
+			},
+			want: "codex_desktop",
+		},
+		{
+			name: "codex turn state header with cli ua",
+			headers: map[string]string{
+				"X-Codex-Turn-State": "abc",
+				"User-Agent":         "codex_cli_rs/0.1",
+			},
+			want: "codex_cli",
 		},
 		{
 			name: "arbitrary originator is not codex",
@@ -46,20 +54,70 @@ func TestDetectClientProfile(t *testing.T) {
 			want: "chat",
 		},
 		{
-			name: "anthropic version header",
+			name: "claude cli x-app",
+			headers: map[string]string{
+				"X-App": "cli",
+			},
+			want: "claude_cli",
+		},
+		{
+			name: "claude desktop x-app",
+			headers: map[string]string{
+				"X-App": "desktop",
+			},
+			want: "claude_desktop",
+		},
+		{
+			name: "claude vscode plugin x-app",
+			headers: map[string]string{
+				"X-App": "vscode",
+			},
+			want: "claude_plugin",
+		},
+		{
+			name: "anthropic sdk version header only",
 			headers: map[string]string{
 				"Anthropic-Version": "2023-06-01",
 			},
-			want: "claude",
+			want: "claude_sdk",
 		},
 		{
-			name: "openai sdk stainless headers only are not claude",
+			name: "openai sdk stainless headers only",
 			headers: map[string]string{
-				"X-Stainless-Lang":           "python",
-				"X-Stainless-Runtime":        "CPython",
+				"X-Stainless-Lang":            "python",
+				"X-Stainless-Runtime":         "CPython",
 				"X-Stainless-Package-Version": "1.0.0",
 			},
-			want: "chat",
+			want: "openai_sdk",
+		},
+		{
+			name: "go http client ua",
+			headers: map[string]string{
+				"User-Agent": "Go-http-client/1.1",
+			},
+			want: "gohttp",
+		},
+		{
+			name: "cliproxyapi ua",
+			headers: map[string]string{
+				"User-Agent": "cliproxyapi/1.2.3",
+			},
+			want: "cliproxyapi",
+		},
+		{
+			name: "newapi relay ua",
+			headers: map[string]string{
+				"User-Agent": "new-api/1.0.0",
+			},
+			want: "newapi",
+		},
+		{
+			name: "codex header wins over generic ua",
+			headers: map[string]string{
+				"X-Codex-Turn-State": "abc",
+				"User-Agent":         "Go-http-client/1.1",
+			},
+			want: "codex_cli",
 		},
 		{
 			name:    "no headers is chat",

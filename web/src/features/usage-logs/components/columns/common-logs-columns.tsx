@@ -49,6 +49,7 @@ import {
   parseLogOther,
   isViolationFeeLog,
   renderAuditContent,
+  clientProfileLabel,
 } from '../../lib/format'
 import {
   isDisplayableLogType,
@@ -531,35 +532,6 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
             </button>
           )
         },
-      },
-      {
-        id: 'ip',
-        header: t('IP Address'),
-        accessorKey: 'ip',
-        cell: function IpCell({ row }) {
-          const { sensitiveVisible } = useUsageLogsContext()
-          const ip = row.original.ip
-          if (!ip) return null
-          return (
-            <span className='text-muted-foreground font-mono text-xs tabular-nums'>
-              {sensitiveVisible ? ip : '••••'}
-            </span>
-          )
-        },
-      },
-      {
-        id: 'client',
-        header: t('Client'),
-        accessorFn: (row) => parseLogOther(row.other)?.client_profile,
-        cell: ({ row }) => {
-          const profile = parseLogOther(row.original.other)?.client_profile
-          if (!profile) return null
-          return (
-            <span className='text-muted-foreground text-xs capitalize'>
-              {profile}
-            </span>
-          )
-        },
       }
     )
   }
@@ -646,6 +618,35 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
         )
       },
       meta: { mobileTitle: true },
+    },
+    {
+      id: 'ip',
+      header: t('IP Address'),
+      accessorKey: 'ip',
+      cell: function IpCell({ row }) {
+        const { sensitiveVisible } = useUsageLogsContext()
+        const ip = row.original.ip
+        if (!ip) return null
+        return (
+          <span className='text-muted-foreground font-mono text-xs tabular-nums'>
+            {sensitiveVisible ? ip : '••••'}
+          </span>
+        )
+      },
+    },
+    {
+      id: 'client',
+      header: t('Client'),
+      accessorFn: (row) => parseLogOther(row.other)?.client_profile,
+      cell: ({ row }) => {
+        const profile = parseLogOther(row.original.other)?.client_profile
+        if (!profile) return null
+        return (
+          <span className='text-muted-foreground text-xs'>
+            {clientProfileLabel(profile)}
+          </span>
+        )
+      },
     },
     {
       accessorKey: 'is_stream',

@@ -194,7 +194,20 @@ export interface LogOtherData {
   expr_b64?: string
   matched_tier?: string
   reasoning_effort?: string
-  client_profile?: 'codex' | 'claude' | 'chat'
+  client_profile?:
+    | 'codex_cli'
+    | 'codex_desktop'
+    | 'codex_app'
+    | 'claude_cli'
+    | 'claude_desktop'
+    | 'claude_plugin'
+    | 'claude_app'
+    | 'claude_sdk'
+    | 'openai_sdk'
+    | 'gohttp'
+    | 'cliproxyapi'
+    | 'newapi'
+    | 'chat'
   input_tokens_total?: number
   image?: boolean
   image_ratio?: number

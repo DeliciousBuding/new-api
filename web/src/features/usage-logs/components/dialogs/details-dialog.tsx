@@ -76,6 +76,7 @@ import {
   getFirstResponseTimeColor,
   getResponseTimeColor,
   renderAuditContent,
+  clientProfileLabel,
 } from '../../lib/format'
 import {
   getLogTypeConfig,
@@ -710,7 +711,9 @@ export function DetailsDialog(props: DetailsDialogProps) {
             <DetailRow
               label={t('Client')}
               value={
-                <span className='capitalize'>{other.client_profile}</span>
+                <span className='capitalize'>
+                  {clientProfileLabel(other.client_profile)}
+                </span>
               }
             />
           )}

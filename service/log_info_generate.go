@@ -69,32 +69,66 @@ func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other
 	}
 }
 
-// DetectClientProfile 按官方渠道亲和性同源的头清单识别客户端。
-// 判定规则（多特征，避免误判）：
-//   - codex: X-Codex-* 专属头存在，或 Originator 值以 "codex" 开头（约束值，非任意非空）
-//   - claude: Anthropic-Version / X-App 存在（Anthropic API 专属头；
-//     X-Stainless-* 不足以判定——OpenAI 官方 SDK 同样携带）
-//   - 其余: "chat"
-// 结果仅作审计展示 hint，不参与鉴权/计费/路由。
+// DetectClientProfile 按官方渠道亲和性同源的头清单识别客户端，返回细粒度档位：
+//   - codex_cli / codex_desktop / codex_app（Originator 值前缀 + X-Codex-* 专属头）
+//   - claude_cli / claude_desktop / claude_plugin / claude_app（X-App 值）
+//   - claude_sdk（仅 Anthropic-Version——Anthropic SDK 调用）
+//   - openai_sdk（仅 X-Stainless-*——OpenAI 官方 SDK 同样携带 Stainless 头）
+//   - chat（兜底）
+// 结果仅作审计展示 hint，不参与鉴权/计费/路由；调用方可伪造。
 func DetectClientProfile(c *gin.Context) string {
 	if c == nil || c.Request == nil {
 		return ""
 	}
 	h := c.Request.Header
-	for _, name := range []string{
-		"X-Codex-Turn-State", "X-Codex-Turn-Metadata", "X-Codex-Window-Id", "X-OpenAI-Subagent",
-	} {
-		if h.Get(name) != "" {
-			return "codex"
+	if v := h.Get("Originator"); v != "" {
+		lv := strings.ToLower(v)
+		switch {
+		case strings.HasPrefix(lv, "codex_cli"):
+			return "codex_cli"
+		case strings.HasPrefix(lv, "codex_desktop"):
+			return "codex_desktop"
+		case strings.HasPrefix(lv, "codex"):
+			return "codex_app"
 		}
 	}
-	if originator := h.Get("Originator"); originator != "" && strings.HasPrefix(strings.ToLower(originator), "codex") {
-		return "codex"
-	}
-	for _, name := range []string{"Anthropic-Version", "X-App"} {
+	for _, name := range []string{"X-Codex-Turn-State", "X-Codex-Turn-Metadata", "X-Codex-Window-Id", "X-OpenAI-Subagent"} {
 		if h.Get(name) != "" {
-			return "claude"
+			ua := strings.ToLower(c.Request.UserAgent())
+			if strings.Contains(ua, "desktop") {
+				return "codex_desktop"
+			}
+			return "codex_cli"
 		}
+	}
+	if v := h.Get("X-App"); v != "" {
+		lv := strings.ToLower(v)
+		switch {
+		case strings.Contains(lv, "cli"):
+			return "claude_cli"
+		case strings.Contains(lv, "desktop"):
+			return "claude_desktop"
+		case strings.Contains(lv, "vscode") || strings.Contains(lv, "jetbrains") || strings.Contains(lv, "intellij") || strings.Contains(lv, "cursor"):
+			return "claude_plugin"
+		default:
+			return "claude_app"
+		}
+	}
+	if h.Get("Anthropic-Version") != "" {
+		return "claude_sdk"
+	}
+	if h.Get("X-Stainless-Lang") != "" || h.Get("X-Stainless-Runtime") != "" {
+		return "openai_sdk"
+	}
+	// UA 兜底：通用工具/中转代理（在特征头之后、chat 之前）
+	ua := strings.ToLower(c.Request.UserAgent())
+	switch {
+	case strings.Contains(ua, "go-http-client"):
+		return "gohttp"
+	case strings.Contains(ua, "cliproxyapi"):
+		return "cliproxyapi"
+	case strings.Contains(ua, "newapi") || strings.Contains(ua, "new-api"):
+		return "newapi"
 	}
 	return "chat"
 }
