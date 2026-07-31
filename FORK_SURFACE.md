@@ -49,6 +49,15 @@ the upstream project name, license, attribution, package paths, and metadata.
        (client hint trust, self/token API trimming, ratio clamp to 100%,
        i18n translation namespace fix, sensitive-mode IP masking, user-level
        record_ip_log switch disabled with admin hint, unit tests)
+     - `feat(audit): granular client profile recognition and column order`
+       (fine-grained ids: codex_cli/desktop/app, claude_cli/desktop/plugin/
+       app/sdk, openai_sdk, gohttp, cliproxyapi, chat; shared
+       CLIENT_PROFILE_LABELS; IP/Client columns moved after Model)
+     - `fix(audit): correct client profile UA detection from upstream source
+       research`
+       (CLIProxyAPI openai-compat UA is `cli-proxy-openai-compat`; Originator
+       `codex-tui` → codex_cli; `newapi` dropped — NewAPI forwards with Go
+       default UA and cannot be identified)
 
 ### Not replayed
 
