@@ -194,6 +194,7 @@ export interface LogOtherData {
   expr_b64?: string
   matched_tier?: string
   reasoning_effort?: string
+  client_profile?: 'codex' | 'claude' | 'chat'
   image?: boolean
   image_ratio?: number
   image_output?: number

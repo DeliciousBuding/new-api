@@ -69,6 +69,34 @@ func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other
 	}
 }
 
+// DetectClientProfile 按官方渠道亲和性同源的头清单识别客户端
+// （channel_affinity_setting 的 codex/claude trace 头）：codex → "codex"；
+// claude（X-Stainless-* / Anthropic-Version）→ "claude"；其余 → "chat"。
+func DetectClientProfile(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	h := c.Request.Header
+	for _, name := range []string{
+		"X-Codex-Turn-State", "X-Codex-Turn-Metadata", "X-Codex-Window-Id", "X-OpenAI-Subagent",
+	} {
+		if h.Get(name) != "" {
+			return "codex"
+		}
+	}
+	if h.Get("Originator") != "" {
+		return "codex"
+	}
+	for _, name := range []string{
+		"X-Stainless-Lang", "X-Stainless-Runtime", "X-Stainless-Package-Version", "Anthropic-Version",
+	} {
+		if h.Get(name) != "" {
+			return "claude"
+		}
+	}
+	return "chat"
+}
+
 func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, modelRatio, groupRatio, completionRatio float64,
 	cacheTokens int, cacheRatio float64, modelPrice float64, userGroupRatio float64) map[string]interface{} {
 	other := make(map[string]interface{})
@@ -79,6 +107,7 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	other["cache_ratio"] = cacheRatio
 	other["model_price"] = modelPrice
 	other["user_group_ratio"] = userGroupRatio
+	other["client_profile"] = DetectClientProfile(ctx)
 	other["frt"] = float64(relayInfo.FirstResponseTime.UnixMilli() - relayInfo.StartTime.UnixMilli())
 	if relayInfo.ReasoningEffort != "" {
 		other["reasoning_effort"] = relayInfo.ReasoningEffort

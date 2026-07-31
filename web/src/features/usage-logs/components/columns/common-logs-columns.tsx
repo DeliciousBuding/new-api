@@ -546,6 +546,20 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
             </span>
           )
         },
+      },
+      {
+        id: 'client',
+        header: t('Client'),
+        accessorFn: (row) => parseLogOther(row.other)?.client_profile,
+        cell: ({ row }) => {
+          const profile = parseLogOther(row.original.other)?.client_profile
+          if (!profile) return null
+          return (
+            <span className='text-muted-foreground text-xs capitalize'>
+              {profile}
+            </span>
+          )
+        },
       }
     )
   }

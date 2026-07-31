@@ -696,6 +696,15 @@ export function DetailsDialog(props: DetailsDialogProps) {
             />
           )}
 
+          {other?.client_profile && (
+            <DetailRow
+              label={t('Client')}
+              value={
+                <span className='capitalize'>{other.client_profile}</span>
+              }
+            />
+          )}
+
           {showAdminIp && (
             <DetailRow
               label={t('IP Address')}
