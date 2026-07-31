@@ -211,6 +211,7 @@ function MobileTokensField({ log }: { log: UsageLog }) {
   const cacheWriteTokens = hasSplitCache
     ? cacheWrite5m + cacheWrite1h
     : other?.cache_creation_tokens || 0
+  const cacheTotal = other?.input_tokens_total || promptTokens
   const showCache = cacheReadTokens > 0 || cacheWriteTokens > 0
 
   return (
@@ -224,6 +225,17 @@ function MobileTokensField({ log }: { log: UsageLog }) {
             {cacheReadTokens > 0 && (
               <span>
                 {t('Cache')}↓ {cacheReadTokens.toLocaleString()}
+                {cacheTotal > 0 && (
+                  <>
+                    {' '}
+                    (
+                    {Math.min(
+                      100,
+                      Math.round((cacheReadTokens / cacheTotal) * 100)
+                    )}
+                    %)
+                  </>
+                )}
               </span>
             )}
             {cacheWriteTokens > 0 && (

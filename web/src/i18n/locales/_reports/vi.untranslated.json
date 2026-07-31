@@ -1,0 +1,3 @@
+{
+  "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.": "Store the client source IP with each consume and error log entry. Disable to reduce log footprint."
+}

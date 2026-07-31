@@ -182,7 +182,7 @@ export function LogSettingsSection({
       LogConsumeEnabled: defaultEnabled,
       LogRecordIpEnabled: defaultRecordIpEnabled,
     })
-  }, [defaultEnabled, form])
+  }, [defaultEnabled, defaultRecordIpEnabled, form])
 
   useEffect(() => {
     fetchServerLogInfo()

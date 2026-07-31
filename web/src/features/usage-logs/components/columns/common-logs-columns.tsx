@@ -712,7 +712,11 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
                     {cacheTotal > 0 && (
                       <span className='text-muted-foreground/40'>
                         {' '}
-                        ({Math.round((cacheReadTokens / cacheTotal) * 100)}
+                        (
+                        {Math.min(
+                          100,
+                          Math.round((cacheReadTokens / cacheTotal) * 100)
+                        )}
                         %)
                       </span>
                     )}

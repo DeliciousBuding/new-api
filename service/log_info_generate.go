@@ -69,9 +69,13 @@ func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other
 	}
 }
 
-// DetectClientProfile 按官方渠道亲和性同源的头清单识别客户端
-// （channel_affinity_setting 的 codex/claude trace 头）：codex → "codex"；
-// claude（X-Stainless-* / Anthropic-Version）→ "claude"；其余 → "chat"。
+// DetectClientProfile 按官方渠道亲和性同源的头清单识别客户端。
+// 判定规则（多特征，避免误判）：
+//   - codex: X-Codex-* 专属头存在，或 Originator 值以 "codex" 开头（约束值，非任意非空）
+//   - claude: Anthropic-Version / X-App 存在（Anthropic API 专属头；
+//     X-Stainless-* 不足以判定——OpenAI 官方 SDK 同样携带）
+//   - 其余: "chat"
+// 结果仅作审计展示 hint，不参与鉴权/计费/路由。
 func DetectClientProfile(c *gin.Context) string {
 	if c == nil || c.Request == nil {
 		return ""
@@ -84,12 +88,10 @@ func DetectClientProfile(c *gin.Context) string {
 			return "codex"
 		}
 	}
-	if h.Get("Originator") != "" {
+	if originator := h.Get("Originator"); originator != "" && strings.HasPrefix(strings.ToLower(originator), "codex") {
 		return "codex"
 	}
-	for _, name := range []string{
-		"X-Stainless-Lang", "X-Stainless-Runtime", "X-Stainless-Package-Version", "Anthropic-Version",
-	} {
+	for _, name := range []string{"Anthropic-Version", "X-App"} {
 		if h.Get(name) != "" {
 			return "claude"
 		}

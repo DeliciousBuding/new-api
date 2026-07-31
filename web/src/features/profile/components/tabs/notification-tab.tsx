@@ -381,12 +381,15 @@ export function NotificationTab({ profile, onUpdate }: NotificationTabProps) {
           <div className='space-y-0.5'>
             <Label htmlFor='recordIp'>{t('Record IP Address')}</Label>
             <p className='text-muted-foreground text-xs sm:text-sm'>
-              {t('Log IP address for usage and error logs')}
+              {t(
+                'Controlled by the administrator globally (LogRecordIpEnabled)'
+              )}
             </p>
           </div>
           <Switch
             id='recordIp'
             className='shrink-0'
+            disabled
             checked={settings.record_ip_log}
             onCheckedChange={(checked) => updateField('record_ip_log', checked)}
           />

@@ -64,6 +64,7 @@ import { formatLogQuota, formatTokens, formatUseTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 import type { UsageLog } from '../../data/schema'
+import { useUsageLogsContext } from '../usage-logs-provider'
 import {
   parseLogOther,
   getParamOverrideActionLabel,
@@ -100,6 +101,11 @@ function timingTextColorClass(
   if (variant === 'success') return 'text-emerald-600'
   if (variant === 'warning') return 'text-amber-600'
   return 'text-rose-600'
+}
+
+function SensitiveIpValue({ ip }: { ip: string }) {
+  const { sensitiveVisible } = useUsageLogsContext()
+  return <>{sensitiveVisible ? ip : '••••'}</>
 }
 
 function DetailRow(props: {
@@ -433,8 +439,9 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
       label: t('Cache Read'),
       value:
         cacheTotal > 0
-          ? `${cacheRead.toLocaleString()} (${Math.round(
-              (cacheRead / cacheTotal) * 100
+          ? `${cacheRead.toLocaleString()} (${Math.min(
+              100,
+              Math.round((cacheRead / cacheTotal) * 100)
             )}%)`
           : cacheRead.toLocaleString(),
     })
@@ -714,7 +721,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
               value={
                 <span className='flex items-center gap-1'>
                   <Globe className='size-3 text-amber-500' aria-hidden='true' />
-                  {props.log.ip}
+                  <SensitiveIpValue ip={props.log.ip} />
                 </span>
               }
               mono
