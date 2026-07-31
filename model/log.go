@@ -313,7 +313,6 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
-	otherStr := common.MapToJsonStr(other)
 	// 判断是否需要记录 IP（TokenDance audit topic：全局开关，默认记录；用户级 RecordIpLog 保留兼容）
 	needRecordIp := common.LogRecordIpEnabled
 	ip := ""
@@ -323,6 +322,8 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 	if ip != "" {
 		attachGeoInfoToOther(other, ip)
 	}
+	// Serialize after locality hints are attached so admin_info.geo is included.
+	otherStr := common.MapToJsonStr(other)
 	log := &Log{
 		UserId:            userId,
 		Username:          username,
@@ -374,7 +375,6 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
 	createdAt := common.GetTimestamp()
-	otherStr := common.MapToJsonStr(params.Other)
 	// 判断是否需要记录 IP（TokenDance audit topic：全局开关，默认记录；用户级 RecordIpLog 保留兼容）
 	needRecordIp := common.LogRecordIpEnabled
 	ip := ""
@@ -384,6 +384,8 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	if ip != "" {
 		attachGeoInfoToOther(params.Other, ip)
 	}
+	// Serialize after locality hints are attached so admin_info.geo is included.
+	otherStr := common.MapToJsonStr(params.Other)
 	log := &Log{
 		UserId:            userId,
 		Username:          username,
