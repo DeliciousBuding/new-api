@@ -1,5 +1,5 @@
 # TokenDance Gateway Fork Surface
-最后更新：2026-07-31 19:50
+最后更新：2026-07-31 22:40
 
 This branch is rebuilt from a fixed official NewAPI base and keeps the
 TokenDance delta as a short, ordered topic stack. It intentionally preserves
@@ -31,14 +31,24 @@ the upstream project name, license, attribution, package paths, and metadata.
 7. `ci: fix upstream-check tag selection pipefail`
 8. `feat(audit): record client source IP and expose cache rate in logs`
    - `RecordConsumeLog`/`RecordErrorLog` store the client IP by default via the
-     new global option `LogRecordIpEnabled` (default true); the per-user
-     `record_ip_log` setting remains for compatibility.
+     new global option `LogRecordIpEnabled` (default true).
    - Frontend: admin IP column (masked in sensitive mode) on consume logs,
-     cache-read ratio next to the cache figure, IP row in the consume log
-     details dialog, and a "Record client IP addresses" switch in Log
+     cache-read ratio next to the cache figure, IP/Client rows in the consume
+     log details dialog, and a "Record client IP addresses" switch in Log
      Maintenance settings.
    - No schema change: `logs.ip` already exists and `cache_tokens` is already
      carried in `other` JSON by upstream `GenerateTextOtherInfo`.
+   - Follow-up commits in the same topic (replay in order):
+     - `fix(audit): show cache read ratio in consume log details`
+     - `feat(audit): record client profile from upstream trace headers`
+       (client hint only; constrained multi-header matching, admin-only via
+       `formatUserLogs` trimming, never used for auth/billing/routing)
+     - `fix(audit): restrict Client row to admin view`
+     - `fix(audit): use upstream input_tokens_total as cache ratio denominator`
+     - `fix(audit): address external review findings`
+       (client hint trust, self/token API trimming, ratio clamp to 100%,
+       i18n translation namespace fix, sensitive-mode IP masking, user-level
+       record_ip_log switch disabled with admin hint, unit tests)
 
 ### Not replayed
 
