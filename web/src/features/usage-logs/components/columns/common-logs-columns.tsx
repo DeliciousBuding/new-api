@@ -693,6 +693,10 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
         const cacheWriteTokens = hasSplitCache
           ? cacheWrite5m + cacheWrite1h
           : other?.cache_creation_tokens || 0
+        // Cache ratio denominator: upstream-provided total input (OpenAI-compatible
+        // paths) when available, otherwise prompt_tokens (which includes cache on
+        // the remaining paths).
+        const cacheTotal = other?.input_tokens_total || promptTokens
 
         return (
           <div className='flex flex-col gap-0.5'>
@@ -705,10 +709,10 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
                 {cacheReadTokens > 0 && (
                   <span className='text-muted-foreground/60'>
                     {t('Cache')}↓ {cacheReadTokens.toLocaleString()}
-                    {promptTokens > 0 && (
+                    {cacheTotal > 0 && (
                       <span className='text-muted-foreground/40'>
                         {' '}
-                        ({Math.round((cacheReadTokens / promptTokens) * 100)}
+                        ({Math.round((cacheReadTokens / cacheTotal) * 100)}
                         %)
                       </span>
                     )}

@@ -195,6 +195,7 @@ export interface LogOtherData {
   matched_tier?: string
   reasoning_effort?: string
   client_profile?: 'codex' | 'claude' | 'chat'
+  input_tokens_total?: number
   image?: boolean
   image_ratio?: number
   image_output?: number

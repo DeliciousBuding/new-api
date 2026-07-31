@@ -410,6 +410,9 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
   const promptTokens = log.prompt_tokens || 0
   const completionTokens = log.completion_tokens || 0
   const cacheRead = other.cache_tokens || 0
+  // Same denominator rule as the list column: upstream total input when
+  // available, otherwise prompt_tokens (which includes cache).
+  const cacheTotal = other.input_tokens_total || promptTokens
   const cacheWrite = other.cache_creation_tokens || 0
   const cacheWrite5m = other.cache_creation_tokens_5m || 0
   const cacheWrite1h = other.cache_creation_tokens_1h || 0
@@ -429,9 +432,9 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
     rows.push({
       label: t('Cache Read'),
       value:
-        promptTokens > 0
+        cacheTotal > 0
           ? `${cacheRead.toLocaleString()} (${Math.round(
-              (cacheRead / promptTokens) * 100
+              (cacheRead / cacheTotal) * 100
             )}%)`
           : cacheRead.toLocaleString(),
     })
