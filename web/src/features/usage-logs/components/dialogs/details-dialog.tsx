@@ -696,7 +696,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
             />
           )}
 
-          {other?.client_profile && (
+          {props.isAdmin && other?.client_profile && (
             <DetailRow
               label={t('Client')}
               value={
