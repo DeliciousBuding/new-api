@@ -311,7 +311,6 @@ export const CLIENT_PROFILE_LABELS: Record<string, string> = {
   openai_sdk: 'OpenAI SDK',
   gohttp: 'Go HTTP',
   cliproxyapi: 'CLIProxyAPI',
-  newapi: 'NewAPI',
   chat: 'Chat',
 }
 

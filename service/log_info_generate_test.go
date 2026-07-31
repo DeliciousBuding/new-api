@@ -91,6 +91,27 @@ func TestDetectClientProfile(t *testing.T) {
 			want: "openai_sdk",
 		},
 		{
+			name: "codex tui originator",
+			headers: map[string]string{
+				"Originator": "codex-tui",
+			},
+			want: "codex_cli",
+		},
+		{
+			name: "cliproxyapi openai-compat ua",
+			headers: map[string]string{
+				"User-Agent": "cli-proxy-openai-compat",
+			},
+			want: "cliproxyapi",
+		},
+		{
+			name: "cliproxyapi kimi path ua",
+			headers: map[string]string{
+				"User-Agent": "CLIProxyAPI/7.2.112",
+			},
+			want: "cliproxyapi",
+		},
+		{
 			name: "go http client ua",
 			headers: map[string]string{
 				"User-Agent": "Go-http-client/1.1",
@@ -98,18 +119,18 @@ func TestDetectClientProfile(t *testing.T) {
 			want: "gohttp",
 		},
 		{
-			name: "cliproxyapi ua",
+			name: "go http client h2 ua",
 			headers: map[string]string{
-				"User-Agent": "cliproxyapi/1.2.3",
+				"User-Agent": "Go-http-client/2.0",
 			},
-			want: "cliproxyapi",
+			want: "gohttp",
 		},
 		{
-			name: "newapi relay ua",
+			name: "plain newapi ua is not identified",
 			headers: map[string]string{
 				"User-Agent": "new-api/1.0.0",
 			},
-			want: "newapi",
+			want: "chat",
 		},
 		{
 			name: "codex header wins over generic ua",

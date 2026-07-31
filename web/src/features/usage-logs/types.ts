@@ -206,7 +206,6 @@ export interface LogOtherData {
     | 'openai_sdk'
     | 'gohttp'
     | 'cliproxyapi'
-    | 'newapi'
     | 'chat'
   input_tokens_total?: number
   image?: boolean

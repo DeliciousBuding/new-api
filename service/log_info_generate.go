@@ -86,6 +86,9 @@ func DetectClientProfile(c *gin.Context) string {
 		switch {
 		case strings.HasPrefix(lv, "codex_cli"):
 			return "codex_cli"
+		case strings.HasPrefix(lv, "codex-tui"):
+			// CLIProxyAPI 的 Codex 上游路径（codex-tui/… 伪装 UA + Originator: codex-tui）
+			return "codex_cli"
 		case strings.HasPrefix(lv, "codex_desktop"):
 			return "codex_desktop"
 		case strings.HasPrefix(lv, "codex"):
@@ -120,15 +123,17 @@ func DetectClientProfile(c *gin.Context) string {
 	if h.Get("X-Stainless-Lang") != "" || h.Get("X-Stainless-Runtime") != "" {
 		return "openai_sdk"
 	}
-	// UA 兜底：通用工具/中转代理（在特征头之后、chat 之前）
+	// UA 兜底：通用工具/中转代理（在特征头之后、chat 之前）。
+	// CLIProxyAPI（router-for-me/CLIProxyAPI）openai-compat 路径硬编码
+	// User-Agent: cli-proxy-openai-compat（不透传下游 UA）；Kimi 路径为
+	// CLIProxyAPI/<version>。Go 默认 UA 为 Go-http-client/1.1 或 /2.0
+	// （由连接协议版本决定）。
 	ua := strings.ToLower(c.Request.UserAgent())
 	switch {
 	case strings.Contains(ua, "go-http-client"):
 		return "gohttp"
-	case strings.Contains(ua, "cliproxyapi"):
+	case strings.Contains(ua, "cli-proxy-openai-compat"), strings.Contains(ua, "cliproxyapi"):
 		return "cliproxyapi"
-	case strings.Contains(ua, "newapi") || strings.Contains(ua, "new-api"):
-		return "newapi"
 	}
 	return "chat"
 }
