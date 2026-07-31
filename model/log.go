@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/pkg/geoip"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -28,6 +29,31 @@ func applyExplicitLogTextFilter(tx *gorm.DB, column string, value string) (*gorm
 		return tx.Where(condition, pattern), nil
 	}
 	return tx.Where(column+" = ?", value), nil
+}
+
+// attachGeoInfoToOther nests locality hints under other.admin_info.geo
+// (admin-only via formatUserLogs, same as client_profile). No-op when the
+// geo lookup is unavailable or the IP is empty.
+func attachGeoInfoToOther(other map[string]interface{}, ip string) {
+	if other == nil || ip == "" {
+		return
+	}
+	info, ok := geoip.Lookup(ip)
+	if !ok {
+		return
+	}
+	adminInfo, ok := other["admin_info"].(map[string]interface{})
+	if !ok || adminInfo == nil {
+		adminInfo = map[string]interface{}{}
+		other["admin_info"] = adminInfo
+	}
+	adminInfo["geo"] = map[string]interface{}{
+		"country_code": info.CountryCode,
+		"country":      info.Country,
+		"city":         info.City,
+		"asn":          info.ASN,
+		"asn_org":      info.ASNOrg,
+	}
 }
 
 func buildLogLikeCondition(column string, value string) (string, string, error) {
@@ -290,28 +316,30 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 	otherStr := common.MapToJsonStr(other)
 	// 判断是否需要记录 IP（TokenDance audit topic：全局开关，默认记录；用户级 RecordIpLog 保留兼容）
 	needRecordIp := common.LogRecordIpEnabled
+	ip := ""
+	if needRecordIp {
+		ip = c.ClientIP()
+	}
+	if ip != "" {
+		attachGeoInfoToOther(other, ip)
+	}
 	log := &Log{
-		UserId:           userId,
-		Username:         username,
-		CreatedAt:        common.GetTimestamp(),
-		Type:             LogTypeError,
-		Content:          content,
-		PromptTokens:     0,
-		CompletionTokens: 0,
-		TokenName:        tokenName,
-		ModelName:        modelName,
-		Quota:            0,
-		ChannelId:        channelId,
-		TokenId:          tokenId,
-		UseTime:          useTimeSeconds,
-		IsStream:         isStream,
-		Group:            group,
-		Ip: func() string {
-			if needRecordIp {
-				return c.ClientIP()
-			}
-			return ""
-		}(),
+		UserId:            userId,
+		Username:          username,
+		CreatedAt:         common.GetTimestamp(),
+		Type:              LogTypeError,
+		Content:           content,
+		PromptTokens:      0,
+		CompletionTokens:  0,
+		TokenName:         tokenName,
+		ModelName:         modelName,
+		Quota:             0,
+		ChannelId:         channelId,
+		TokenId:           tokenId,
+		UseTime:           useTimeSeconds,
+		IsStream:          isStream,
+		Group:             group,
+		Ip:                ip,
 		RequestId:         requestId,
 		UpstreamRequestId: upstreamRequestId,
 		Other:             otherStr,
@@ -349,28 +377,30 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	otherStr := common.MapToJsonStr(params.Other)
 	// 判断是否需要记录 IP（TokenDance audit topic：全局开关，默认记录；用户级 RecordIpLog 保留兼容）
 	needRecordIp := common.LogRecordIpEnabled
+	ip := ""
+	if needRecordIp {
+		ip = c.ClientIP()
+	}
+	if ip != "" {
+		attachGeoInfoToOther(params.Other, ip)
+	}
 	log := &Log{
-		UserId:           userId,
-		Username:         username,
-		CreatedAt:        createdAt,
-		Type:             LogTypeConsume,
-		Content:          params.Content,
-		PromptTokens:     params.PromptTokens,
-		CompletionTokens: params.CompletionTokens,
-		TokenName:        params.TokenName,
-		ModelName:        params.ModelName,
-		Quota:            params.Quota,
-		ChannelId:        params.ChannelId,
-		TokenId:          params.TokenId,
-		UseTime:          params.UseTimeSeconds,
-		IsStream:         params.IsStream,
-		Group:            params.Group,
-		Ip: func() string {
-			if needRecordIp {
-				return c.ClientIP()
-			}
-			return ""
-		}(),
+		UserId:            userId,
+		Username:          username,
+		CreatedAt:         createdAt,
+		Type:              LogTypeConsume,
+		Content:           params.Content,
+		PromptTokens:      params.PromptTokens,
+		CompletionTokens:  params.CompletionTokens,
+		TokenName:         params.TokenName,
+		ModelName:         params.ModelName,
+		Quota:             params.Quota,
+		ChannelId:         params.ChannelId,
+		TokenId:           params.TokenId,
+		UseTime:           params.UseTimeSeconds,
+		IsStream:          params.IsStream,
+		Group:             params.Group,
+		Ip:                ip,
 		RequestId:         requestId,
 		UpstreamRequestId: upstreamRequestId,
 		Other:             otherStr,
