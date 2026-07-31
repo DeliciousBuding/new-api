@@ -14,7 +14,7 @@ import (
 // The mmdb files are optional at runtime: when they are absent (local dev,
 // images built without them) lookups degrade to ok=false and logs simply
 // carry no geo fields. Data source: DB-IP Lite (CC-BY-4.0), loaded from
-// GEOIP_DB_DIR (default /data/geoip).
+// GEOIP_DB_DIR (default /opt/geoip, bundled into the image).
 //
 // This is a display hint only — never used for auth, billing, or routing.
 

@@ -83,6 +83,16 @@ describe('ClientProfileBadge', () => {
     'gohttp',
     'cliproxyapi',
     'chat',
+    'hermes_agent',
+    'openclaw',
+    'cherry_studio',
+    'windsurf',
+    'cline',
+    'roo_code',
+    'cursor',
+    'trae',
+    'perplexity',
+    'http_client',
   ]) {
     test(`renders ${profile} without crashing`, () => {
       const { host, root } = renderBadge(profile)

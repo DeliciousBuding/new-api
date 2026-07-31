@@ -30,7 +30,7 @@ RUN go build -ldflags "-s -w -X 'github.com/QuantumNous/new-api/common.Version=$
 # Fails the build when the download fails: an image without these files would
 # silently ship without locality hints.
 FROM golang:1.26.1-alpine@sha256:2389ebfa5b7f43eeafbd6be0c3700cc46690ef842ad962f6c5bd6be49ed82039 AS geoip
-ARG GEOIP_DB_MONTH=2026-07
+ARG GEOIP_DB_MONTH=2026-08
 RUN wget -q "https://download.db-ip.com/free/dbip-city-lite-${GEOIP_DB_MONTH}.mmdb.gz" -O /tmp/city.mmdb.gz \
     && gunzip -c /tmp/city.mmdb.gz > /tmp/dbip-city-lite.mmdb \
     && wget -q "https://download.db-ip.com/free/dbip-asn-lite-${GEOIP_DB_MONTH}.mmdb.gz" -O /tmp/asn.mmdb.gz \

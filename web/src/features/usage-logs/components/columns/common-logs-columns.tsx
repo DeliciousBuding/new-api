@@ -43,6 +43,7 @@ import { cn } from '@/lib/utils'
 import { LOG_TYPE_ALL_VALUE } from '../../constants'
 import type { UsageLog } from '../../data/schema'
 import {
+  computeCacheRate,
   formatModelName,
   getTieredBillingSummary,
   hasAnyCacheTokens,
@@ -533,7 +534,28 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
             </button>
           )
         },
-      }
+      },
+      {
+        id: 'ip',
+        header: t('IP Address'),
+        accessorKey: 'ip',
+        cell: function IpCell({ row }) {
+          const ip = row.original.ip
+          if (!ip) return null
+          const other = parseLogOther(row.original.other)
+          return <IpGeoBadge ip={ip} geo={other?.admin_info?.geo} />
+        },
+      },
+      {
+        id: 'client',
+        header: t('Client'),
+        accessorFn: (row) => parseLogOther(row.other)?.client_profile,
+        cell: ({ row }) => {
+          const profile = parseLogOther(row.original.other)?.client_profile
+          if (!profile) return null
+          return <ClientProfileBadge profile={profile} />
+        },
+      },
     )
   }
 
@@ -620,27 +642,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
       },
       meta: { mobileTitle: true },
     },
-    {
-      id: 'ip',
-      header: t('IP Address'),
-      accessorKey: 'ip',
-      cell: function IpCell({ row }) {
-        const ip = row.original.ip
-        if (!ip) return null
-        const other = parseLogOther(row.original.other)
-        return <IpGeoBadge ip={ip} geo={other?.admin_info?.geo} />
-      },
-    },
-    {
-      id: 'client',
-      header: t('Client'),
-      accessorFn: (row) => parseLogOther(row.other)?.client_profile,
-      cell: ({ row }) => {
-        const profile = parseLogOther(row.original.other)?.client_profile
-        if (!profile) return null
-        return <ClientProfileBadge profile={profile} />
-      },
-    },
+
     {
       accessorKey: 'is_stream',
       header: t('Stream'),
@@ -688,9 +690,13 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
           ? cacheWrite5m + cacheWrite1h
           : other?.cache_creation_tokens || 0
         // Cache ratio denominator: upstream-provided total input (OpenAI-compatible
-        // paths) when available, otherwise prompt_tokens (which includes cache on
-        // the remaining paths).
-        const cacheTotal = other?.input_tokens_total || promptTokens
+        // paths) when available, otherwise cache + input (Claude-format paths
+        // report cache reads separately).
+        const cacheRate = computeCacheRate(
+          cacheReadTokens,
+          promptTokens,
+          other?.input_tokens_total
+        )
 
         return (
           <div className='flex flex-col gap-0.5'>
@@ -703,15 +709,10 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
                 {cacheReadTokens > 0 && (
                   <span className='text-muted-foreground/60'>
                     {t('Cache')}↓ {cacheReadTokens.toLocaleString()}
-                    {cacheTotal > 0 && (
+                    {cacheRate !== null && (
                       <span className='text-muted-foreground/40'>
                         {' '}
-                        (
-                        {Math.min(
-                          100,
-                          Math.round((cacheReadTokens / cacheTotal) * 100)
-                        )}
-                        %)
+                        ({cacheRate}%)
                       </span>
                     )}
                   </span>

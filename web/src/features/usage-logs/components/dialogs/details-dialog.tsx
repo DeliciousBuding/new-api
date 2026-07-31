@@ -76,6 +76,7 @@ import {
   getFirstResponseTimeColor,
   getResponseTimeColor,
   renderAuditContent,
+  computeCacheRate,
 } from '../../lib/format'
 import {
   getLogTypeConfig,
@@ -412,8 +413,9 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
   const completionTokens = log.completion_tokens || 0
   const cacheRead = other.cache_tokens || 0
   // Same denominator rule as the list column: upstream total input when
-  // available, otherwise prompt_tokens (which includes cache).
-  const cacheTotal = other.input_tokens_total || promptTokens
+  // available, otherwise cache + input (Claude-format paths report cache
+  // reads separately).
+  const cacheRate = computeCacheRate(cacheRead, promptTokens, other.input_tokens_total)
   const cacheWrite = other.cache_creation_tokens || 0
   const cacheWrite5m = other.cache_creation_tokens_5m || 0
   const cacheWrite1h = other.cache_creation_tokens_1h || 0
@@ -433,11 +435,8 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
     rows.push({
       label: t('Cache Read'),
       value:
-        cacheTotal > 0
-          ? `${cacheRead.toLocaleString()} (${Math.min(
-              100,
-              Math.round((cacheRead / cacheTotal) * 100)
-            )}%)`
+        cacheRate !== null
+          ? `${cacheRead.toLocaleString()} (${cacheRate}%)`
           : cacheRead.toLocaleString(),
     })
   }
@@ -506,9 +505,10 @@ export function DetailsDialog(props: DetailsDialogProps) {
     !!other?.expr_b64
   const hasAudioTokens = other?.ws || other?.audio
   const showTiming = isTimingLogType(props.log.type)
+  // IP is an audit element: admin-only, regardless of log type. Timing logs
+  // (type 2/5) are visible to regular users, so they must not leak the IP.
   const showAdminIp =
-    !!props.log.ip &&
-    (showTiming || (props.isAdmin && (isTopup || isConsume)))
+    props.isAdmin && !!props.log.ip && (showTiming || isTopup || isConsume)
   const adminInfo = other?.admin_info
   const topupAuditFields =
     isTopup && props.isAdmin && adminInfo
@@ -704,19 +704,14 @@ export function DetailsDialog(props: DetailsDialogProps) {
           {props.isAdmin && other?.client_profile && (
             <DetailRow
               label={t('Client')}
-              value={<ClientProfileBadge profile={other.client_profile} />}
+              value={<ClientProfileBadge profile={other.client_profile} compact />}
             />
           )}
 
           {showAdminIp && (
             <DetailRow
               label={t('IP Address')}
-              value={
-                <IpGeoBadge
-                  ip={props.log.ip}
-                  geo={other?.admin_info?.geo}
-                />
-              }
+              value={<IpGeoBadge ip={props.log.ip} geo={other?.admin_info?.geo} compact />}
             />
           )}
 

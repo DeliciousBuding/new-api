@@ -312,11 +312,65 @@ export const CLIENT_PROFILE_LABELS: Record<string, string> = {
   gohttp: 'Go HTTP',
   cliproxyapi: 'CLIProxyAPI',
   chat: 'Chat',
+  hermes_agent: 'Hermes Agent',
+  workbuddy: 'WorkBuddy',
+  openclaw: 'OpenClaw',
+  cherry_studio: 'Cherry Studio',
+  rikkahub: 'RikkaHub',
+  sub2api: 'Sub2API',
+  opencode: 'OpenCode',
+  minis: 'Minis',
+  trae: 'Trae',
+  cursor: 'Cursor',
+  windsurf: 'Windsurf',
+  cline: 'Cline',
+  roo_code: 'Roo Code',
+  continue: 'Continue',
+  zed: 'Zed',
+  copilot: 'Copilot',
+  codex_vscode: 'Codex VS Code',
+  codex_browser: 'Codex Browser',
+  gemini_cli: 'Gemini CLI',
+  perplexity: 'Perplexity',
+  poe: 'Poe',
+  openrouter: 'OpenRouter',
+  groq: 'Groq',
+  ollama: 'Ollama',
+  kimi: 'Kimi',
+  qwen: 'Qwen',
+  doubao: 'Doubao',
+  zhipu: 'Zhipu',
+  deepseek: 'DeepSeek',
+  chatgpt: 'ChatGPT',
+  http_client: 'HTTP Client',
 }
 
 export function clientProfileLabel(profile: string | undefined): string {
   if (!profile) return ''
   return CLIENT_PROFILE_LABELS[profile] ?? profile
+}
+
+/**
+ * Cache-read ratio (cache hits as a share of total input).
+ * Denominator rule: on OpenAI-compatible paths the upstream provides
+ * `input_tokens_total` (already includes cache reads) so it is used as-is;
+ * on Claude-format paths `cache_tokens` comes back separately, so the
+ * denominator is cache + input.
+ * Verified against production logs (2026-08-01): DeepSeek's Anthropic-compatible
+ * endpoint returns input_tokens excluding cache reads (40 samples, all
+ * prompt << cache), so cache + input is the correct denominator there —
+ * prompt_tokens alone would render a fake 100% for large context caches.
+ * Returns null when there is nothing to show.
+ */
+export function computeCacheRate(
+  cacheRead: number,
+  promptTokens: number,
+  inputTokensTotal?: number
+): number | null {
+  if (cacheRead <= 0) return null
+  const total = inputTokensTotal ?? cacheRead + promptTokens
+  if (total <= 0) return null
+  return Math.min(100, Math.round((cacheRead / total) * 100))
 }
 
 /**

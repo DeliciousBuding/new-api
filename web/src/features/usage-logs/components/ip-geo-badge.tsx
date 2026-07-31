@@ -22,6 +22,8 @@ interface IpGeoBadgeProps {
   ip: string
   geo?: GeoInfo
   className?: string
+  /** Compact text row for the details dialog: flag + IP + locality, no chip. */
+  compact?: boolean
 }
 
 // Renders the client IP as a compact chip: a country flag (when the backend
@@ -29,10 +31,29 @@ interface IpGeoBadgeProps {
 // shows city/country and ASN details. The IP is an audit element and stays
 // visible to admins — it does not join the sensitive-value masking that
 // applies to usernames, channel names, and token names.
-export function IpGeoBadge({ ip, geo, className }: IpGeoBadgeProps) {
+export function IpGeoBadge({ ip, geo, className, compact }: IpGeoBadgeProps) {
   const { t } = useTranslation()
   const flag = flagClass(geo?.country_code)
   const hasGeoDetails = Boolean(geo && (geo.city || geo.country || geo.asn))
+
+  const flagEl = flag && (
+    <span
+      className={cn('h-[14px] w-[18px] shrink-0 rounded-[2px] text-[14px]', flag)}
+      aria-hidden='true'
+    />
+  )
+
+  if (compact) {
+    return (
+      <span className={cn('inline-flex items-center gap-1.5 text-xs', className)}>
+        {flagEl}
+        {!flag && <Globe className='text-muted-foreground size-3 shrink-0' aria-hidden='true' />}
+        <span className='whitespace-nowrap font-mono'>{ip}</span>
+        {geo?.city && <span className='text-muted-foreground'>{geo.city}</span>}
+        {geo?.country && <span className='text-muted-foreground'>{geo.country}</span>}
+      </span>
+    )
+  }
 
   const chip = (
     <StatusBadge
@@ -43,12 +64,7 @@ export function IpGeoBadge({ ip, geo, className }: IpGeoBadgeProps) {
         className
       )}
     >
-      {flag && (
-        <span
-          className={cn('h-[14px] w-[18px] shrink-0 rounded-[2px] text-[14px]', flag)}
-          aria-hidden='true'
-        />
-      )}
+      {flagEl}
       {!flag && <Globe className='text-muted-foreground size-3 shrink-0' aria-hidden='true' />}
       <span className='whitespace-nowrap'>{ip}</span>
     </StatusBadge>
