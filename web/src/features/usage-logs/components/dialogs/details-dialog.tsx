@@ -428,7 +428,12 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
   if (cacheRead > 0) {
     rows.push({
       label: t('Cache Read'),
-      value: cacheRead.toLocaleString(),
+      value:
+        promptTokens > 0
+          ? `${cacheRead.toLocaleString()} (${Math.round(
+              (cacheRead / promptTokens) * 100
+            )}%)`
+          : cacheRead.toLocaleString(),
     })
   }
 
