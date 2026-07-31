@@ -81,8 +81,33 @@ export type LogFilters = CommonLogFilters | DrawingLogFilters | TaskLogFilters
 /**
  * Parsed data from the 'other' field in usage logs
  */
-export interface ChannelAffinityInfo {
-  rule_name?: string
+// Client fingerprint hint written by the backend (admin-only, never used
+// for auth/billing/routing).
+export type ClientProfile =
+  | 'codex_cli'
+  | 'codex_desktop'
+  | 'codex_app'
+  | 'claude_cli'
+  | 'claude_desktop'
+  | 'claude_plugin'
+  | 'claude_app'
+  | 'claude_sdk'
+  | 'openai_sdk'
+  | 'gohttp'
+  | 'cliproxyapi'
+  | 'chat'
+
+// Locality hint resolved from the client IP by the backend GeoIP lookup
+// (DB-IP Lite, admin-only).
+export interface GeoInfo {
+  country_code?: string
+  country?: string
+  city?: string
+  asn?: number
+  asn_org?: string
+}
+
+export interface ChannelAffinityInfo {  rule_name?: string
   selected_group?: string
   key_source?: string
   key_path?: string
@@ -141,6 +166,8 @@ export interface LogOtherData {
       original: number
       clamped: number
     }
+    // Locality hint resolved from the client IP (GeoIP). Admin-only.
+    geo?: GeoInfo
   }
   // Language-independent operation descriptor (audit/login logs).
   // Frontend renders localized content from action + params via i18n templates.
@@ -194,19 +221,7 @@ export interface LogOtherData {
   expr_b64?: string
   matched_tier?: string
   reasoning_effort?: string
-  client_profile?:
-    | 'codex_cli'
-    | 'codex_desktop'
-    | 'codex_app'
-    | 'claude_cli'
-    | 'claude_desktop'
-    | 'claude_plugin'
-    | 'claude_app'
-    | 'claude_sdk'
-    | 'openai_sdk'
-    | 'gohttp'
-    | 'cliproxyapi'
-    | 'chat'
+  client_profile?: ClientProfile
   input_tokens_total?: number
   image?: boolean
   image_ratio?: number

@@ -44,7 +44,6 @@ import {
   Headphones,
   Monitor,
   Cloud,
-  Globe,
   ShieldCheck,
   UserCog,
   Info,
@@ -64,7 +63,8 @@ import { formatLogQuota, formatTokens, formatUseTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 import type { UsageLog } from '../../data/schema'
-import { useUsageLogsContext } from '../usage-logs-provider'
+import { ClientProfileBadge } from '../client-profile-badge'
+import { IpGeoBadge } from '../ip-geo-badge'
 import {
   parseLogOther,
   getParamOverrideActionLabel,
@@ -76,7 +76,6 @@ import {
   getFirstResponseTimeColor,
   getResponseTimeColor,
   renderAuditContent,
-  clientProfileLabel,
 } from '../../lib/format'
 import {
   getLogTypeConfig,
@@ -102,11 +101,6 @@ function timingTextColorClass(
   if (variant === 'success') return 'text-emerald-600'
   if (variant === 'warning') return 'text-amber-600'
   return 'text-rose-600'
-}
-
-function SensitiveIpValue({ ip }: { ip: string }) {
-  const { sensitiveVisible } = useUsageLogsContext()
-  return <>{sensitiveVisible ? ip : '••••'}</>
 }
 
 function DetailRow(props: {
@@ -710,11 +704,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
           {props.isAdmin && other?.client_profile && (
             <DetailRow
               label={t('Client')}
-              value={
-                <span className='capitalize'>
-                  {clientProfileLabel(other.client_profile)}
-                </span>
-              }
+              value={<ClientProfileBadge profile={other.client_profile} />}
             />
           )}
 
@@ -722,12 +712,11 @@ export function DetailsDialog(props: DetailsDialogProps) {
             <DetailRow
               label={t('IP Address')}
               value={
-                <span className='flex items-center gap-1'>
-                  <Globe className='size-3 text-amber-500' aria-hidden='true' />
-                  <SensitiveIpValue ip={props.log.ip} />
-                </span>
+                <IpGeoBadge
+                  ip={props.log.ip}
+                  geo={other?.admin_info?.geo}
+                />
               }
-              mono
             />
           )}
 

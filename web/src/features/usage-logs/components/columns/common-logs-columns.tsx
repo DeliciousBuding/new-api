@@ -49,7 +49,6 @@ import {
   parseLogOther,
   isViolationFeeLog,
   renderAuditContent,
-  clientProfileLabel,
 } from '../../lib/format'
 import {
   isDisplayableLogType,
@@ -60,6 +59,8 @@ import {
 import type { LogOtherData } from '../../types'
 import { DetailsDialog } from '../dialogs/details-dialog'
 import { LogCostDisplay } from '../log-cost-display'
+import { ClientProfileBadge } from '../client-profile-badge'
+import { IpGeoBadge } from '../ip-geo-badge'
 import { ModelBadge } from '../model-badge'
 import { TimingMetricsCell, StreamTpsCell } from '../timing-metrics-cell'
 import { useUsageLogsContext } from '../usage-logs-provider'
@@ -624,14 +625,10 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
       header: t('IP Address'),
       accessorKey: 'ip',
       cell: function IpCell({ row }) {
-        const { sensitiveVisible } = useUsageLogsContext()
         const ip = row.original.ip
         if (!ip) return null
-        return (
-          <span className='text-muted-foreground font-mono text-xs tabular-nums'>
-            {sensitiveVisible ? ip : '••••'}
-          </span>
-        )
+        const other = parseLogOther(row.original.other)
+        return <IpGeoBadge ip={ip} geo={other?.admin_info?.geo} />
       },
     },
     {
@@ -641,11 +638,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
       cell: ({ row }) => {
         const profile = parseLogOther(row.original.other)?.client_profile
         if (!profile) return null
-        return (
-          <span className='text-muted-foreground text-xs'>
-            {clientProfileLabel(profile)}
-          </span>
-        )
+        return <ClientProfileBadge profile={profile} />
       },
     },
     {
