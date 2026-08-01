@@ -65,7 +65,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Refuse to rebuild an already published tag
         shell: bash
@@ -88,6 +88,10 @@ jobs:
           tags: |
             type=raw,value=${{ steps.version.outputs.tag }}
             type=sha,prefix=sha-,format=long
+          labels: |
+            org.opencontainers.image.title=DeepSeek Relay
+            org.opencontainers.image.description=Independent DeepSeek API relay based on new-api
+            org.opencontainers.image.source=https://github.com/TokenDanceLab/new-api
 
       - name: Build and push
         id: build
