@@ -12,6 +12,7 @@ on:
     tags:
       - '*'
       - '!*-alpha*'
+      - '!*-td-*'
 
 jobs:
   linux:
