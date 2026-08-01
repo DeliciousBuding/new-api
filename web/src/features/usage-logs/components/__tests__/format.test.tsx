@@ -20,9 +20,8 @@ import { describe, test } from 'node:test'
 const { computeCacheRate } = await import('../../lib/format')
 
 describe('computeCacheRate', () => {
-  test('claude format: denominator = cache + input', () => {
-    // DeepSeek-style context cache: 90k cached vs 50 fresh input.
-    assert.equal(computeCacheRate(90240, 50, undefined, true), 100)
+  test('claude format: denominator = cache read + cache write + fresh input', () => {
+    assert.equal(computeCacheRate(900, 50, undefined, true, 50), 90)
   })
 
   test('openai format: prompt_tokens already includes cache reads', () => {

@@ -37,6 +37,7 @@ import type {
 export interface CacheDailyStat {
   day: number
   prompt_tokens: number
+  input_tokens: number
   cache_read_tokens: number
   cache_creation_tokens: number
   cache_rate: number

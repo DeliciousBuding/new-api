@@ -30,8 +30,17 @@ func setupCacheBatchTestDB(t *testing.T) {
 		TokenId:      11,
 		TokenName:    "default",
 		PromptTokens: 100,
-		Other:        `{"cache_tokens":900,"cache_creation_tokens":50}`,
+		Other:        `{"claude":true,"cache_tokens":900,"cache_creation_tokens":50}`,
 		CreatedAt:    172800,
+	}).Error)
+	// 同一个 token 改名后仍必须汇总成一项，不能按历史 token_name 拆组后覆盖。
+	require.NoError(t, db.Create(&model.Log{
+		Type:         model.LogTypeConsume,
+		TokenId:      11,
+		TokenName:    "renamed",
+		PromptTokens: 200,
+		Other:        `{"input_tokens_total":200,"cache_tokens":50,"cache_creation_tokens":0}`,
+		CreatedAt:    172900,
 	}).Error)
 	require.NoError(t, db.Create(&model.Log{
 		Type:         model.LogTypeConsume,
@@ -71,15 +80,14 @@ func TestGetLogsCacheStatBatchGroupsByTokenId(t *testing.T) {
 	for _, item := range payload.Data.Items {
 		byId[item.TokenId] = item
 	}
-	require.Equal(t, int64(900), byId[11].CacheReadTokens)
-	require.Equal(t, int64(100), byId[11].PromptTokens)
-	require.Equal(t, 100.0, byId[11].CacheRate)
+	require.Equal(t, int64(950), byId[11].CacheReadTokens)
+	require.Equal(t, int64(300), byId[11].PromptTokens)
+	require.Equal(t, int64(1250), byId[11].InputTokens)
+	require.Equal(t, 76.0, byId[11].CacheRate)
 	require.Equal(t, int64(100), byId[22].CacheReadTokens)
 	require.Equal(t, int64(400), byId[22].PromptTokens)
+	require.Equal(t, int64(400), byId[22].InputTokens)
 	require.Equal(t, 25.0, byId[22].CacheRate)
-	// 同名 token 不得合并
-	require.Equal(t, "default", byId[11].TokenName)
-	require.Equal(t, "default", byId[22].TokenName)
 }
 
 func TestGetLogsCacheStatBatchEmptyWhenNoIds(t *testing.T) {

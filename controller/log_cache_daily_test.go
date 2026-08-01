@@ -30,7 +30,7 @@ func setupCacheDailyTestDB(t *testing.T) {
 		TokenId:      11,
 		TokenName:    "k1",
 		PromptTokens: 1000,
-		Other:        `{"cache_tokens":9000,"cache_creation_tokens":500}`,
+		Other:        `{"usage_semantic":"anthropic","cache_tokens":9000,"cache_creation_tokens":500}`,
 		CreatedAt:    172800,
 	}).Error)
 	require.NoError(t, db.Create(&model.Log{
@@ -38,7 +38,7 @@ func setupCacheDailyTestDB(t *testing.T) {
 		TokenId:      22,
 		TokenName:    "k2",
 		PromptTokens: 500,
-		Other:        `{"cache_tokens":1500,"cache_creation_tokens":100}`,
+		Other:        `{"input_tokens_total":2000,"cache_tokens":1500,"cache_creation_tokens":100}`,
 		CreatedAt:    173000,
 	}).Error)
 	// 更早的桶（超出请求窗口）
@@ -88,11 +88,10 @@ func TestGetLogsCacheStatDailyGroupsByDay(t *testing.T) {
 	day := payload.Data.Items[0]
 	require.Equal(t, int64(2), day.Day)
 	require.Equal(t, int64(1500), day.PromptTokens)
+	require.Equal(t, int64(12500), day.InputTokens)
 	require.Equal(t, int64(10500), day.CacheReadTokens)
 	require.Equal(t, int64(600), day.CacheCreationTokens)
-	// OpenAI 兼容语义：prompt 已含缓存读取，命中率 = read/prompt = 10500/1500
-	// 超 100 时封顶（全缓存路径下 prompt 不含缓存，read 可大于 prompt）。
-	require.Equal(t, 100.0, day.CacheRate)
+	require.Equal(t, 84.0, day.CacheRate)
 }
 
 func TestGetLogsCacheStatDailyFiltersTokenIds(t *testing.T) {
@@ -103,8 +102,27 @@ func TestGetLogsCacheStatDailyFiltersTokenIds(t *testing.T) {
 	require.Len(t, payload.Data.Items, 1)
 	item := payload.Data.Items[0]
 	require.Equal(t, int64(500), item.PromptTokens)
+	require.Equal(t, int64(2000), item.InputTokens)
 	require.Equal(t, int64(1500), item.CacheReadTokens)
-	require.Equal(t, 100.0, item.CacheRate)
+	require.Equal(t, 75.0, item.CacheRate)
+}
+
+func TestGetLogsCacheStatDailyOrdersDaysAscending(t *testing.T) {
+	setupCacheDailyTestDB(t)
+	require.NoError(t, model.LOG_DB.Create(&model.Log{
+		Type:         model.LogTypeConsume,
+		TokenId:      11,
+		TokenName:    "k1",
+		PromptTokens: 10,
+		Other:        `{"cache_tokens":5}`,
+		CreatedAt:    259200,
+	}).Error)
+
+	payload := postCacheDaily(t, `{"start_timestamp":100000,"end_timestamp":300000}`)
+
+	require.Len(t, payload.Data.Items, 2)
+	require.Equal(t, int64(2), payload.Data.Items[0].Day)
+	require.Equal(t, int64(3), payload.Data.Items[1].Day)
 }
 
 func TestGetLogsCacheStatDailyEmptyWhenNoLogs(t *testing.T) {
@@ -145,20 +163,20 @@ func TestCacheRatePctSemantics(t *testing.T) {
 	cases := []struct {
 		name  string
 		read  int64
-		prompt int64
+		input int64
 		want  float64
 	}{
-		// OpenAI 兼容：prompt 已含缓存读取，真实 ~100% 不得显示为 ~50%
+		// 输入分母已在模型层按协议规范化。
 		{"openai full cache", 33408, 33409, 100},
 		{"partial cache", 100, 900, 11.1},
-		{"claude separate format high hit", 30000, 100, 100},
+		{"mixed protocol aggregate", 10500, 12500, 84},
 		{"no cache", 0, 500, 0},
 		{"all cached no prompt", 500, 0, 100},
 		{"no traffic", 0, 0, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			require.Equal(t, c.want, cacheRatePct(c.read, c.prompt))
+			require.Equal(t, c.want, cacheRatePct(c.read, c.input))
 		})
 	}
 }

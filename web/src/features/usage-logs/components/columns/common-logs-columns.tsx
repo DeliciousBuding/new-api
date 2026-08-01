@@ -58,10 +58,10 @@ import {
   isPerCallBilling,
 } from '../../lib/utils'
 import type { LogOtherData } from '../../types'
-import { DetailsDialog } from '../dialogs/details-dialog'
-import { LogCostDisplay } from '../log-cost-display'
 import { ClientProfileBadge } from '../client-profile-badge'
+import { DetailsDialog } from '../dialogs/details-dialog'
 import { IpGeoBadge } from '../ip-geo-badge'
+import { LogCostDisplay } from '../log-cost-display'
 import { ModelBadge } from '../model-badge'
 import { TimingMetricsCell, StreamTpsCell } from '../timing-metrics-cell'
 import { useUsageLogsContext } from '../usage-logs-provider'
@@ -549,13 +549,15 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
       {
         id: 'client',
         header: t('Client'),
-        accessorFn: (row) => parseLogOther(row.other)?.admin_info?.client_profile,
+        accessorFn: (row) =>
+          parseLogOther(row.other)?.admin_info?.client_profile,
         cell: ({ row }) => {
-          const profile = parseLogOther(row.original.other)?.admin_info?.client_profile
+          const profile = parseLogOther(row.original.other)?.admin_info
+            ?.client_profile
           if (!profile) return null
           return <ClientProfileBadge profile={profile} />
         },
-      },
+      }
     )
   }
 
@@ -697,7 +699,8 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
           cacheReadTokens,
           promptTokens,
           other?.input_tokens_total,
-          other?.claude
+          other?.claude,
+          cacheWriteTokens
         )
 
         return (
@@ -710,59 +713,61 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
               <TooltipProvider delay={300}>
                 <Tooltip>
                   <TooltipTrigger
-                    render={<span className='flex items-center gap-1 text-[11px]' />}
+                    render={
+                      <span className='flex items-center gap-1 text-[11px]' />
+                    }
                   >
-                  {cacheReadTokens > 0 && (
-                    <span className='text-muted-foreground/60'>
-                      {t('Cache')}↓ {cacheReadTokens.toLocaleString()}
-                      {cacheRate !== null && (
-                        <span className='text-muted-foreground/40'>
-                          {' '}
-                          ({cacheRate}%)
-                        </span>
-                      )}
-                    </span>
-                  )}
-                  {cacheWriteTokens > 0 && (
-                    <span className='text-muted-foreground/60'>
-                      ↑ {cacheWriteTokens.toLocaleString()}
-                    </span>
-                  )}
-                </TooltipTrigger>
-                <TooltipContent>
-                  <div className='space-y-1'>
                     {cacheReadTokens > 0 && (
-                      <div className='flex items-center justify-between gap-4'>
-                        <span className='text-muted-foreground text-xs'>
-                          {t('Cache Read')}
-                        </span>
-                        <span className='font-mono text-xs tabular-nums'>
-                          {cacheReadTokens.toLocaleString()}
-                        </span>
-                      </div>
+                      <span className='text-muted-foreground/60'>
+                        {t('Cache')}↓ {cacheReadTokens.toLocaleString()}
+                        {cacheRate !== null && (
+                          <span className='text-muted-foreground/40'>
+                            {' '}
+                            ({cacheRate}%)
+                          </span>
+                        )}
+                      </span>
                     )}
                     {cacheWriteTokens > 0 && (
-                      <div className='flex items-center justify-between gap-4'>
-                        <span className='text-muted-foreground text-xs'>
-                          {t('Cache Write')}
-                        </span>
-                        <span className='font-mono text-xs tabular-nums'>
-                          {cacheWriteTokens.toLocaleString()}
-                        </span>
-                      </div>
+                      <span className='text-muted-foreground/60'>
+                        ↑ {cacheWriteTokens.toLocaleString()}
+                      </span>
                     )}
-                    {cacheRate !== null && (
-                      <div className='flex items-center justify-between gap-4'>
-                        <span className='text-muted-foreground text-xs'>
-                          {t('Cache Rate')}
-                        </span>
-                        <span className='font-mono text-xs tabular-nums'>
-                          {cacheRate}%
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </TooltipContent>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <div className='space-y-1'>
+                      {cacheReadTokens > 0 && (
+                        <div className='flex items-center justify-between gap-4'>
+                          <span className='text-muted-foreground text-xs'>
+                            {t('Cache Read')}
+                          </span>
+                          <span className='font-mono text-xs tabular-nums'>
+                            {cacheReadTokens.toLocaleString()}
+                          </span>
+                        </div>
+                      )}
+                      {cacheWriteTokens > 0 && (
+                        <div className='flex items-center justify-between gap-4'>
+                          <span className='text-muted-foreground text-xs'>
+                            {t('Cache Write')}
+                          </span>
+                          <span className='font-mono text-xs tabular-nums'>
+                            {cacheWriteTokens.toLocaleString()}
+                          </span>
+                        </div>
+                      )}
+                      {cacheRate !== null && (
+                        <div className='flex items-center justify-between gap-4'>
+                          <span className='text-muted-foreground text-xs'>
+                            {t('Cache Rate')}
+                          </span>
+                          <span className='font-mono text-xs tabular-nums'>
+                            {cacheRate}%
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
             )}

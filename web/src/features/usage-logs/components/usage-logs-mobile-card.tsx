@@ -215,7 +215,8 @@ function MobileTokensField({ log }: { log: UsageLog }) {
     cacheReadTokens,
     promptTokens,
     other?.input_tokens_total,
-    other?.claude
+    other?.claude,
+    cacheWriteTokens
   )
   const showCache = cacheReadTokens > 0 || cacheWriteTokens > 0
 
@@ -230,12 +231,7 @@ function MobileTokensField({ log }: { log: UsageLog }) {
             {cacheReadTokens > 0 && (
               <span>
                 {t('Cache')}↓ {cacheReadTokens.toLocaleString()}
-                {cacheRate !== null && (
-                  <>
-                    {' '}
-                    ({cacheRate}%)
-                  </>
-                )}
+                {cacheRate !== null && <> ({cacheRate}%)</>}
               </span>
             )}
             {cacheWriteTokens > 0 && (

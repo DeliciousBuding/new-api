@@ -355,10 +355,10 @@ export function clientProfileLabel(profile: string | undefined): string {
  * Denominator rule:
  * - `input_tokens_total` (OpenAI-compatible paths that provide it) is used
  *   as-is — it already includes cache reads.
- * - Claude-format paths (`claudeFormat`) report cache reads separately
- *   (DeepSeek's Anthropic-compatible endpoint returns input_tokens excluding
- *   cache reads, verified against 40 production samples), so the denominator
- *   is cache + input.
+ * - Claude-format paths (`claudeFormat`) report cache reads and cache creation
+ *   separately (DeepSeek's Anthropic-compatible endpoint returns input_tokens
+ *   excluding both, verified against production samples), so the denominator
+ *   is read + write + fresh input.
  * - Other OpenAI-compatible paths: `prompt_tokens` already includes cache
  *   reads, so the denominator is prompt_tokens — adding cache again would
  *   double-count and under-report (e.g. cache=33408/prompt=33409 would show
@@ -369,11 +369,15 @@ export function computeCacheRate(
   cacheRead: number,
   promptTokens: number,
   inputTokensTotal?: number,
-  claudeFormat?: boolean
+  claudeFormat?: boolean,
+  cacheCreationTokens = 0
 ): number | null {
   if (cacheRead <= 0) return null
   const total =
-    inputTokensTotal ?? (claudeFormat ? cacheRead + promptTokens : promptTokens)
+    inputTokensTotal ??
+    (claudeFormat
+      ? cacheRead + cacheCreationTokens + promptTokens
+      : promptTokens)
   if (total <= 0) return null
   return Math.min(100, Math.round((cacheRead / total) * 100))
 }

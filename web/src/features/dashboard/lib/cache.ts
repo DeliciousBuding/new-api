@@ -30,27 +30,25 @@ export function formatDayLabel(day: number): string {
 }
 
 export interface CacheSummary {
-  promptTokens: number
+  inputTokens: number
   cacheReadTokens: number
   cacheCreationTokens: number
   rate: number
 }
 
-// Aggregate the window totals. The rate uses prompt as the denominator:
-// OpenAI-compatible responses already include cached reads in prompt_tokens,
-// so read/(read+prompt) would double-count and show ~50% for a ~100% hit rate.
+// Aggregate the window totals using the backend-normalized input denominator.
 export function buildCacheSummary(rows: CacheDailyStat[]): CacheSummary {
-  let prompt = 0
+  let input = 0
   let read = 0
   let write = 0
   for (const row of rows) {
-    prompt += row.prompt_tokens
+    input += row.input_tokens
     read += row.cache_read_tokens
     write += row.cache_creation_tokens
   }
   let rate: number
-  if (prompt > 0) {
-    rate = Math.min((read / prompt) * 100, CACHE_RATE_AXIS_MAX)
+  if (input > 0) {
+    rate = Math.min((read / input) * 100, CACHE_RATE_AXIS_MAX)
   } else if (read > 0) {
     rate = CACHE_RATE_AXIS_MAX
   } else {
@@ -58,7 +56,7 @@ export function buildCacheSummary(rows: CacheDailyStat[]): CacheSummary {
   }
   // One decimal place, matching the backend cache_rate rounding.
   return {
-    promptTokens: prompt,
+    inputTokens: input,
     cacheReadTokens: read,
     cacheCreationTokens: write,
     rate: Math.round(rate * 10) / 10,
@@ -79,10 +77,12 @@ export function buildCacheRateSpec(
   rows: CacheDailyStat[],
   labels: CacheRateLabels
 ) {
-  const chartData = rows.map((row) => ({
-    ...row,
-    label: formatDayLabel(row.day),
-  }))
+  const chartData = [...rows]
+    .sort((a, b) => a.day - b.day)
+    .map((row) => ({
+      ...row,
+      label: formatDayLabel(row.day),
+    }))
   const numberValue = (datum: Record<string, unknown>, key: string) =>
     Number(datum[key]) || 0
   const formattedNumber = (datum: Record<string, unknown>, key: string) =>
@@ -118,7 +118,7 @@ export function buildCacheRateSpec(
           {
             key: labels.inputTokens,
             value: (datum: Record<string, unknown>) =>
-              formattedNumber(datum, 'prompt_tokens'),
+              formattedNumber(datum, 'input_tokens'),
           },
         ],
       },

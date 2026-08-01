@@ -20,6 +20,7 @@ import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
 import {
+  buildCacheRateSpec,
   buildCacheSummary,
   formatDayLabel,
   CACHE_RATE_AXIS_MAX,
@@ -31,6 +32,7 @@ describe('buildCacheSummary', () => {
       {
         day: 2,
         prompt_tokens: 1000,
+        input_tokens: 10500,
         cache_read_tokens: 9000,
         cache_creation_tokens: 500,
         cache_rate: 100,
@@ -38,17 +40,16 @@ describe('buildCacheSummary', () => {
       {
         day: 3,
         prompt_tokens: 500,
+        input_tokens: 2000,
         cache_read_tokens: 1500,
         cache_creation_tokens: 100,
         cache_rate: 100,
       },
     ])
-    assert.equal(summary.promptTokens, 1500)
+    assert.equal(summary.inputTokens, 12500)
     assert.equal(summary.cacheReadTokens, 10500)
     assert.equal(summary.cacheCreationTokens, 600)
-    // OpenAI-compatible semantics: prompt already includes cached reads,
-    // so the rate is read/prompt (capped at 100).
-    assert.equal(summary.rate, CACHE_RATE_AXIS_MAX)
+    assert.equal(summary.rate, 84)
   })
 
   test('no double counting keeps a real ~100% hit rate at 100%', () => {
@@ -56,6 +57,7 @@ describe('buildCacheSummary', () => {
       {
         day: 2,
         prompt_tokens: 33409,
+        input_tokens: 33409,
         cache_read_tokens: 33408,
         cache_creation_tokens: 0,
         cache_rate: 100,
@@ -69,6 +71,7 @@ describe('buildCacheSummary', () => {
       {
         day: 2,
         prompt_tokens: 900,
+        input_tokens: 900,
         cache_read_tokens: 100,
         cache_creation_tokens: 0,
         cache_rate: 11.1,
@@ -82,6 +85,7 @@ describe('buildCacheSummary', () => {
       {
         day: 2,
         prompt_tokens: 0,
+        input_tokens: 500,
         cache_read_tokens: 500,
         cache_creation_tokens: 0,
         cache_rate: 100,
@@ -93,7 +97,45 @@ describe('buildCacheSummary', () => {
   test('empty rows give a zero rate', () => {
     const summary = buildCacheSummary([])
     assert.equal(summary.rate, 0)
-    assert.equal(summary.promptTokens, 0)
+    assert.equal(summary.inputTokens, 0)
+  })
+})
+
+describe('buildCacheRateSpec', () => {
+  test('sorts day buckets before rendering and uses normalized input tokens', () => {
+    const spec = buildCacheRateSpec(
+      [
+        {
+          day: 3,
+          prompt_tokens: 10,
+          input_tokens: 15,
+          cache_read_tokens: 5,
+          cache_creation_tokens: 0,
+          cache_rate: 33.3,
+        },
+        {
+          day: 2,
+          prompt_tokens: 20,
+          input_tokens: 25,
+          cache_read_tokens: 5,
+          cache_creation_tokens: 0,
+          cache_rate: 20,
+        },
+      ],
+      {
+        cacheRate: 'rate',
+        cacheRead: 'read',
+        cacheWrite: 'write',
+        inputTokens: 'input',
+      }
+    )
+
+    assert.deepEqual(
+      spec.data[0].values.map((row) => row.day),
+      [2, 3]
+    )
+    const inputLine = spec.tooltip.mark.content[3]
+    assert.equal(inputLine.value(spec.data[0].values[0]), '25')
   })
 })
 

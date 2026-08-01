@@ -103,32 +103,29 @@ type cacheStatBatchRequest struct {
 }
 
 // cacheStatMaxWindowSeconds 限制缓存聚合窗口最大为 90 天，
-// 防止全站聚合（空 token_names）对日志库做超范围扫描。
+// 防止全站聚合（空 token_ids）对日志库做超范围扫描。
 const cacheStatMaxWindowSeconds = 90 * 24 * 3600
 
 // cacheStatItem 是单个 token 的缓存用量响应（含缓存命中率，一位小数）。
 type cacheStatItem struct {
 	TokenId             int64   `json:"token_id"`
-	TokenName           string  `json:"token_name"`
 	PromptTokens        int64   `json:"prompt_tokens"`
+	InputTokens         int64   `json:"input_tokens"`
 	CacheReadTokens     int64   `json:"cache_read_tokens"`
 	CacheCreationTokens int64   `json:"cache_creation_tokens"`
 	CacheRate           float64 `json:"cache_rate"`
 }
 
-// cacheRatePct 计算缓存命中率百分比（一位小数）。
-// 分母取 prompt_tokens：OpenAI 兼容路径的 prompt 已含缓存读取（精确）；
-// Claude 分离格式（prompt 不含缓存）会略高估，但在高命中率区间与真实值
-// 趋同。聚合层无法区分两种格式，取不双重计数的一侧（双重计数会把真实
-// ~100% 的命中率显示成 ~50%）。全缓存（prompt=0 且 read>0）视为 100%。
-func cacheRatePct(cacheReadTokens int64, promptTokens int64) float64 {
-	if promptTokens <= 0 {
+// cacheRatePct 计算缓存命中率百分比（一位小数）。inputTokens 已由模型层
+// 按日志语义规范化，避免 OpenAI/Anthropic 混合流量重复或漏算缓存输入。
+func cacheRatePct(cacheReadTokens int64, inputTokens int64) float64 {
+	if inputTokens <= 0 {
 		if cacheReadTokens > 0 {
 			return 100
 		}
 		return 0
 	}
-	rate := float64(cacheReadTokens) / float64(promptTokens) * 100
+	rate := float64(cacheReadTokens) / float64(inputTokens) * 100
 	if rate > 100 {
 		return 100
 	}
@@ -168,11 +165,11 @@ func GetLogsCacheStatBatch(c *gin.Context) {
 		}
 		items = append(items, cacheStatItem{
 			TokenId:             st.TokenId,
-			TokenName:           st.TokenName,
 			PromptTokens:        st.PromptTokens,
+			InputTokens:         st.InputTokens,
 			CacheReadTokens:     st.CacheReadTokens,
 			CacheCreationTokens: st.CacheCreationTokens,
-			CacheRate:           cacheRatePct(st.CacheReadTokens, st.PromptTokens),
+			CacheRate:           cacheRatePct(st.CacheReadTokens, st.InputTokens),
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -186,13 +183,14 @@ func GetLogsCacheStatBatch(c *gin.Context) {
 type cacheStatDailyItem struct {
 	Day                 int64   `json:"day"`
 	PromptTokens        int64   `json:"prompt_tokens"`
+	InputTokens         int64   `json:"input_tokens"`
 	CacheReadTokens     int64   `json:"cache_read_tokens"`
 	CacheCreationTokens int64   `json:"cache_creation_tokens"`
 	CacheRate           float64 `json:"cache_rate"`
 }
 
 // GetLogsCacheStatDaily 返回窗口内按天分桶的缓存用量聚合
-// （dashboard 缓存效率趋势）。token_names 为空表示全站；默认窗口最近 7 天。
+// （dashboard 缓存效率趋势）。token_ids 为空表示全站；默认窗口最近 7 天。
 func GetLogsCacheStatDaily(c *gin.Context) {
 	var req cacheStatBatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -221,9 +219,10 @@ func GetLogsCacheStatDaily(c *gin.Context) {
 		items = append(items, cacheStatDailyItem{
 			Day:                 r.Day,
 			PromptTokens:        r.PromptTokens,
+			InputTokens:         r.InputTokens,
 			CacheReadTokens:     r.CacheReadTokens,
 			CacheCreationTokens: r.CacheCreationTokens,
-			CacheRate:           cacheRatePct(r.CacheReadTokens, r.PromptTokens),
+			CacheRate:           cacheRatePct(r.CacheReadTokens, r.InputTokens),
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{

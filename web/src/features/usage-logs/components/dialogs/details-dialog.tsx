@@ -63,8 +63,6 @@ import { formatLogQuota, formatTokens, formatUseTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 import type { UsageLog } from '../../data/schema'
-import { ClientProfileBadge } from '../client-profile-badge'
-import { IpGeoBadge } from '../ip-geo-badge'
 import {
   parseLogOther,
   getParamOverrideActionLabel,
@@ -84,6 +82,8 @@ import {
   isTimingLogType,
 } from '../../lib/utils'
 import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
+import { ClientProfileBadge } from '../client-profile-badge'
+import { IpGeoBadge } from '../ip-geo-badge'
 
 // Maps a channel-update changed-field token (as recorded by the backend audit)
 // to its i18n label key for display in the audit details.
@@ -412,10 +412,16 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
   const promptTokens = log.prompt_tokens || 0
   const completionTokens = log.completion_tokens || 0
   const cacheRead = other.cache_tokens || 0
+  const cacheWrite = other.cache_creation_tokens || 0
   // Same denominator rule as the list column: upstream total input when
   // available, Claude-format paths use cache + input, others use prompt_tokens.
-  const cacheRate = computeCacheRate(cacheRead, promptTokens, other.input_tokens_total, other.claude)
-  const cacheWrite = other.cache_creation_tokens || 0
+  const cacheRate = computeCacheRate(
+    cacheRead,
+    promptTokens,
+    other.input_tokens_total,
+    other.claude,
+    cacheWrite
+  )
   const cacheWrite5m = other.cache_creation_tokens_5m || 0
   const cacheWrite1h = other.cache_creation_tokens_1h || 0
   const hasTokens = promptTokens > 0 || completionTokens > 0
@@ -715,7 +721,13 @@ export function DetailsDialog(props: DetailsDialogProps) {
           {showAdminIp && (
             <DetailRow
               label={t('IP Address')}
-              value={<IpGeoBadge ip={props.log.ip} geo={other?.admin_info?.geo} compact />}
+              value={
+                <IpGeoBadge
+                  ip={props.log.ip}
+                  geo={other?.admin_info?.geo}
+                  compact
+                />
+              }
             />
           )}
 

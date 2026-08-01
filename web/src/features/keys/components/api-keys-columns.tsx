@@ -36,8 +36,8 @@ import dayjs from '@/lib/dayjs'
 import { formatQuota } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-import { API_KEY_STATUSES } from '../constants'
 import type { TokenCacheStat } from '../api'
+import { API_KEY_STATUSES } from '../constants'
 import type { ApiKey } from '../types'
 import { ApiKeyTimestampCell } from './api-key-timestamp-cell'
 import {
@@ -198,13 +198,15 @@ export function useApiKeysColumns(
       header: t('Cache Rate'),
       cell: ({ row }) => {
         const stat = cacheStats?.get(row.original.id)
-        if (!stat || stat.prompt_tokens + stat.cache_read_tokens === 0) {
+        if (!stat || stat.input_tokens === 0) {
           return <span className='text-muted-foreground text-xs'>-</span>
         }
         return (
           <Tooltip>
-            <TooltipTrigger render={<span className='inline-flex items-center' />}>
-              <span className='font-medium text-xs tabular-nums'>
+            <TooltipTrigger
+              render={<span className='inline-flex items-center' />}
+            >
+              <span className='text-xs font-medium tabular-nums'>
                 {stat.cache_rate.toFixed(1)}%
               </span>
             </TooltipTrigger>
@@ -214,10 +216,11 @@ export function useApiKeysColumns(
                   {t('Cache Read')}: {stat.cache_read_tokens.toLocaleString()}
                 </div>
                 <div>
-                  {t('Cache Write')}: {stat.cache_creation_tokens.toLocaleString()}
+                  {t('Cache Write')}:{' '}
+                  {stat.cache_creation_tokens.toLocaleString()}
                 </div>
                 <div>
-                  {t('Input Tokens')}: {stat.prompt_tokens.toLocaleString()}
+                  {t('Input Tokens')}: {stat.input_tokens.toLocaleString()}
                 </div>
               </div>
             </TooltipContent>

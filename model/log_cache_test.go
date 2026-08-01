@@ -45,3 +45,55 @@ func TestCacheJsonExtractExprPerDatabase(t *testing.T) {
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
 	assert.Equal(t, "COALESCE(CAST(json_extract(other, '$.cache_tokens') AS INTEGER), 0)", cacheJsonExtractExpr("cache_tokens"))
 }
+
+func TestCacheJsonTextExtractExprPerDatabase(t *testing.T) {
+	t.Cleanup(func() {
+		common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	})
+
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypePostgreSQL)
+	assert.Equal(t, "(other::jsonb->>'usage_semantic')", cacheJsonTextExtractExpr("usage_semantic"))
+
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeMySQL)
+	assert.Equal(t, "JSON_UNQUOTE(JSON_EXTRACT(other, '$.usage_semantic'))", cacheJsonTextExtractExpr("usage_semantic"))
+
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeClickHouse)
+	assert.Equal(t, "JSONExtractString(other, 'usage_semantic')", cacheJsonTextExtractExpr("usage_semantic"))
+
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	assert.Equal(t, "json_extract(other, '$.usage_semantic')", cacheJsonTextExtractExpr("usage_semantic"))
+}
+
+func TestCacheJsonBoolExtractExprPerDatabase(t *testing.T) {
+	t.Cleanup(func() {
+		common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	})
+
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypePostgreSQL)
+	assert.Equal(t, "COALESCE((other::jsonb->>'claude')::boolean, false)", cacheJsonBoolExtractExpr("claude"))
+
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeMySQL)
+	assert.Equal(t, "COALESCE(JSON_EXTRACT(other, '$.claude') = true, false)", cacheJsonBoolExtractExpr("claude"))
+
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeClickHouse)
+	assert.Equal(t, "JSONExtractBool(other, 'claude')", cacheJsonBoolExtractExpr("claude"))
+
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	assert.Equal(t, "COALESCE(CAST(json_extract(other, '$.claude') AS INTEGER), 0)", cacheJsonBoolExtractExpr("claude"))
+}
+
+func TestCacheRateInputExprIncludesProtocolSemantics(t *testing.T) {
+	t.Cleanup(func() {
+		common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	})
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+
+	expr := cacheRateInputExpr()
+	assert.Contains(t, expr, "usage_semantic")
+	assert.Contains(t, expr, "= 'anthropic'")
+	assert.Contains(t, expr, "claude")
+	assert.Contains(t, expr, "cache_tokens")
+	assert.Contains(t, expr, "cache_creation_tokens")
+	assert.Contains(t, expr, "input_tokens_total")
+	assert.Contains(t, expr, "prompt_tokens")
+}

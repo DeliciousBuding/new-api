@@ -642,11 +642,11 @@ type Stat struct {
 
 // CacheUsageStat 是单个 token 在窗口内的缓存用量聚合（缓存读取/创建/输入）。
 type CacheUsageStat struct {
-	TokenId             int64  `json:"token_id"`
-	TokenName           string `json:"token_name"`
-	PromptTokens        int64  `json:"prompt_tokens"`
-	CacheReadTokens     int64  `json:"cache_read_tokens"`
-	CacheCreationTokens int64  `json:"cache_creation_tokens"`
+	TokenId             int64 `json:"token_id"`
+	PromptTokens        int64 `json:"prompt_tokens"`
+	InputTokens         int64 `json:"input_tokens"`
+	CacheReadTokens     int64 `json:"cache_read_tokens"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens"`
 }
 
 // cacheJsonExtractExpr 返回按日志数据库类型提取 other JSON 字段的 SQL 表达式。
@@ -664,6 +664,44 @@ func cacheJsonExtractExpr(field string) string {
 	}
 }
 
+// cacheJsonTextExtractExpr 返回按日志数据库类型提取 other JSON 文本字段的 SQL 表达式。
+func cacheJsonTextExtractExpr(field string) string {
+	switch {
+	case common.UsingLogDatabase(common.DatabaseTypePostgreSQL):
+		return "(other::jsonb->>'" + field + "')"
+	case common.UsingLogDatabase(common.DatabaseTypeMySQL):
+		return "JSON_UNQUOTE(JSON_EXTRACT(other, '$." + field + "'))"
+	case common.UsingLogDatabase(common.DatabaseTypeClickHouse):
+		return "JSONExtractString(other, '" + field + "')"
+	default: // SQLite (built-in JSON1 extension)
+		return "json_extract(other, '$." + field + "')"
+	}
+}
+
+// cacheJsonBoolExtractExpr 返回按日志数据库类型提取 other JSON 布尔字段的 SQL 表达式。
+func cacheJsonBoolExtractExpr(field string) string {
+	switch {
+	case common.UsingLogDatabase(common.DatabaseTypePostgreSQL):
+		return "COALESCE((other::jsonb->>'" + field + "')::boolean, false)"
+	case common.UsingLogDatabase(common.DatabaseTypeMySQL):
+		return "COALESCE(JSON_EXTRACT(other, '$." + field + "') = true, false)"
+	case common.UsingLogDatabase(common.DatabaseTypeClickHouse):
+		return "JSONExtractBool(other, '" + field + "')"
+	default: // SQLite (built-in JSON1 extension)
+		return "COALESCE(CAST(json_extract(other, '$." + field + "') AS INTEGER), 0)"
+	}
+}
+
+// cacheRateInputExpr 统一不同协议的缓存率分母：
+// - Anthropic usage 将普通输入、缓存读取、缓存创建分开上报；兼容旧日志 claude=true；
+// - 其他路径优先使用已规范化的 input_tokens_total；
+// - 老日志回退到 prompt_tokens（OpenAI 兼容语义已包含缓存读取）。
+func cacheRateInputExpr() string {
+	return "CASE WHEN (" + cacheJsonTextExtractExpr("usage_semantic") + " = 'anthropic' OR " + cacheJsonBoolExtractExpr("claude") + ") " +
+		"THEN COALESCE(prompt_tokens, 0) + " + cacheJsonExtractExpr("cache_tokens") + " + " + cacheJsonExtractExpr("cache_creation_tokens") + " " +
+		"ELSE COALESCE(NULLIF(" + cacheJsonExtractExpr("input_tokens_total") + ", 0), COALESCE(prompt_tokens, 0)) END"
+}
+
 // SumCacheUsageByTokenIds 聚合多个 token id 在时间窗口内的缓存用量。
 // 按 token_id 聚合（Log 表的 token_id 索引列）——token_name 跨用户可重复，
 // 按名字聚合会把不同用户的同名 key 数据合并。
@@ -675,14 +713,15 @@ func SumCacheUsageByTokenIds(tokenIds []int64, startTimestamp int64, endTimestam
 	}
 	rows := []CacheUsageStat{}
 	err := LOG_DB.Table("logs").
-		Select("token_id, token_name, COALESCE(SUM(prompt_tokens), 0) prompt_tokens, "+
+		Select("token_id, COALESCE(SUM(prompt_tokens), 0) prompt_tokens, "+
+			"COALESCE(SUM("+cacheRateInputExpr()+"), 0) input_tokens, "+
 			"SUM("+cacheJsonExtractExpr("cache_tokens")+") cache_read_tokens, "+
 			"SUM("+cacheJsonExtractExpr("cache_creation_tokens")+") cache_creation_tokens").
 		Where("type = ?", LogTypeConsume).
 		Where("token_id IN ?", tokenIds).
 		Where("created_at >= ?", startTimestamp).
 		Where("created_at <= ?", endTimestamp).
-		Group("token_id, token_name").
+		Group("token_id").
 		Scan(&rows).Error
 	if err != nil {
 		return nil, err
@@ -697,6 +736,7 @@ func SumCacheUsageByTokenIds(tokenIds []int64, startTimestamp int64, endTimestam
 type CacheUsageDailyStat struct {
 	Day                 int64 `json:"day"`
 	PromptTokens        int64 `json:"prompt_tokens"`
+	InputTokens         int64 `json:"input_tokens"`
 	CacheReadTokens     int64 `json:"cache_read_tokens"`
 	CacheCreationTokens int64 `json:"cache_creation_tokens"`
 }
@@ -721,6 +761,7 @@ func cacheDayBucketExpr() string {
 func SumCacheUsageDaily(tokenIds []int64, startTimestamp int64, endTimestamp int64) ([]CacheUsageDailyStat, error) {
 	query := LOG_DB.Table("logs").
 		Select(cacheDayBucketExpr()+" AS day, COALESCE(SUM(prompt_tokens), 0) prompt_tokens, "+
+			"COALESCE(SUM("+cacheRateInputExpr()+"), 0) input_tokens, "+
 			"SUM("+cacheJsonExtractExpr("cache_tokens")+") cache_read_tokens, "+
 			"SUM("+cacheJsonExtractExpr("cache_creation_tokens")+") cache_creation_tokens").
 		Where("type = ?", LogTypeConsume).
@@ -730,7 +771,7 @@ func SumCacheUsageDaily(tokenIds []int64, startTimestamp int64, endTimestamp int
 		query = query.Where("token_id IN ?", tokenIds)
 	}
 	rows := []CacheUsageDailyStat{}
-	err := query.Group("day").Scan(&rows).Error
+	err := query.Group("day").Order("day ASC").Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
