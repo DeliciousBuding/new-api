@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -23,6 +24,7 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/oauth"
+	"github.com/QuantumNous/new-api/pkg/geoip"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relay"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
@@ -302,6 +304,14 @@ func InitResources() error {
 	service.InitHttpClient()
 
 	service.InitTokenEncoders()
+
+	// Initialize optional GeoIP databases (locality hints on logs).
+	// Missing databases degrade gracefully — logs simply carry no geo fields.
+	geoipDir := os.Getenv("GEOIP_DB_DIR")
+	if geoipDir == "" {
+		geoipDir = "/opt/geoip"
+	}
+	geoip.Init(filepath.Join(geoipDir, "dbip-city-lite.mmdb"), filepath.Join(geoipDir, "dbip-asn-lite.mmdb"))
 
 	// Initialize SQL Database
 	err = model.InitDB()

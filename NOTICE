@@ -55,4 +55,12 @@ Desktop distributions include Electron, which embeds Chromium, Node.js, V8,
 and other third-party components. Electron and Chromium third-party license
 notices must remain available with desktop installers and installed apps.
 
+==== GeoIP Databases ====
+
+Container images bundle the DB-IP Lite City and DB-IP Lite ASN databases:
+
+Copyright © db-ip.com — licensed under the Creative Commons Attribution
+4.0 International License (CC BY 4.0).
+https://db-ip.com/db/lite.php
+
 ==== End of Notices ====
