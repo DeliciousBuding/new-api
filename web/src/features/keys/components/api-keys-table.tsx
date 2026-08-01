@@ -278,7 +278,7 @@ export function ApiKeysTable() {
   // Per-key cache usage aggregates for the Cache Rate column (7-day window).
   const pageTokenNames = apiKeys.map((k) => k.name)
   const { data: cacheStatsData } = useQuery({
-    queryKey: ['keys-cache-stats', pageTokenNames.join(',')],
+    queryKey: ['keys-cache-stats', JSON.stringify(pageTokenNames)],
     queryFn: () => getCacheStats(pageTokenNames),
     enabled: pageTokenNames.length > 0,
     placeholderData: (previousData) => previousData,

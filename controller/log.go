@@ -102,6 +102,15 @@ type cacheStatBatchRequest struct {
 	EndTimestamp   int64    `json:"end_timestamp"`
 }
 
+// cacheStatItem 是单个 token 的缓存用量响应（含缓存命中率，一位小数）。
+type cacheStatItem struct {
+	TokenName           string  `json:"token_name"`
+	PromptTokens        int64   `json:"prompt_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+	CacheRate           float64 `json:"cache_rate"`
+}
+
 // GetLogsCacheStatBatch 批量返回多个 token 在窗口内的缓存用量聚合
 // （keys 页逐 key 缓存率展示）。默认窗口为最近 7 天；空 token 列表返回空。
 func GetLogsCacheStatBatch(c *gin.Context) {
@@ -123,7 +132,7 @@ func GetLogsCacheStatBatch(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	items := make([]map[string]interface{}, 0, len(req.TokenNames))
+	items := make([]cacheStatItem, 0, len(req.TokenNames))
 	for _, name := range req.TokenNames {
 		st, ok := stats[name]
 		if !ok {
@@ -134,12 +143,12 @@ func GetLogsCacheStatBatch(c *gin.Context) {
 		if total > 0 {
 			rate = float64(st.CacheReadTokens) / float64(total) * 100
 		}
-		items = append(items, map[string]interface{}{
-			"token_name":            st.TokenName,
-			"prompt_tokens":         st.PromptTokens,
-			"cache_read_tokens":     st.CacheReadTokens,
-			"cache_creation_tokens": st.CacheCreationTokens,
-			"cache_rate":            math.Round(rate*10) / 10,
+		items = append(items, cacheStatItem{
+			TokenName:           st.TokenName,
+			PromptTokens:        st.PromptTokens,
+			CacheReadTokens:     st.CacheReadTokens,
+			CacheCreationTokens: st.CacheCreationTokens,
+			CacheRate:           math.Round(rate*10) / 10,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{
