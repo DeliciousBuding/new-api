@@ -34,7 +34,13 @@ jobs:
 
           git remote add official https://github.com/QuantumNous/new-api.git 2>/dev/null || \
             git remote set-url official https://github.com/QuantumNous/new-api.git
+          # Dual channel: official main branch (primary signal) plus release
+          # tags. New fixes often land on main without a tag, so tag-only
+          # comparison would miss them (e.g. #6518/#6570).
+          git fetch --quiet official '+refs/heads/main:refs/remotes/official/main'
           git fetch --quiet official '+refs/tags/*:refs/remotes/official/tags/*'
+          MAIN_HEAD=$(git rev-parse refs/remotes/official/main)
+          MAIN_BEHIND=$(git rev-list --count "$BASE..$MAIN_HEAD" 2>/dev/null || echo '?')
           mapfile -t TAGS < <(
             git for-each-ref --sort=-version:refname \
               --format='%(refname:strip=4)' refs/remotes/official/tags
@@ -46,20 +52,21 @@ jobs:
               break
             fi
           done
-          if [ -z "$LATEST_TAG" ]; then
-            echo '::error::No eligible official release tag found'
-            exit 1
+          LATEST_TAG_SHA=''
+          if [ -n "$LATEST_TAG" ]; then
+            LATEST_TAG_SHA=$(git rev-parse "refs/remotes/official/tags/$LATEST_TAG^{}")
           fi
-          LATEST=$(git rev-parse "refs/remotes/official/tags/$LATEST_TAG^{}")
           {
             echo '### Upstream status'
             echo
             echo "- fixed base: \`$BASE\`"
-            echo "- latest official tag: \`$LATEST_TAG\`"
-            echo "- latest official commit: \`$LATEST\`"
-            echo "- commits behind: \`$(git rev-list --count "$BASE..$LATEST")\`"
+            echo "- official main head: \`$MAIN_HEAD\`"
+            echo "- commits behind official main: \`$MAIN_BEHIND\`"
+            echo "- latest official tag: \`${LATEST_TAG:-none}\`"
+            echo "- latest official commit: \`${LATEST_TAG_SHA:-none}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$BASE" != "$LATEST" ]; then
-            echo '::warning::A newer upstream revision is available; rebuild from the new fixed tag and replay the topic commits.'
+          if [ "$BASE" != "$MAIN_HEAD" ]; then
+            echo '::warning::Official main has moved ahead of the fixed base; rebuild from the new base and replay the topic commits.'
           fi
+
