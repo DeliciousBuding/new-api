@@ -81,6 +81,63 @@ export type LogFilters = CommonLogFilters | DrawingLogFilters | TaskLogFilters
 /**
  * Parsed data from the 'other' field in usage logs
  */
+// Client fingerprint hint written by the backend (admin-only, never used
+// for auth/billing/routing).
+export type ClientProfile =
+  | 'codex_cli'
+  | 'codex_desktop'
+  | 'codex_app'
+  | 'claude_cli'
+  | 'claude_desktop'
+  | 'claude_plugin'
+  | 'claude_app'
+  | 'claude_sdk'
+  | 'openai_sdk'
+  | 'gohttp'
+  | 'cliproxyapi'
+  | 'chat'
+  | 'hermes_agent'
+  | 'workbuddy'
+  | 'openclaw'
+  | 'cherry_studio'
+  | 'rikkahub'
+  | 'sub2api'
+  | 'opencode'
+  | 'minis'
+  | 'trae'
+  | 'cursor'
+  | 'windsurf'
+  | 'cline'
+  | 'roo_code'
+  | 'continue'
+  | 'zed'
+  | 'copilot'
+  | 'codex_vscode'
+  | 'codex_browser'
+  | 'gemini_cli'
+  | 'perplexity'
+  | 'poe'
+  | 'openrouter'
+  | 'groq'
+  | 'ollama'
+  | 'kimi'
+  | 'qwen'
+  | 'doubao'
+  | 'zhipu'
+  | 'deepseek'
+  | 'chatgpt'
+  | 'http_client'
+
+// Locality hint resolved from the client IP by the backend GeoIP lookup
+// (DB-IP Lite, admin-only).
+export interface GeoInfo {
+  country_code?: string
+  country?: string
+  city?: string
+  asn?: number
+  asn_org?: string
+}
+
 export interface ChannelAffinityInfo {
   rule_name?: string
   selected_group?: string
@@ -141,6 +198,11 @@ export interface LogOtherData {
       original: number
       clamped: number
     }
+    // Locality hint resolved from the client IP (GeoIP). Admin-only.
+    geo?: GeoInfo
+    // Client fingerprint hint (UA/header profile). Admin-only, nested under
+    // admin_info so user-facing paths strip it with the whole object.
+    client_profile?: ClientProfile
   }
   // Language-independent operation descriptor (audit/login logs).
   // Frontend renders localized content from action + params via i18n templates.
@@ -194,6 +256,7 @@ export interface LogOtherData {
   expr_b64?: string
   matched_tier?: string
   reasoning_effort?: string
+  input_tokens_total?: number
   image?: boolean
   image_ratio?: number
   image_output?: number

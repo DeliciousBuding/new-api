@@ -295,6 +295,94 @@ export interface TieredBillingSummary {
 }
 
 /**
+ * Display labels for client_profile values produced by the backend
+ * DetectClientProfile (service/log_info_generate.go). Unknown values fall
+ * back to the raw id.
+ */
+export const CLIENT_PROFILE_LABELS: Record<string, string> = {
+  codex_cli: 'Codex CLI',
+  codex_desktop: 'Codex Desktop',
+  codex_app: 'Codex App',
+  claude_cli: 'Claude CLI',
+  claude_desktop: 'Claude Desktop',
+  claude_plugin: 'Claude Plugin',
+  claude_app: 'Claude App',
+  claude_sdk: 'Claude SDK',
+  openai_sdk: 'OpenAI SDK',
+  gohttp: 'Go HTTP',
+  cliproxyapi: 'CLIProxyAPI',
+  chat: 'Chat',
+  hermes_agent: 'Hermes Agent',
+  workbuddy: 'WorkBuddy',
+  openclaw: 'OpenClaw',
+  cherry_studio: 'Cherry Studio',
+  rikkahub: 'RikkaHub',
+  sub2api: 'Sub2API',
+  opencode: 'OpenCode',
+  minis: 'Minis',
+  trae: 'Trae',
+  cursor: 'Cursor',
+  windsurf: 'Windsurf',
+  cline: 'Cline',
+  roo_code: 'Roo Code',
+  continue: 'Continue',
+  zed: 'Zed',
+  copilot: 'Copilot',
+  codex_vscode: 'Codex VS Code',
+  codex_browser: 'Codex Browser',
+  gemini_cli: 'Gemini CLI',
+  perplexity: 'Perplexity',
+  poe: 'Poe',
+  openrouter: 'OpenRouter',
+  groq: 'Groq',
+  ollama: 'Ollama',
+  kimi: 'Kimi',
+  qwen: 'Qwen',
+  doubao: 'Doubao',
+  zhipu: 'Zhipu',
+  deepseek: 'DeepSeek',
+  chatgpt: 'ChatGPT',
+  http_client: 'HTTP Client',
+}
+
+export function clientProfileLabel(profile: string | undefined): string {
+  if (!profile) return ''
+  return CLIENT_PROFILE_LABELS[profile] ?? profile
+}
+
+/**
+ * Cache-read ratio (cache hits as a share of total input).
+ * Denominator rule:
+ * - `input_tokens_total` (OpenAI-compatible paths that provide it) is used
+ *   as-is — it already includes cache reads.
+ * - Claude-format paths (`claudeFormat`) report cache reads and cache creation
+ *   separately (DeepSeek's Anthropic-compatible endpoint returns input_tokens
+ *   excluding both, verified against production samples), so the denominator
+ *   is read + write + fresh input.
+ * - Other OpenAI-compatible paths: `prompt_tokens` already includes cache
+ *   reads, so the denominator is prompt_tokens — adding cache again would
+ *   double-count and under-report (e.g. cache=33408/prompt=33409 would show
+ *   ~50% instead of ~100%).
+ * Returns null when there is nothing to show.
+ */
+export function computeCacheRate(
+  cacheRead: number,
+  promptTokens: number,
+  inputTokensTotal?: number,
+  claudeFormat?: boolean,
+  cacheCreationTokens = 0
+): number | null {
+  if (cacheRead <= 0) return null
+  const total =
+    inputTokensTotal ??
+    (claudeFormat
+      ? cacheRead + cacheCreationTokens + promptTokens
+      : promptTokens)
+  if (total <= 0) return null
+  return Math.min(100, Math.round((cacheRead / total) * 100))
+}
+
+/**
  * Whether the request payload reports any cache-related token usage. Used to
  * suppress cache pricing rows from the tiered breakdown when the request did
  * not exercise the cache path.

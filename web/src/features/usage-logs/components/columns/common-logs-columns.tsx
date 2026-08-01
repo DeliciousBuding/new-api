@@ -43,6 +43,7 @@ import { cn } from '@/lib/utils'
 import { LOG_TYPE_ALL_VALUE } from '../../constants'
 import type { UsageLog } from '../../data/schema'
 import {
+  computeCacheRate,
   formatModelName,
   getTieredBillingSummary,
   hasAnyCacheTokens,
@@ -57,7 +58,9 @@ import {
   isPerCallBilling,
 } from '../../lib/utils'
 import type { LogOtherData } from '../../types'
+import { ClientProfileBadge } from '../client-profile-badge'
 import { DetailsDialog } from '../dialogs/details-dialog'
+import { IpGeoBadge } from '../ip-geo-badge'
 import { LogCostDisplay } from '../log-cost-display'
 import { ModelBadge } from '../model-badge'
 import { TimingMetricsCell, StreamTpsCell } from '../timing-metrics-cell'
@@ -531,6 +534,29 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
             </button>
           )
         },
+      },
+      {
+        id: 'ip',
+        header: t('IP Address'),
+        accessorKey: 'ip',
+        cell: function IpCell({ row }) {
+          const ip = row.original.ip
+          if (!ip) return null
+          const other = parseLogOther(row.original.other)
+          return <IpGeoBadge ip={ip} geo={other?.admin_info?.geo} />
+        },
+      },
+      {
+        id: 'client',
+        header: t('Client'),
+        accessorFn: (row) =>
+          parseLogOther(row.other)?.admin_info?.client_profile,
+        cell: ({ row }) => {
+          const profile = parseLogOther(row.original.other)?.admin_info
+            ?.client_profile
+          if (!profile) return null
+          return <ClientProfileBadge profile={profile} />
+        },
       }
     )
   }
@@ -618,6 +644,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
       },
       meta: { mobileTitle: true },
     },
+
     {
       accessorKey: 'is_stream',
       header: t('Stream'),
@@ -664,6 +691,17 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
         const cacheWriteTokens = hasSplitCache
           ? cacheWrite5m + cacheWrite1h
           : other?.cache_creation_tokens || 0
+        // Cache ratio denominator: upstream-provided total input
+        // (OpenAI-compatible paths) when available; Claude-format paths
+        // report cache reads separately so the denominator is cache + input;
+        // other OpenAI-compatible paths count prompt_tokens (includes cache).
+        const cacheRate = computeCacheRate(
+          cacheReadTokens,
+          promptTokens,
+          other?.input_tokens_total,
+          other?.claude,
+          cacheWriteTokens
+        )
 
         return (
           <div className='flex flex-col gap-0.5'>
@@ -672,18 +710,66 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
               {completionTokens.toLocaleString()}
             </span>
             {(cacheReadTokens > 0 || cacheWriteTokens > 0) && (
-              <div className='flex items-center gap-1 text-[11px]'>
-                {cacheReadTokens > 0 && (
-                  <span className='text-muted-foreground/60'>
-                    {t('Cache')}↓ {cacheReadTokens.toLocaleString()}
-                  </span>
-                )}
-                {cacheWriteTokens > 0 && (
-                  <span className='text-muted-foreground/60'>
-                    ↑ {cacheWriteTokens.toLocaleString()}
-                  </span>
-                )}
-              </div>
+              <TooltipProvider delay={300}>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <span className='flex items-center gap-1 text-[11px]' />
+                    }
+                  >
+                    {cacheReadTokens > 0 && (
+                      <span className='text-muted-foreground/60'>
+                        {t('Cache')}↓ {cacheReadTokens.toLocaleString()}
+                        {cacheRate !== null && (
+                          <span className='text-muted-foreground/40'>
+                            {' '}
+                            ({cacheRate}%)
+                          </span>
+                        )}
+                      </span>
+                    )}
+                    {cacheWriteTokens > 0 && (
+                      <span className='text-muted-foreground/60'>
+                        ↑ {cacheWriteTokens.toLocaleString()}
+                      </span>
+                    )}
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <div className='space-y-1'>
+                      {cacheReadTokens > 0 && (
+                        <div className='flex items-center justify-between gap-4'>
+                          <span className='text-muted-foreground text-xs'>
+                            {t('Cache Read')}
+                          </span>
+                          <span className='font-mono text-xs tabular-nums'>
+                            {cacheReadTokens.toLocaleString()}
+                          </span>
+                        </div>
+                      )}
+                      {cacheWriteTokens > 0 && (
+                        <div className='flex items-center justify-between gap-4'>
+                          <span className='text-muted-foreground text-xs'>
+                            {t('Cache Write')}
+                          </span>
+                          <span className='font-mono text-xs tabular-nums'>
+                            {cacheWriteTokens.toLocaleString()}
+                          </span>
+                        </div>
+                      )}
+                      {cacheRate !== null && (
+                        <div className='flex items-center justify-between gap-4'>
+                          <span className='text-muted-foreground text-xs'>
+                            {t('Cache Rate')}
+                          </span>
+                          <span className='font-mono text-xs tabular-nums'>
+                            {cacheRate}%
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             )}
           </div>
         )

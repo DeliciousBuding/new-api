@@ -44,7 +44,6 @@ import {
   Headphones,
   Monitor,
   Cloud,
-  Globe,
   ShieldCheck,
   UserCog,
   Info,
@@ -75,6 +74,7 @@ import {
   getFirstResponseTimeColor,
   getResponseTimeColor,
   renderAuditContent,
+  computeCacheRate,
 } from '../../lib/format'
 import {
   getLogTypeConfig,
@@ -82,6 +82,8 @@ import {
   isTimingLogType,
 } from '../../lib/utils'
 import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
+import { ClientProfileBadge } from '../client-profile-badge'
+import { IpGeoBadge } from '../ip-geo-badge'
 
 // Maps a channel-update changed-field token (as recorded by the backend audit)
 // to its i18n label key for display in the audit details.
@@ -411,6 +413,15 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
   const completionTokens = log.completion_tokens || 0
   const cacheRead = other.cache_tokens || 0
   const cacheWrite = other.cache_creation_tokens || 0
+  // Same denominator rule as the list column: upstream total input when
+  // available, Claude-format paths use cache + input, others use prompt_tokens.
+  const cacheRate = computeCacheRate(
+    cacheRead,
+    promptTokens,
+    other.input_tokens_total,
+    other.claude,
+    cacheWrite
+  )
   const cacheWrite5m = other.cache_creation_tokens_5m || 0
   const cacheWrite1h = other.cache_creation_tokens_1h || 0
   const hasTokens = promptTokens > 0 || completionTokens > 0
@@ -428,7 +439,10 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
   if (cacheRead > 0) {
     rows.push({
       label: t('Cache Read'),
-      value: cacheRead.toLocaleString(),
+      value:
+        cacheRate !== null
+          ? `${cacheRead.toLocaleString()} (${cacheRate}%)`
+          : cacheRead.toLocaleString(),
     })
   }
 
@@ -496,8 +510,10 @@ export function DetailsDialog(props: DetailsDialogProps) {
     !!other?.expr_b64
   const hasAudioTokens = other?.ws || other?.audio
   const showTiming = isTimingLogType(props.log.type)
+  // IP is an audit element: admin-only, regardless of log type. Timing logs
+  // (type 2/5) are visible to regular users, so they must not leak the IP.
   const showAdminIp =
-    !!props.log.ip && (showTiming || (props.isAdmin && isTopup))
+    props.isAdmin && !!props.log.ip && (showTiming || isTopup || isConsume)
   const adminInfo = other?.admin_info
   const topupAuditFields =
     isTopup && props.isAdmin && adminInfo
@@ -690,16 +706,28 @@ export function DetailsDialog(props: DetailsDialogProps) {
             />
           )}
 
+          {props.isAdmin && other?.admin_info?.client_profile && (
+            <DetailRow
+              label={t('Client')}
+              value={
+                <ClientProfileBadge
+                  profile={other.admin_info.client_profile}
+                  compact
+                />
+              }
+            />
+          )}
+
           {showAdminIp && (
             <DetailRow
               label={t('IP Address')}
               value={
-                <span className='flex items-center gap-1'>
-                  <Globe className='size-3 text-amber-500' aria-hidden='true' />
-                  {props.log.ip}
-                </span>
+                <IpGeoBadge
+                  ip={props.log.ip}
+                  geo={other?.admin_info?.geo}
+                  compact
+                />
               }
-              mono
             />
           )}
 
