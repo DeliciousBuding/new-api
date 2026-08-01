@@ -37,6 +37,7 @@ import { formatQuota } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 import { API_KEY_STATUSES } from '../constants'
+import type { TokenCacheStat } from '../api'
 import type { ApiKey } from '../types'
 import { ApiKeyTimestampCell } from './api-key-timestamp-cell'
 import {
@@ -73,7 +74,10 @@ function useGroupRatios(): Record<string, number> {
   return data ?? {}
 }
 
-export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
+export function useApiKeysColumns(
+  now: number,
+  cacheStats?: Map<string, TokenCacheStat>
+): ColumnDef<ApiKey>[] {
   const { t, i18n } = useTranslation()
   const groupRatios = useGroupRatios()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
@@ -188,6 +192,39 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
         )
       },
       size: 170,
+    },
+    {
+      id: 'cache_rate',
+      header: t('Cache Rate'),
+      cell: ({ row }) => {
+        const stat = cacheStats?.get(row.original.name)
+        if (!stat || stat.prompt_tokens + stat.cache_read_tokens === 0) {
+          return <span className='text-muted-foreground text-xs'>-</span>
+        }
+        return (
+          <Tooltip>
+            <TooltipTrigger render={<span className='inline-flex items-center' />}>
+              <span className='font-medium text-xs tabular-nums'>
+                {stat.cache_rate.toFixed(1)}%
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              <div className='space-y-1 text-xs'>
+                <div>
+                  {t('Cache Read')}: {stat.cache_read_tokens.toLocaleString()}
+                </div>
+                <div>
+                  {t('Cache Write')}: {stat.cache_creation_tokens.toLocaleString()}
+                </div>
+                <div>
+                  {t('Input Tokens')}: {stat.prompt_tokens.toLocaleString()}
+                </div>
+              </div>
+            </TooltipContent>
+          </Tooltip>
+        )
+      },
+      size: 110,
     },
     {
       accessorKey: 'group',

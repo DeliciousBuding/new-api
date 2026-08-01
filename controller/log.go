@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 
@@ -92,6 +93,59 @@ func GetLogByKey(c *gin.Context) {
 		"success": true,
 		"message": "",
 		"data":    logs,
+	})
+}
+
+type cacheStatBatchRequest struct {
+	TokenNames     []string `json:"token_names"`
+	StartTimestamp int64    `json:"start_timestamp"`
+	EndTimestamp   int64    `json:"end_timestamp"`
+}
+
+// GetLogsCacheStatBatch 批量返回多个 token 在窗口内的缓存用量聚合
+// （keys 页逐 key 缓存率展示）。默认窗口为最近 7 天；空 token 列表返回空。
+func GetLogsCacheStatBatch(c *gin.Context) {
+	var req cacheStatBatchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	end := req.EndTimestamp
+	if end == 0 {
+		end = common.GetTimestamp()
+	}
+	start := req.StartTimestamp
+	if start == 0 {
+		start = end - 7*24*3600
+	}
+	stats, err := model.SumCacheUsageByTokenNames(req.TokenNames, start, end)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	items := make([]map[string]interface{}, 0, len(req.TokenNames))
+	for _, name := range req.TokenNames {
+		st, ok := stats[name]
+		if !ok {
+			continue
+		}
+		rate := 0.0
+		total := st.CacheReadTokens + st.PromptTokens
+		if total > 0 {
+			rate = float64(st.CacheReadTokens) / float64(total) * 100
+		}
+		items = append(items, map[string]interface{}{
+			"token_name":            st.TokenName,
+			"prompt_tokens":         st.PromptTokens,
+			"cache_read_tokens":     st.CacheReadTokens,
+			"cache_creation_tokens": st.CacheCreationTokens,
+			"cache_rate":            math.Round(rate*10) / 10,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    gin.H{"items": items},
 	})
 }
 

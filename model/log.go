@@ -642,6 +642,57 @@ type Stat struct {
 	Tpm   int `json:"tpm"`
 }
 
+// CacheUsageStat 是单个 token 在窗口内的缓存用量聚合（缓存读取/创建/输入）。
+type CacheUsageStat struct {
+	TokenName           string `json:"token_name"`
+	PromptTokens        int64  `json:"prompt_tokens"`
+	CacheReadTokens     int64  `json:"cache_read_tokens"`
+	CacheCreationTokens int64  `json:"cache_creation_tokens"`
+}
+
+// cacheJsonExtractExpr 返回按日志数据库类型提取 other JSON 字段的 SQL 表达式。
+// 缓存字段（cache_tokens / cache_creation_tokens）存在 other JSON 中而非独立列。
+func cacheJsonExtractExpr(field string) string {
+	switch {
+	case common.UsingLogDatabase(common.DatabaseTypePostgreSQL):
+		return "COALESCE((other::jsonb->>'" + field + "')::bigint, 0)"
+	case common.UsingLogDatabase(common.DatabaseTypeMySQL):
+		return "COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(other, '$." + field + "')) AS SIGNED), 0)"
+	case common.UsingLogDatabase(common.DatabaseTypeClickHouse):
+		return "JSONExtractInt(other, '" + field + "')"
+	default: // SQLite (built-in JSON1 extension)
+		return "COALESCE(CAST(json_extract(other, '$." + field + "') AS INTEGER), 0)"
+	}
+}
+
+// SumCacheUsageByTokenNames 聚合多个 token 在时间窗口内的缓存用量。
+// 按 token_name 走索引过滤后再做 JSON 提取，单 token 量级下为毫秒级；
+// 只统计消费日志（type=2）。
+func SumCacheUsageByTokenNames(tokenNames []string, startTimestamp int64, endTimestamp int64) (map[string]CacheUsageStat, error) {
+	stats := make(map[string]CacheUsageStat)
+	if len(tokenNames) == 0 {
+		return stats, nil
+	}
+	rows := []CacheUsageStat{}
+	err := LOG_DB.Table("logs").
+		Select("token_name, COALESCE(SUM(prompt_tokens), 0) prompt_tokens, "+
+			"SUM("+cacheJsonExtractExpr("cache_tokens")+") cache_read_tokens, "+
+			"SUM("+cacheJsonExtractExpr("cache_creation_tokens")+") cache_creation_tokens").
+		Where("type = ?", LogTypeConsume).
+		Where("token_name IN ?", tokenNames).
+		Where("created_at >= ?", startTimestamp).
+		Where("created_at <= ?", endTimestamp).
+		Group("token_name").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		stats[r.TokenName] = r
+	}
+	return stats, nil
+}
+
 func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {
 	tx := LOG_DB.Table("logs").Select("COALESCE(sum(quota), 0) quota")
 
