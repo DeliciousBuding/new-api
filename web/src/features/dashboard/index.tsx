@@ -48,6 +48,7 @@ import {
 } from './lib'
 import {
   type DashboardSectionId,
+  ADMIN_ONLY_SECTIONS,
   DASHBOARD_DEFAULT_SECTION,
   DASHBOARD_SECTION_IDS,
 } from './section-registry'
@@ -110,6 +111,12 @@ const LazyUserCharts = lazy(() =>
 const LazyFlowCharts = lazy(() =>
   import('./components/flow/flow-charts').then((m) => ({
     default: m.FlowCharts,
+  }))
+)
+
+const LazyCacheEfficiencyChart = lazy(() =>
+  import('./components/cache/cache-efficiency-chart').then((m) => ({
+    default: m.CacheEfficiencyChart,
   }))
 )
 
@@ -186,6 +193,9 @@ const SECTION_META: Record<DashboardSectionId, { titleKey: string }> = {
   flow: {
     titleKey: 'Flow',
   },
+  cache: {
+    titleKey: 'Cache Efficiency',
+  },
   users: {
     titleKey: 'User Analytics',
   },
@@ -248,7 +258,9 @@ export function Dashboard() {
   const visibleSections = useMemo(
     () =>
       DASHBOARD_SECTION_IDS.filter(
-        (section) => section !== 'overview' && (section !== 'users' || isAdmin)
+        (section) =>
+          section !== 'overview' &&
+          (isAdmin || !ADMIN_ONLY_SECTIONS.has(section))
       ),
     [isAdmin]
   )
@@ -315,7 +327,18 @@ export function Dashboard() {
         />
       </>
     ) : null
-  const sectionActions = modelActions ?? flowActions
+  const cacheActions =
+    activeSection === 'cache' ? (
+      <ModelsFilter
+        preferences={chartPreferences}
+        currentFilters={modelFilters}
+        onFilterChange={handleFilterChange}
+        onReset={handleResetFilters}
+        titleKey='Cache Filters'
+        descriptionKey='Filter the cache efficiency view by time range.'
+      />
+    ) : null
+  const sectionActions = modelActions ?? flowActions ?? cacheActions
 
   return (
     <SectionPageLayout>
@@ -407,6 +430,13 @@ export function Dashboard() {
                   filters={modelFilters}
                   sensitiveVisible={flowSensitiveVisible}
                 />
+              </Suspense>
+            </FadeIn>
+          )}
+          {activeSection === 'cache' && (
+            <FadeIn>
+              <Suspense fallback={<ModelChartsFallback />}>
+                <LazyCacheEfficiencyChart filters={modelFilters} />
               </Suspense>
             </FadeIn>
           )}
