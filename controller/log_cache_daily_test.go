@@ -27,6 +27,7 @@ func setupCacheDailyTestDB(t *testing.T) {
 	// 日桶 = created_at/86400：172800→桶 2，173000→桶 2，1000→桶 0
 	require.NoError(t, db.Create(&model.Log{
 		Type:         model.LogTypeConsume,
+		TokenId:      11,
 		TokenName:    "k1",
 		PromptTokens: 1000,
 		Other:        `{"cache_tokens":9000,"cache_creation_tokens":500}`,
@@ -34,6 +35,7 @@ func setupCacheDailyTestDB(t *testing.T) {
 	}).Error)
 	require.NoError(t, db.Create(&model.Log{
 		Type:         model.LogTypeConsume,
+		TokenId:      22,
 		TokenName:    "k2",
 		PromptTokens: 500,
 		Other:        `{"cache_tokens":1500,"cache_creation_tokens":100}`,
@@ -42,6 +44,7 @@ func setupCacheDailyTestDB(t *testing.T) {
 	// 更早的桶（超出请求窗口）
 	require.NoError(t, db.Create(&model.Log{
 		Type:         model.LogTypeConsume,
+		TokenId:      11,
 		TokenName:    "k1",
 		PromptTokens: 100,
 		Other:        `{"cache_tokens":100,"cache_creation_tokens":10}`,
@@ -50,6 +53,7 @@ func setupCacheDailyTestDB(t *testing.T) {
 	// 错误日志（type=LogTypeError）不计入
 	require.NoError(t, db.Create(&model.Log{
 		Type:         model.LogTypeError,
+		TokenId:      11,
 		TokenName:    "k1",
 		PromptTokens: 999,
 		Other:        `{"cache_tokens":9999,"cache_creation_tokens":999}`,
@@ -91,10 +95,10 @@ func TestGetLogsCacheStatDailyGroupsByDay(t *testing.T) {
 	require.Equal(t, 100.0, day.CacheRate)
 }
 
-func TestGetLogsCacheStatDailyFiltersTokenNames(t *testing.T) {
+func TestGetLogsCacheStatDailyFiltersTokenIds(t *testing.T) {
 	setupCacheDailyTestDB(t)
 
-	payload := postCacheDaily(t, `{"token_names":["k2"],"start_timestamp":100000,"end_timestamp":200000}`)
+	payload := postCacheDaily(t, `{"token_ids":[22],"start_timestamp":100000,"end_timestamp":200000}`)
 
 	require.Len(t, payload.Data.Items, 1)
 	item := payload.Data.Items[0]

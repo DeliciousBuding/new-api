@@ -76,7 +76,7 @@ function useGroupRatios(): Record<string, number> {
 
 export function useApiKeysColumns(
   now: number,
-  cacheStats?: Map<string, TokenCacheStat>
+  cacheStats?: Map<number, TokenCacheStat>
 ): ColumnDef<ApiKey>[] {
   const { t, i18n } = useTranslation()
   const groupRatios = useGroupRatios()
@@ -197,7 +197,7 @@ export function useApiKeysColumns(
       id: 'cache_rate',
       header: t('Cache Rate'),
       cell: ({ row }) => {
-        const stat = cacheStats?.get(row.original.name)
+        const stat = cacheStats?.get(row.original.id)
         if (!stat || stat.prompt_tokens + stat.cache_read_tokens === 0) {
           return <span className='text-muted-foreground text-xs'>-</span>
         }

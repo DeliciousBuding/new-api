@@ -33,6 +33,7 @@ import type {
 
 // Per-token cache usage aggregate for the keys page (Cache Rate column).
 export interface TokenCacheStat {
+  token_id: number
   token_name: string
   prompt_tokens: number
   cache_read_tokens: number
@@ -40,12 +41,10 @@ export interface TokenCacheStat {
   cache_rate: number
 }
 
-// Batch cache usage stats for a set of token names (default window: 7 days).
-export async function getCacheStats(
-  tokenNames: string[]
-): Promise<TokenCacheStat[]> {
+// Batch cache usage stats for a set of token ids (default window: 7 days).
+export async function getCacheStats(tokenIds: number[]): Promise<TokenCacheStat[]> {
   const res = await api.post('/api/log/stat/cache/batch', {
-    token_names: tokenNames,
+    token_ids: tokenIds,
   })
   return res.data?.data?.items ?? []
 }

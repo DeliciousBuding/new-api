@@ -97,9 +97,9 @@ func GetLogByKey(c *gin.Context) {
 }
 
 type cacheStatBatchRequest struct {
-	TokenNames     []string `json:"token_names"`
-	StartTimestamp int64    `json:"start_timestamp"`
-	EndTimestamp   int64    `json:"end_timestamp"`
+	TokenIds       []int64 `json:"token_ids"`
+	StartTimestamp int64   `json:"start_timestamp"`
+	EndTimestamp   int64   `json:"end_timestamp"`
 }
 
 // cacheStatMaxWindowSeconds 限制缓存聚合窗口最大为 90 天，
@@ -108,6 +108,7 @@ const cacheStatMaxWindowSeconds = 90 * 24 * 3600
 
 // cacheStatItem 是单个 token 的缓存用量响应（含缓存命中率，一位小数）。
 type cacheStatItem struct {
+	TokenId             int64   `json:"token_id"`
 	TokenName           string  `json:"token_name"`
 	PromptTokens        int64   `json:"prompt_tokens"`
 	CacheReadTokens     int64   `json:"cache_read_tokens"`
@@ -154,18 +155,19 @@ func GetLogsCacheStatBatch(c *gin.Context) {
 		common.ApiErrorMsg(c, "invalid time range")
 		return
 	}
-	stats, err := model.SumCacheUsageByTokenNames(req.TokenNames, start, end)
+	stats, err := model.SumCacheUsageByTokenIds(req.TokenIds, start, end)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	items := make([]cacheStatItem, 0, len(req.TokenNames))
-	for _, name := range req.TokenNames {
-		st, ok := stats[name]
+	items := make([]cacheStatItem, 0, len(req.TokenIds))
+	for _, id := range req.TokenIds {
+		st, ok := stats[id]
 		if !ok {
 			continue
 		}
 		items = append(items, cacheStatItem{
+			TokenId:             st.TokenId,
 			TokenName:           st.TokenName,
 			PromptTokens:        st.PromptTokens,
 			CacheReadTokens:     st.CacheReadTokens,
@@ -209,7 +211,7 @@ func GetLogsCacheStatDaily(c *gin.Context) {
 		common.ApiErrorMsg(c, "invalid time range")
 		return
 	}
-	rows, err := model.SumCacheUsageDaily(req.TokenNames, start, end)
+	rows, err := model.SumCacheUsageDaily(req.TokenIds, start, end)
 	if err != nil {
 		common.ApiError(c, err)
 		return

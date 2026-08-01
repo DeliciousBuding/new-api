@@ -644,6 +644,7 @@ type Stat struct {
 
 // CacheUsageStat 是单个 token 在窗口内的缓存用量聚合（缓存读取/创建/输入）。
 type CacheUsageStat struct {
+	TokenId             int64  `json:"token_id"`
 	TokenName           string `json:"token_name"`
 	PromptTokens        int64  `json:"prompt_tokens"`
 	CacheReadTokens     int64  `json:"cache_read_tokens"`
@@ -665,30 +666,31 @@ func cacheJsonExtractExpr(field string) string {
 	}
 }
 
-// SumCacheUsageByTokenNames 聚合多个 token 在时间窗口内的缓存用量。
-// 按 token_name 走索引过滤后再做 JSON 提取，单 token 量级下为毫秒级；
+// SumCacheUsageByTokenIds 聚合多个 token id 在时间窗口内的缓存用量。
+// 按 token_id 聚合（Log 表的 token_id 索引列）——token_name 跨用户可重复，
+// 按名字聚合会把不同用户的同名 key 数据合并。
 // 只统计消费日志（type=2）。
-func SumCacheUsageByTokenNames(tokenNames []string, startTimestamp int64, endTimestamp int64) (map[string]CacheUsageStat, error) {
-	stats := make(map[string]CacheUsageStat)
-	if len(tokenNames) == 0 {
+func SumCacheUsageByTokenIds(tokenIds []int64, startTimestamp int64, endTimestamp int64) (map[int64]CacheUsageStat, error) {
+	stats := make(map[int64]CacheUsageStat)
+	if len(tokenIds) == 0 {
 		return stats, nil
 	}
 	rows := []CacheUsageStat{}
 	err := LOG_DB.Table("logs").
-		Select("token_name, COALESCE(SUM(prompt_tokens), 0) prompt_tokens, "+
+		Select("token_id, token_name, COALESCE(SUM(prompt_tokens), 0) prompt_tokens, "+
 			"SUM("+cacheJsonExtractExpr("cache_tokens")+") cache_read_tokens, "+
 			"SUM("+cacheJsonExtractExpr("cache_creation_tokens")+") cache_creation_tokens").
 		Where("type = ?", LogTypeConsume).
-		Where("token_name IN ?", tokenNames).
+		Where("token_id IN ?", tokenIds).
 		Where("created_at >= ?", startTimestamp).
 		Where("created_at <= ?", endTimestamp).
-		Group("token_name").
+		Group("token_id, token_name").
 		Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range rows {
-		stats[r.TokenName] = r
+		stats[r.TokenId] = r
 	}
 	return stats, nil
 }
@@ -717,8 +719,8 @@ func cacheDayBucketExpr() string {
 
 // SumCacheUsageDaily 聚合窗口内按天分桶的缓存用量（dashboard 缓存效率趋势）。
 // 天桶用 Unix 秒整除 86400（UTC 日边界，四库一致），前端按本地时区渲染标签；
-// 只统计消费日志（type=2）；空 tokenNames 表示全站聚合。
-func SumCacheUsageDaily(tokenNames []string, startTimestamp int64, endTimestamp int64) ([]CacheUsageDailyStat, error) {
+// 只统计消费日志（type=2）；空 tokenIds 表示全站聚合。
+func SumCacheUsageDaily(tokenIds []int64, startTimestamp int64, endTimestamp int64) ([]CacheUsageDailyStat, error) {
 	query := LOG_DB.Table("logs").
 		Select(cacheDayBucketExpr()+" AS day, COALESCE(SUM(prompt_tokens), 0) prompt_tokens, "+
 			"SUM("+cacheJsonExtractExpr("cache_tokens")+") cache_read_tokens, "+
@@ -726,8 +728,8 @@ func SumCacheUsageDaily(tokenNames []string, startTimestamp int64, endTimestamp 
 		Where("type = ?", LogTypeConsume).
 		Where("created_at >= ?", startTimestamp).
 		Where("created_at <= ?", endTimestamp)
-	if len(tokenNames) > 0 {
-		query = query.Where("token_name IN ?", tokenNames)
+	if len(tokenIds) > 0 {
+		query = query.Where("token_id IN ?", tokenIds)
 	}
 	rows := []CacheUsageDailyStat{}
 	err := query.Group("day").Scan(&rows).Error
