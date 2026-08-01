@@ -2,7 +2,7 @@ name: Check upstream release
 
 on:
   schedule:
-    - cron: '37 4 * * 1'
+    - cron: "37 4 * * 1"
   workflow_dispatch:
 
 concurrency:
@@ -22,7 +22,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Compare fixed base with official upstream
+      - name: Compare fork with official upstream
         shell: bash
         run: |
           set -euo pipefail
@@ -40,7 +40,12 @@ jobs:
           git fetch --quiet official '+refs/heads/main:refs/remotes/official/main'
           git fetch --quiet official '+refs/tags/*:refs/remotes/official/tags/*'
           MAIN_HEAD=$(git rev-parse refs/remotes/official/main)
-          MAIN_BEHIND=$(git rev-list --count "$BASE..$MAIN_HEAD" 2>/dev/null || echo '?')
+          RAW_BASE_BEHIND=$(git rev-list --count "$BASE..$MAIN_HEAD")
+          read -r FORK_UNIQUE UPSTREAM_GRAPH_ONLY < <(
+            git rev-list --left-right --count HEAD..."$MAIN_HEAD"
+          )
+          SEMANTIC_MISSING=$(git cherry HEAD "$MAIN_HEAD" | awk '$1 == "+" { count++ } END { print count+0 }')
+          PATCH_EQUIVALENT=$((UPSTREAM_GRAPH_ONLY - SEMANTIC_MISSING))
           mapfile -t TAGS < <(
             git for-each-ref --sort=-version:refname \
               --format='%(refname:strip=4)' refs/remotes/official/tags
@@ -61,12 +66,17 @@ jobs:
             echo
             echo "- fixed base: \`$BASE\`"
             echo "- official main head: \`$MAIN_HEAD\`"
-            echo "- commits behind official main: \`$MAIN_BEHIND\`"
+            echo "- raw commits after fixed base: \`$RAW_BASE_BEHIND\`"
+            echo "- graph-only upstream commits: \`$UPSTREAM_GRAPH_ONLY\`"
+            echo "- patch-equivalent replays already present: \`$PATCH_EQUIVALENT\`"
+            echo "- semantic patches missing from fork: \`$SEMANTIC_MISSING\`"
+            echo "- fork-only topic commits: \`$FORK_UNIQUE\`"
             echo "- latest official tag: \`${LATEST_TAG:-none}\`"
             echo "- latest official commit: \`${LATEST_TAG_SHA:-none}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$BASE" != "$MAIN_HEAD" ]; then
-            echo '::warning::Official main has moved ahead of the fixed base; rebuild from the new base and replay the topic commits.'
+          if [ "$SEMANTIC_MISSING" -gt 0 ]; then
+            echo '::warning::Official main contains patches that are not present in the fork; review and replay them.'
+          elif [ "$BASE" != "$MAIN_HEAD" ]; then
+            echo '::notice::Fixed base is behind official main, but all upstream patches are already replayed. Rebase at the next clean rebuild.'
           fi
-

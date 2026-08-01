@@ -3,11 +3,11 @@ name: CD - TokenDance Gateway
 on:
   push:
     tags:
-      - 'v*-td-*'
+      - "v*-td-*"
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing release tag to build (for example v1.0.0-rc.22-td-20260727)'
+        description: "Existing release tag to build (for example v1.0.0-rc.22-td-20260727)"
         required: true
         type: string
 
@@ -57,21 +57,6 @@ jobs:
           printf '%s\n' "$TAG" > VERSION
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Refuse to rebuild an already published tag
-        if: github.event_name == 'workflow_dispatch'
-        shell: bash
-        run: |
-          set -euo pipefail
-          TAG="${{ github.event.inputs.tag }}"
-          # Candidate images are immutable by convention; a manual rebuild of a
-          # published tag would silently move its digest and break the
-          # "immutable candidate" guarantee that rollback pins rely on.
-          if docker buildx imagetools inspect "$IMAGE_NAME:$TAG" >/dev/null 2>&1; then
-            echo "::error::Image '$IMAGE_NAME:$TAG' already exists. Use a new tag for rebuilt candidates."
-            exit 1
-          fi
-          echo "::notice::Tag '$TAG' has no published image yet; proceeding."
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
@@ -81,6 +66,19 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse to rebuild an already published tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.tag }}"
+          # Candidate tags are immutable. This guard applies to both tag pushes
+          # and manual dispatches so rerunning either path cannot move a digest.
+          if docker buildx imagetools inspect "$IMAGE_NAME:$TAG" >/dev/null 2>&1; then
+            echo "::error::Image '$IMAGE_NAME:$TAG' already exists. Use a new tag for rebuilt candidates."
+            exit 1
+          fi
+          echo "::notice::Tag '$TAG' has no published image yet; proceeding."
 
       - name: Extract image metadata
         id: meta
