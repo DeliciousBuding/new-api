@@ -225,6 +225,13 @@ func SetApiRouter(router *gin.Engine) {
 			performanceRoute.GET("/logs", controller.GetLogFiles)
 			performanceRoute.DELETE("/logs", controller.CleanupLogFiles)
 		}
+		// Relay observer Root-only status: in-memory snapshot, no DB query.
+		// Admin and User receive 403 even when calling the route directly.
+		relayObserverRoute := apiRouter.Group("/relay-observer")
+		relayObserverRoute.Use(middleware.RootAuth())
+		{
+			relayObserverRoute.GET("/status", controller.GetRelayObserverStatus)
+		}
 		ratioSyncRoute := apiRouter.Group("/ratio_sync")
 		ratioSyncRoute.Use(middleware.RootAuth())
 		{
