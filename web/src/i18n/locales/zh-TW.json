@@ -687,6 +687,9 @@
     "Cache pricing": "緩存定價",
     "Cache ratio": "緩存倍率",
     "Cache Read": "緩存讀取",
+    "Cache Efficiency": "緩存效率",
+    "Cache Filters": "緩存篩選",
+    "Cache Rate": "緩存命中率",
     "Cache read price": "緩存讀取價格",
     "Cache repeated prompt prefixes for cheaper, faster reuse": "緩存重複的提示詞前綴，複用更快、更省錢",
     "Cache write": "緩存寫入",
@@ -1045,6 +1048,7 @@
     "Continue with GitHub": "使用 GitHub 繼續",
     "Continue with LinuxDO": "使用 LinuxDO 繼續",
     "Continue with OIDC": "使用 OIDC 繼續",
+    "Continue with TokenDance ID": "使用 TokenDance ID 繼續",
     "Continue with Telegram": "使用 Telegram 繼續",
     "Continue with WeChat": "使用 微信 繼續",
     "Contract review, compliance, summarisation": "合同審閱、合規與摘要",
@@ -1990,6 +1994,7 @@
     "Filter models by type, endpoint, vendor, group and tags": "按類型、端點、供應商、分組和標籤篩選模型",
     "Filter models...": "篩選模型...",
     "Filter the model analytics view by time range and user.": "按時間範圍和用戶篩選模型分析視圖。",
+    "Filter the cache efficiency view by time range.": "按時間範圍篩選緩存效率視圖。",
     "Filter the traffic flow view by time range and user.": "按時間範圍和用戶篩選分流圖視圖。",
     "Filter...": "篩選...",
     "Filters": "篩選器",
@@ -2883,6 +2888,7 @@
     "No containers": "無容器",
     "No content to copy": "沒有可複製的內容",
     "No custom OAuth providers configured yet.": "尚未設定自訂 OAuth 供應商。",
+    "No cache data available": "暫無緩存數據",
     "No data": "暫無數據",
     "No Data": "無數據",
     "No data available": "暫無數據",
@@ -3655,7 +3661,6 @@
     "Recommended": "推薦",
     "Recommended actions": "推薦操作",
     "Recommended to keep this high to avoid upstream throttling.": "建議保持此值較高，以避免上游限流。",
-    "Record IP Address": "記錄 IP 地址",
     "Record quota usage": "記錄配額使用量",
     "Recursion Strategy": "遞迴策略",
     "Recursive": "遞迴",
@@ -5227,6 +5232,9 @@
     "Zero retention": "零數據保留",
     "Zhipu": "智譜",
     "Zhipu V4": "智譜 V4",
-    "Zoom": "縮放"
+    "Zoom": "縮放",
+    "Record client IP addresses": "記錄客戶端 IP 地址",
+    "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.": "在每條消費與錯誤日誌中記錄客戶端來源 IP。關閉可縮小日誌體積。",
+    "Client": "客戶端"
   }
 }

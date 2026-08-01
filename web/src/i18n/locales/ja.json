@@ -687,6 +687,9 @@
     "Cache pricing": "キャッシュ料金",
     "Cache ratio": "キャッシュ倍率",
     "Cache Read": "キャッシュ読み取り",
+    "Cache Efficiency": "Cache Efficiency",
+    "Cache Filters": "Cache Filters",
+    "Cache Rate": "Cache Rate",
     "Cache read price": "キャッシュ読み取り価格",
     "Cache repeated prompt prefixes for cheaper, faster reuse": "繰り返しのプロンプト先頭部分をキャッシュし、低コスト・高速に再利用",
     "Cache write": "キャッシュ書き込み",
@@ -1045,6 +1048,7 @@
     "Continue with GitHub": "GitHub で続行",
     "Continue with LinuxDO": "LinuxDO で続行",
     "Continue with OIDC": "OIDC で続行",
+    "Continue with TokenDance ID": "TokenDance ID で続行",
     "Continue with Telegram": "Telegram で続行",
     "Continue with WeChat": "WeChat で続行",
     "Contract review, compliance, summarisation": "契約レビュー・コンプライアンス・要約",
@@ -1990,6 +1994,7 @@
     "Filter models by type, endpoint, vendor, group and tags": "タイプ、エンドポイント、ベンダー、グループ、タグでモデルをフィルタリング",
     "Filter models...": "モデルをフィルタリング...",
     "Filter the model analytics view by time range and user.": "時間範囲とユーザーでモデル分析ビューを絞り込みます。",
+    "Filter the cache efficiency view by time range.": "Filter the cache efficiency view by time range.",
     "Filter the traffic flow view by time range and user.": "時間範囲とユーザーでトラフィックフロー表示を絞り込みます。",
     "Filter...": "フィルター…",
     "Filters": "フィルター",
@@ -2883,6 +2888,7 @@
     "No containers": "コンテナがありません",
     "No content to copy": "コピーする内容がありません",
     "No custom OAuth providers configured yet.": "カスタムOAuthプロバイダーはまだ設定されていません。",
+    "No cache data available": "No cache data available",
     "No data": "データがありません",
     "No Data": "データなし",
     "No data available": "データがありません",
@@ -3655,7 +3661,6 @@
     "Recommended": "推奨",
     "Recommended actions": "おすすめの操作",
     "Recommended to keep this high to avoid upstream throttling.": "アップストリームのスロットリングを避けるため、これを高く保つことを推奨します。",
-    "Record IP Address": "IPアドレスを記録",
     "Record quota usage": "クォータ使用量を記録",
     "Recursion Strategy": "再帰戦略",
     "Recursive": "再帰",
@@ -5227,6 +5232,9 @@
     "Zero retention": "データ保持なし",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V 4",
-    "Zoom": "ズーム"
+    "Zoom": "ズーム",
+    "Record client IP addresses": "Record client IP addresses",
+    "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.": "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.",
+    "Client": "Client"
   }
 }

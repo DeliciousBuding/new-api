@@ -76,6 +76,9 @@ export const STATIC_I18N_KEYS = [
   'More...',
   'Less',
 
+  // TokenDance identity branding
+  'Continue with TokenDance ID',
+
   // Roles
   'Super Admin',
   'Admin',

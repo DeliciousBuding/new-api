@@ -687,6 +687,9 @@
     "Cache pricing": "Cache pricing",
     "Cache ratio": "Cache ratio",
     "Cache Read": "Cache Read",
+    "Cache Efficiency": "Cache Efficiency",
+    "Cache Filters": "Cache Filters",
+    "Cache Rate": "Cache Rate",
     "Cache read price": "Cache read price",
     "Cache repeated prompt prefixes for cheaper, faster reuse": "Cache repeated prompt prefixes for cheaper, faster reuse",
     "Cache write": "Cache write",
@@ -1045,6 +1048,7 @@
     "Continue with GitHub": "Continue with GitHub",
     "Continue with LinuxDO": "Continue with LinuxDO",
     "Continue with OIDC": "Continue with OIDC",
+    "Continue with TokenDance ID": "Continue with TokenDance ID",
     "Continue with Telegram": "Continue with Telegram",
     "Continue with WeChat": "Continue with WeChat",
     "Contract review, compliance, summarisation": "Contract review, compliance, summarisation",
@@ -1990,6 +1994,7 @@
     "Filter models by type, endpoint, vendor, group and tags": "Filter models by type, endpoint, vendor, group and tags",
     "Filter models...": "Filter models...",
     "Filter the model analytics view by time range and user.": "Filter the model analytics view by time range and user.",
+    "Filter the cache efficiency view by time range.": "Filter the cache efficiency view by time range.",
     "Filter the traffic flow view by time range and user.": "Filter the traffic flow view by time range and user.",
     "Filter...": "Filter...",
     "Filters": "Filters",
@@ -2883,6 +2888,7 @@
     "No containers": "No containers",
     "No content to copy": "No content to copy",
     "No custom OAuth providers configured yet.": "No custom OAuth providers configured yet.",
+    "No cache data available": "No cache data available",
     "No data": "No data",
     "No Data": "No Data",
     "No data available": "No data available",
@@ -3655,7 +3661,6 @@
     "Recommended": "Recommended",
     "Recommended actions": "Recommended actions",
     "Recommended to keep this high to avoid upstream throttling.": "Recommended to keep this high to avoid upstream throttling.",
-    "Record IP Address": "Record IP Address",
     "Record quota usage": "Record quota usage",
     "Recursion Strategy": "Recursion Strategy",
     "Recursive": "Recursive",
@@ -5227,6 +5232,9 @@
     "Zero retention": "Zero retention",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Record client IP addresses": "Record client IP addresses",
+    "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.": "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.",
+    "Client": "Client"
   }
 }

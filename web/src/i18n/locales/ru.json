@@ -687,6 +687,9 @@
     "Cache pricing": "Цены кэша",
     "Cache ratio": "Коэффициент кэша",
     "Cache Read": "Чтение кэша",
+    "Cache Efficiency": "Cache Efficiency",
+    "Cache Filters": "Cache Filters",
+    "Cache Rate": "Cache Rate",
     "Cache read price": "Цена чтения кэша",
     "Cache repeated prompt prefixes for cheaper, faster reuse": "Кэшировать повторяющиеся префиксы промптов для дешёвого и быстрого повторного использования",
     "Cache write": "Запись кэша",
@@ -1045,6 +1048,7 @@
     "Continue with GitHub": "Продолжить с GitHub",
     "Continue with LinuxDO": "Продолжить с LinuxDO",
     "Continue with OIDC": "Продолжить с OIDC",
+    "Continue with TokenDance ID": "Продолжить с TokenDance ID",
     "Continue with Telegram": "Продолжить с Telegram",
     "Continue with WeChat": "Продолжить с WeChat",
     "Contract review, compliance, summarisation": "Анализ контрактов, комплаенс, резюме",
@@ -1990,6 +1994,7 @@
     "Filter models by type, endpoint, vendor, group and tags": "Фильтровать модели по типу, точке доступа, поставщику, группе и тегам",
     "Filter models...": "Фильтровать модели...",
     "Filter the model analytics view by time range and user.": "Фильтруйте представление аналитики моделей по периоду и пользователю.",
+    "Filter the cache efficiency view by time range.": "Filter the cache efficiency view by time range.",
     "Filter the traffic flow view by time range and user.": "Фильтруйте представление потока трафика по диапазону времени и пользователю.",
     "Filter...": "Фильтр...",
     "Filters": "Фильтры",
@@ -2883,6 +2888,7 @@
     "No containers": "Нет контейнеров",
     "No content to copy": "Нет содержимого для копирования",
     "No custom OAuth providers configured yet.": "Пользовательские поставщики OAuth еще не настроены.",
+    "No cache data available": "No cache data available",
     "No data": "Нет данных",
     "No Data": "Нет данных",
     "No data available": "Нет доступных данных",
@@ -3655,7 +3661,6 @@
     "Recommended": "Рекомендуется",
     "Recommended actions": "Рекомендуемые действия",
     "Recommended to keep this high to avoid upstream throttling.": "Рекомендуется поддерживать это значение высоким, чтобы избежать регулирования со стороны вышестоящего поставщика.",
-    "Record IP Address": "Записывать IP-адрес",
     "Record quota usage": "Записывать использование квоты",
     "Recursion Strategy": "Стратегия рекурсии",
     "Recursive": "Рекурсивно",
@@ -5227,6 +5232,9 @@
     "Zero retention": "Без хранения данных",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Record client IP addresses": "Record client IP addresses",
+    "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.": "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.",
+    "Client": "Client"
   }
 }

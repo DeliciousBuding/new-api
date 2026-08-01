@@ -687,6 +687,9 @@
     "Cache pricing": "Giá bộ nhớ đệm",
     "Cache ratio": "Tỷ lệ bộ nhớ đệm",
     "Cache Read": "Đọc bộ nhớ đệm",
+    "Cache Efficiency": "Cache Efficiency",
+    "Cache Filters": "Cache Filters",
+    "Cache Rate": "Cache Rate",
     "Cache read price": "Giá đọc cache",
     "Cache repeated prompt prefixes for cheaper, faster reuse": "Lưu cache phần đầu lời nhắc lặp lại để tái sử dụng nhanh và rẻ hơn",
     "Cache write": "Ghi cache",
@@ -1045,6 +1048,7 @@
     "Continue with GitHub": "Tiếp tục với GitHub",
     "Continue with LinuxDO": "Tiếp tục với LinuxDO",
     "Continue with OIDC": "Tiếp tục với OIDC",
+    "Continue with TokenDance ID": "Tiếp tục với TokenDance ID",
     "Continue with Telegram": "Tiếp tục với Telegram",
     "Continue with WeChat": "Tiếp tục với WeChat",
     "Contract review, compliance, summarisation": "Rà soát hợp đồng, tuân thủ, tóm tắt",
@@ -1990,6 +1994,7 @@
     "Filter models by type, endpoint, vendor, group and tags": "Lọc mô hình theo loại, endpoint, nhà cung cấp, nhóm và thẻ",
     "Filter models...": "Lọc mô hình...",
     "Filter the model analytics view by time range and user.": "Lọc chế độ xem phân tích mô hình theo khoảng thời gian và người dùng.",
+    "Filter the cache efficiency view by time range.": "Filter the cache efficiency view by time range.",
     "Filter the traffic flow view by time range and user.": "Lọc chế độ xem luồng lưu lượng theo khoảng thời gian và người dùng.",
     "Filter...": "Lọc...",
     "Filters": "Bộ lọc",
@@ -2883,6 +2888,7 @@
     "No containers": "Không có container",
     "No content to copy": "Không có nội dung để sao chép",
     "No custom OAuth providers configured yet.": "Chưa có nhà cung cấp OAuth tùy chỉnh nào được cấu hình.",
+    "No cache data available": "No cache data available",
     "No data": "Không có dữ liệu",
     "No Data": "Không có dữ liệu",
     "No data available": "Không có dữ liệu",
@@ -3655,7 +3661,6 @@
     "Recommended": "Đề xuất",
     "Recommended actions": "Hành động đề xuất",
     "Recommended to keep this high to avoid upstream throttling.": "Khuyến nghị giữ mức này cao để tránh điều tiết từ phía thượng nguồn.",
-    "Record IP Address": "Ghi lại địa chỉ IP",
     "Record quota usage": "Ghi lại mức sử dụng hạn mức",
     "Recursion Strategy": "Chiến lược đệ quy",
     "Recursive": "Đệ quy",
@@ -5227,6 +5232,9 @@
     "Zero retention": "Không lưu dữ liệu",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Record client IP addresses": "Record client IP addresses",
+    "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.": "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.",
+    "Client": "Client"
   }
 }

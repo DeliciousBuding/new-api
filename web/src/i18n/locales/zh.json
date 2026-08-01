@@ -687,6 +687,9 @@
     "Cache pricing": "缓存定价",
     "Cache ratio": "缓存倍率",
     "Cache Read": "缓存读取",
+    "Cache Efficiency": "缓存效率",
+    "Cache Filters": "缓存筛选",
+    "Cache Rate": "缓存命中率",
     "Cache read price": "缓存读取价格",
     "Cache repeated prompt prefixes for cheaper, faster reuse": "缓存重复的提示词前缀，复用更快、更省钱",
     "Cache write": "缓存写入",
@@ -1045,6 +1048,7 @@
     "Continue with GitHub": "使用 GitHub 继续",
     "Continue with LinuxDO": "使用 LinuxDO 继续",
     "Continue with OIDC": "使用 OIDC 继续",
+    "Continue with TokenDance ID": "使用 TokenDance ID 继续",
     "Continue with Telegram": "使用 Telegram 继续",
     "Continue with WeChat": "使用 微信 继续",
     "Contract review, compliance, summarisation": "合同审阅、合规与摘要",
@@ -1990,6 +1994,7 @@
     "Filter models by type, endpoint, vendor, group and tags": "按类型、端点、供应商、分组和标签筛选模型",
     "Filter models...": "筛选模型...",
     "Filter the model analytics view by time range and user.": "按时间范围和用户筛选模型分析视图。",
+    "Filter the cache efficiency view by time range.": "按时间范围筛选缓存效率视图。",
     "Filter the traffic flow view by time range and user.": "按时间范围和用户筛选分流图视图。",
     "Filter...": "筛选...",
     "Filters": "筛选器",
@@ -2883,6 +2888,7 @@
     "No containers": "无容器",
     "No content to copy": "没有可复制的内容",
     "No custom OAuth providers configured yet.": "尚未配置自定义 OAuth 提供商。",
+    "No cache data available": "暂无缓存数据",
     "No data": "暂无数据",
     "No Data": "无数据",
     "No data available": "暂无数据",
@@ -3655,7 +3661,6 @@
     "Recommended": "推荐",
     "Recommended actions": "推荐操作",
     "Recommended to keep this high to avoid upstream throttling.": "建议保持此值较高，以避免上游限流。",
-    "Record IP Address": "记录 IP 地址",
     "Record quota usage": "记录配额使用量",
     "Recursion Strategy": "递归策略",
     "Recursive": "递归",
@@ -5227,6 +5232,9 @@
     "Zero retention": "零数据保留",
     "Zhipu": "智谱",
     "Zhipu V4": "智谱 V4",
-    "Zoom": "缩放"
+    "Zoom": "缩放",
+    "Record client IP addresses": "记录客户端 IP 地址",
+    "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.": "在每条消费与错误日志中记录客户端来源 IP。关闭可减小日志体积。",
+    "Client": "客户端"
   }
 }
