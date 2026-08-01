@@ -1995,6 +1995,7 @@
     "Filter models by type, endpoint, vendor, group and tags": "タイプ、エンドポイント、ベンダー、グループ、タグでモデルをフィルタリング",
     "Filter models...": "モデルをフィルタリング...",
     "Filter the model analytics view by time range and user.": "時間範囲とユーザーでモデル分析ビューを絞り込みます。",
+    "Filter the cache efficiency view by time range.": "Filter the cache efficiency view by time range.",
     "Filter the traffic flow view by time range and user.": "時間範囲とユーザーでトラフィックフロー表示を絞り込みます。",
     "Filter...": "フィルター…",
     "Filters": "フィルター",

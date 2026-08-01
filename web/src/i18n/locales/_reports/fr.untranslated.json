@@ -1,4 +1,5 @@
 {
   "Cache rate measures cached input tokens over the selected period": "Cache rate measures cached input tokens over the selected period",
+  "Filter the cache efficiency view by time range.": "Filter the cache efficiency view by time range.",
   "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.": "Store the client source IP with each consume and error log entry. Disable to reduce log footprint."
 }

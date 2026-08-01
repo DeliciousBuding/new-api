@@ -102,6 +102,10 @@ type cacheStatBatchRequest struct {
 	EndTimestamp   int64    `json:"end_timestamp"`
 }
 
+// cacheStatMaxWindowSeconds 限制缓存聚合窗口最大为 90 天，
+// 防止全站聚合（空 token_names）对日志库做超范围扫描。
+const cacheStatMaxWindowSeconds = 90 * 24 * 3600
+
 // cacheStatItem 是单个 token 的缓存用量响应（含缓存命中率，一位小数）。
 type cacheStatItem struct {
 	TokenName           string  `json:"token_name"`
@@ -109,6 +113,25 @@ type cacheStatItem struct {
 	CacheReadTokens     int64   `json:"cache_read_tokens"`
 	CacheCreationTokens int64   `json:"cache_creation_tokens"`
 	CacheRate           float64 `json:"cache_rate"`
+}
+
+// cacheRatePct 计算缓存命中率百分比（一位小数）。
+// 分母取 prompt_tokens：OpenAI 兼容路径的 prompt 已含缓存读取（精确）；
+// Claude 分离格式（prompt 不含缓存）会略高估，但在高命中率区间与真实值
+// 趋同。聚合层无法区分两种格式，取不双重计数的一侧（双重计数会把真实
+// ~100% 的命中率显示成 ~50%）。全缓存（prompt=0 且 read>0）视为 100%。
+func cacheRatePct(cacheReadTokens int64, promptTokens int64) float64 {
+	if promptTokens <= 0 {
+		if cacheReadTokens > 0 {
+			return 100
+		}
+		return 0
+	}
+	rate := float64(cacheReadTokens) / float64(promptTokens) * 100
+	if rate > 100 {
+		return 100
+	}
+	return math.Round(rate*10) / 10
 }
 
 // GetLogsCacheStatBatch 批量返回多个 token 在窗口内的缓存用量聚合
@@ -127,6 +150,10 @@ func GetLogsCacheStatBatch(c *gin.Context) {
 	if start == 0 {
 		start = end - 7*24*3600
 	}
+	if start < 0 || end <= start || end-start > cacheStatMaxWindowSeconds {
+		common.ApiErrorMsg(c, "invalid time range")
+		return
+	}
 	stats, err := model.SumCacheUsageByTokenNames(req.TokenNames, start, end)
 	if err != nil {
 		common.ApiError(c, err)
@@ -138,17 +165,12 @@ func GetLogsCacheStatBatch(c *gin.Context) {
 		if !ok {
 			continue
 		}
-		rate := 0.0
-		total := st.CacheReadTokens + st.PromptTokens
-		if total > 0 {
-			rate = float64(st.CacheReadTokens) / float64(total) * 100
-		}
 		items = append(items, cacheStatItem{
 			TokenName:           st.TokenName,
 			PromptTokens:        st.PromptTokens,
 			CacheReadTokens:     st.CacheReadTokens,
 			CacheCreationTokens: st.CacheCreationTokens,
-			CacheRate:           math.Round(rate*10) / 10,
+			CacheRate:           cacheRatePct(st.CacheReadTokens, st.PromptTokens),
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -183,6 +205,10 @@ func GetLogsCacheStatDaily(c *gin.Context) {
 	if start == 0 {
 		start = end - 7*24*3600
 	}
+	if start < 0 || end <= start || end-start > cacheStatMaxWindowSeconds {
+		common.ApiErrorMsg(c, "invalid time range")
+		return
+	}
 	rows, err := model.SumCacheUsageDaily(req.TokenNames, start, end)
 	if err != nil {
 		common.ApiError(c, err)
@@ -190,17 +216,12 @@ func GetLogsCacheStatDaily(c *gin.Context) {
 	}
 	items := make([]cacheStatDailyItem, 0, len(rows))
 	for _, r := range rows {
-		rate := 0.0
-		total := r.CacheReadTokens + r.PromptTokens
-		if total > 0 {
-			rate = float64(r.CacheReadTokens) / float64(total) * 100
-		}
 		items = append(items, cacheStatDailyItem{
 			Day:                 r.Day,
 			PromptTokens:        r.PromptTokens,
 			CacheReadTokens:     r.CacheReadTokens,
 			CacheCreationTokens: r.CacheCreationTokens,
-			CacheRate:           math.Round(rate*10) / 10,
+			CacheRate:           cacheRatePct(r.CacheReadTokens, r.PromptTokens),
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{

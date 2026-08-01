@@ -1995,6 +1995,7 @@
     "Filter models by type, endpoint, vendor, group and tags": "Фильтровать модели по типу, точке доступа, поставщику, группе и тегам",
     "Filter models...": "Фильтровать модели...",
     "Filter the model analytics view by time range and user.": "Фильтруйте представление аналитики моделей по периоду и пользователю.",
+    "Filter the cache efficiency view by time range.": "Filter the cache efficiency view by time range.",
     "Filter the traffic flow view by time range and user.": "Фильтруйте представление потока трафика по диапазону времени и пользователю.",
     "Filter...": "Фильтр...",
     "Filters": "Фильтры",

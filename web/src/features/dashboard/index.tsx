@@ -48,6 +48,7 @@ import {
 } from './lib'
 import {
   type DashboardSectionId,
+  ADMIN_ONLY_SECTIONS,
   DASHBOARD_DEFAULT_SECTION,
   DASHBOARD_SECTION_IDS,
 } from './section-registry'
@@ -259,7 +260,7 @@ export function Dashboard() {
       DASHBOARD_SECTION_IDS.filter(
         (section) =>
           section !== 'overview' &&
-          (section === 'models' || section === 'flow' || isAdmin)
+          (isAdmin || !ADMIN_ONLY_SECTIONS.has(section))
       ),
     [isAdmin]
   )

@@ -39,25 +39,19 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { getCacheDailyStats } from '@/features/dashboard/api'
+import { getDefaultDays } from '@/features/dashboard/lib'
 import {
-  getDefaultDays,
-} from '@/features/dashboard/lib'
+  buildCacheRateLabels,
+  buildCacheRateSpec,
+  buildCacheSummary,
+} from '@/features/dashboard/lib/cache'
 import type { DashboardFilters } from '@/features/dashboard/types'
-import dayjs from '@/lib/dayjs'
 import { computeTimeRange } from '@/lib/time'
 import { useChartTheme } from '@/lib/use-chart-theme'
 import { VCHART_OPTION } from '@/lib/vchart'
 
 interface CacheEfficiencyChartProps {
   filters?: DashboardFilters
-}
-
-// Cache rate is a percentage; pin the axis so short windows are readable.
-const CACHE_RATE_AXIS_MAX = 100
-
-// UTC day bucket (created_at / 86400) rendered in the viewer's local timezone.
-function formatDayLabel(day: number): string {
-  return dayjs.unix(day * 86400).format('MM-DD')
 }
 
 export function CacheEfficiencyChart(props: CacheEfficiencyChartProps) {
@@ -80,64 +74,21 @@ export function CacheEfficiencyChart(props: CacheEfficiencyChartProps) {
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['dashboard', 'cache-efficiency', timeRange],
-    queryFn: () =>
-      getCacheDailyStats({
+    queryFn: async () => {
+      const res = await getCacheDailyStats({
         start_timestamp: timeRange.start_timestamp,
         end_timestamp: timeRange.end_timestamp,
-      }),
+      })
+      return res.data?.items ?? []
+    },
     staleTime: 60_000,
   })
 
   const rows = useMemo(() => data ?? [], [data])
-  const summary = useMemo(() => {
-    let prompt = 0
-    let read = 0
-    let write = 0
-    for (const row of rows) {
-      prompt += row.prompt_tokens
-      read += row.cache_read_tokens
-      write += row.cache_creation_tokens
-    }
-    const total = read + prompt
-    return {
-      prompt,
-      read,
-      write,
-      rate: total > 0 ? (read / total) * 100 : 0,
-    }
-  }, [rows])
-
-  const chartData = useMemo(
-    () =>
-      rows.map((row) => ({
-        ...row,
-        label: formatDayLabel(row.day),
-      })),
-    [rows]
-  )
-
+  const summary = useMemo(() => buildCacheSummary(rows), [rows])
   const spec = useMemo(
-    () => ({
-      type: 'line' as const,
-      data: [{ id: 'cacheRateData', values: chartData }],
-      xField: 'label',
-      yField: 'cache_rate',
-      point: { visible: true },
-      line: { style: { lineWidth: 2 } },
-      yAxis: { max: CACHE_RATE_AXIS_MAX },
-      label: { visible: false },
-      tooltip: {
-        mark: {
-          content: [
-            { field: 'cache_rate', label: t('Cache Rate'), valueFormatter: (v: number) => `${v.toFixed(1)}%` },
-            { field: 'cache_read_tokens', label: t('Cache Read'), valueFormatter: (v: number) => v.toLocaleString() },
-            { field: 'cache_creation_tokens', label: t('Cache Write'), valueFormatter: (v: number) => v.toLocaleString() },
-            { field: 'prompt_tokens', label: t('Input Tokens'), valueFormatter: (v: number) => v.toLocaleString() },
-          ],
-        },
-      },
-    }),
-    [chartData, t]
+    () => buildCacheRateSpec(rows, buildCacheRateLabels(t)),
+    [rows, t]
   )
 
   const theme = resolvedTheme === 'dark' ? 'dark' : 'light'
@@ -152,7 +103,9 @@ export function CacheEfficiencyChart(props: CacheEfficiencyChartProps) {
           <CircleAlert />
           <AlertTitle>{t('Failed to load')}</AlertTitle>
           <AlertDescription>
-            {error instanceof Error ? error.message : t('Please try again later.')}
+            {error instanceof Error
+              ? error.message
+              : t('Please try again later.')}
           </AlertDescription>
         </Alert>
       </div>
@@ -185,7 +138,7 @@ export function CacheEfficiencyChart(props: CacheEfficiencyChartProps) {
 
   return (
     <div className='overflow-hidden rounded-lg border'>
-      <div className='flex flex-wrap items-center gap-x-5 gap-y-2.5 px-4 py-2.5 sm:px-5 sm:py-3'>
+      <div className='flex flex-wrap items-center gap-x-5 gap-y-2.5 border-b px-4 py-2.5 sm:px-5 sm:py-3'>
         <div className='flex items-center gap-1.5'>
           <IconBadge tone='info' size='xs'>
             <Zap />
@@ -212,7 +165,7 @@ export function CacheEfficiencyChart(props: CacheEfficiencyChartProps) {
               <span className='text-muted-foreground text-xs'>
                 {t('Cache Rate')}
               </span>
-              <span className='font-medium text-xs tabular-nums'>
+              <span className='font-mono text-xs font-semibold tabular-nums'>
                 {summary.rate.toFixed(1)}%
               </span>
             </span>
@@ -220,16 +173,16 @@ export function CacheEfficiencyChart(props: CacheEfficiencyChartProps) {
               <span className='text-muted-foreground text-xs'>
                 {t('Cache Read')}
               </span>
-              <span className='font-medium text-xs tabular-nums'>
-                {summary.read.toLocaleString()}
+              <span className='font-mono text-xs font-semibold tabular-nums'>
+                {summary.cacheReadTokens.toLocaleString()}
               </span>
             </span>
             <span className='flex items-center gap-1.5'>
               <span className='text-muted-foreground text-xs'>
                 {t('Cache Write')}
               </span>
-              <span className='font-medium text-xs tabular-nums'>
-                {summary.write.toLocaleString()}
+              <span className='font-mono text-xs font-semibold tabular-nums'>
+                {summary.cacheCreationTokens.toLocaleString()}
               </span>
             </span>
             <TooltipProvider>
@@ -252,7 +205,7 @@ export function CacheEfficiencyChart(props: CacheEfficiencyChartProps) {
         )}
       </div>
 
-      <div className='h-96 border-t p-2'>
+      <div className='h-[300px] p-1.5 sm:h-96 sm:p-2'>
         {themeReady ? chartContent : <Skeleton className='h-full w-full' />}
       </div>
     </div>

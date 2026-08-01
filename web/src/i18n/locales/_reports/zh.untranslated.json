@@ -2,6 +2,7 @@
   "Cache Efficiency": "Cache Efficiency",
   "Cache Filters": "Cache Filters",
   "Cache rate measures cached input tokens over the selected period": "Cache rate measures cached input tokens over the selected period",
+  "Filter the cache efficiency view by time range.": "Filter the cache efficiency view by time range.",
   "No cache data available": "No cache data available",
   "Record client IP addresses": "Record client IP addresses",
   "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.": "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.",

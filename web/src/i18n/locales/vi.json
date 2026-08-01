@@ -1995,6 +1995,7 @@
     "Filter models by type, endpoint, vendor, group and tags": "Lọc mô hình theo loại, endpoint, nhà cung cấp, nhóm và thẻ",
     "Filter models...": "Lọc mô hình...",
     "Filter the model analytics view by time range and user.": "Lọc chế độ xem phân tích mô hình theo khoảng thời gian và người dùng.",
+    "Filter the cache efficiency view by time range.": "Filter the cache efficiency view by time range.",
     "Filter the traffic flow view by time range and user.": "Lọc chế độ xem luồng lưu lượng theo khoảng thời gian và người dùng.",
     "Filter...": "Lọc...",
     "Filters": "Bộ lọc",
