@@ -32,6 +32,29 @@ import type {
 // Quota & Usage Data
 // ----------------------------------------------------------------------------
 
+// Per-token cache usage aggregates for the Cache Rate column (7-day window).
+export interface CacheDailyStat {
+  day: number
+  prompt_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  cache_rate: number
+}
+
+// Daily cache usage aggregates for the dashboard cache efficiency trend.
+// An empty token_names list means site-wide aggregation.
+export async function getCacheDailyStats(params: {
+  start_timestamp?: number
+  end_timestamp?: number
+  token_names?: string[]
+}): Promise<CacheDailyStat[]> {
+  const res = await api.post<{ success: boolean; data: { items: CacheDailyStat[] } }>(
+    '/api/log/stat/cache/daily',
+    params
+  )
+  return res.data?.data?.items ?? []
+}
+
 // Get user quota data within a time range
 // Admin users get all users' data by default.
 export async function getUserQuotaDates(
