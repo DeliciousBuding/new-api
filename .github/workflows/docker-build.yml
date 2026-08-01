@@ -1,13 +1,13 @@
-name: CD - TokenDance Gateway
+name: CD - DeepSeek Relay
 
 on:
   push:
     tags:
-      - "v*-td-*"
+      - "v*-sgp2-*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to build (for example v1.0.0-rc.22-td-20260727)"
+        description: "Existing release tag to build (for example v1.0.0-sgp2-20260801.2)"
         required: true
         type: string
 
@@ -19,7 +19,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE_NAME: ghcr.io/tokendancelab/new-api
+  IMAGE_NAME: ghcr.io/tokendancelab/deepseek-relay
 
 jobs:
   build-and-push:
@@ -51,8 +51,8 @@ jobs:
             exit 1
           fi
           case "$TAG" in
-            v*-td-*) ;;
-            *) echo "::error::Tag '$TAG' is not a TokenDance release"; exit 1 ;;
+            v*-sgp2-*) ;;
+            *) echo "::error::Tag '$TAG' is not an sgp2 release"; exit 1 ;;
           esac
           printf '%s\n' "$TAG" > VERSION
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -99,8 +99,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=tokendance-gateway-amd64
-          cache-to: type=gha,mode=max,scope=tokendance-gateway-amd64
+          cache-from: type=gha,scope=sgp2-deepseek-relay-amd64
+          cache-to: type=gha,mode=max,scope=sgp2-deepseek-relay-amd64
           provenance: mode=max
           sbom: true
 
@@ -108,7 +108,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo '### TokenDance Gateway image'
+            echo '### DeepSeek Relay image'
             echo
             echo '```text'
             echo '${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}'

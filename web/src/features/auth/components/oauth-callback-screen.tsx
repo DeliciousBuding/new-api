@@ -16,15 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Loader2, Send, UserRound, type LucideIcon } from 'lucide-react'
+import { Loader2, Send, Shield, UserRound, type LucideIcon } from 'lucide-react'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { SiGithub, SiLinux, SiWechat } from 'react-icons/si'
 
-import { IconTokenDance } from '@/assets/brand-icons'
-
 import { AuthLayout } from '../auth-layout'
-import { tokenDanceIdentity } from '../lib/identity-branding'
 
 type OAuthCallbackScreenProps = {
   provider: string
@@ -43,12 +40,7 @@ const providerDictionary: Record<string, ProviderMeta> = {
       <SiGithub className={props.className} focusable='false' />
     ),
   },
-  oidc: {
-    label: tokenDanceIdentity.name,
-    Icon: (props: { className?: string }) => (
-      <IconTokenDance className={props.className} />
-    ),
-  },
+  oidc: { label: 'OIDC', Icon: Shield },
   linuxdo: {
     label: 'LinuxDO',
     Icon: (props: { className?: string }) => (

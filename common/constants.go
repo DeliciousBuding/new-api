@@ -92,7 +92,7 @@ var MemoryCacheEnabled bool
 
 var LogConsumeEnabled = true
 
-// LogRecordIpEnabled 控制消费/错误日志是否默认记录客户端来源 IP（TokenDance audit topic）
+// LogRecordIpEnabled controls whether consumption and error logs record client source IPs by default.
 var LogRecordIpEnabled = true
 
 var TLSInsecureSkipVerify bool

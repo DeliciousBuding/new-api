@@ -314,7 +314,7 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
-	// 判断是否需要记录 IP（TokenDance audit topic：全局开关，默认记录；用户级 RecordIpLog 保留兼容）
+	// Global IP logging defaults on; the per-user RecordIpLog flag remains compatible.
 	needRecordIp := common.LogRecordIpEnabled
 	ip := ""
 	if needRecordIp {
@@ -376,7 +376,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
 	createdAt := common.GetTimestamp()
-	// 判断是否需要记录 IP（TokenDance audit topic：全局开关，默认记录；用户级 RecordIpLog 保留兼容）
+	// Global IP logging defaults on; the per-user RecordIpLog flag remains compatible.
 	needRecordIp := common.LogRecordIpEnabled
 	ip := ""
 	if needRecordIp {
