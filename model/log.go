@@ -693,6 +693,50 @@ func SumCacheUsageByTokenNames(tokenNames []string, startTimestamp int64, endTim
 	return stats, nil
 }
 
+// CacheUsageDailyStat 是单个天桶（UTC 日，created_at/86400）内的缓存用量聚合。
+type CacheUsageDailyStat struct {
+	Day                 int64 `json:"day"`
+	PromptTokens        int64 `json:"prompt_tokens"`
+	CacheReadTokens     int64 `json:"cache_read_tokens"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens"`
+}
+
+// cacheDayBucketExpr 返回按 UTC 日分桶的表达式。各库整除语义不同：
+// MySQL 的 `/` 返回 decimal 需 DIV，ClickHouse 需 intDiv；
+// PostgreSQL / SQLite 的 int/int 即为整除。
+func cacheDayBucketExpr() string {
+	switch {
+	case common.UsingLogDatabase(common.DatabaseTypeMySQL):
+		return "(created_at DIV 86400)"
+	case common.UsingLogDatabase(common.DatabaseTypeClickHouse):
+		return "intDiv(created_at, 86400)"
+	default:
+		return "(created_at / 86400)"
+	}
+}
+
+// SumCacheUsageDaily 聚合窗口内按天分桶的缓存用量（dashboard 缓存效率趋势）。
+// 天桶用 Unix 秒整除 86400（UTC 日边界，四库一致），前端按本地时区渲染标签；
+// 只统计消费日志（type=2）；空 tokenNames 表示全站聚合。
+func SumCacheUsageDaily(tokenNames []string, startTimestamp int64, endTimestamp int64) ([]CacheUsageDailyStat, error) {
+	query := LOG_DB.Table("logs").
+		Select(cacheDayBucketExpr()+" AS day, COALESCE(SUM(prompt_tokens), 0) prompt_tokens, "+
+			"SUM("+cacheJsonExtractExpr("cache_tokens")+") cache_read_tokens, "+
+			"SUM("+cacheJsonExtractExpr("cache_creation_tokens")+") cache_creation_tokens").
+		Where("type = ?", LogTypeConsume).
+		Where("created_at >= ?", startTimestamp).
+		Where("created_at <= ?", endTimestamp)
+	if len(tokenNames) > 0 {
+		query = query.Where("token_name IN ?", tokenNames)
+	}
+	rows := []CacheUsageDailyStat{}
+	err := query.Group("day").Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
 func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {
 	tx := LOG_DB.Table("logs").Select("COALESCE(sum(quota), 0) quota")
 

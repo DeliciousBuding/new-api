@@ -158,6 +158,58 @@ func GetLogsCacheStatBatch(c *gin.Context) {
 	})
 }
 
+// cacheStatDailyItem 是单个天桶的缓存用量响应（含缓存命中率，一位小数）。
+type cacheStatDailyItem struct {
+	Day                 int64   `json:"day"`
+	PromptTokens        int64   `json:"prompt_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+	CacheRate           float64 `json:"cache_rate"`
+}
+
+// GetLogsCacheStatDaily 返回窗口内按天分桶的缓存用量聚合
+// （dashboard 缓存效率趋势）。token_names 为空表示全站；默认窗口最近 7 天。
+func GetLogsCacheStatDaily(c *gin.Context) {
+	var req cacheStatBatchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	end := req.EndTimestamp
+	if end == 0 {
+		end = common.GetTimestamp()
+	}
+	start := req.StartTimestamp
+	if start == 0 {
+		start = end - 7*24*3600
+	}
+	rows, err := model.SumCacheUsageDaily(req.TokenNames, start, end)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	items := make([]cacheStatDailyItem, 0, len(rows))
+	for _, r := range rows {
+		rate := 0.0
+		total := r.CacheReadTokens + r.PromptTokens
+		if total > 0 {
+			rate = float64(r.CacheReadTokens) / float64(total) * 100
+		}
+		items = append(items, cacheStatDailyItem{
+			Day:                 r.Day,
+			PromptTokens:        r.PromptTokens,
+			CacheReadTokens:     r.CacheReadTokens,
+			CacheCreationTokens: r.CacheCreationTokens,
+			CacheRate:           math.Round(rate*10) / 10,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    gin.H{"items": items},
+	})
+}
+
 func GetLogsStat(c *gin.Context) {
 	logType, _ := strconv.Atoi(c.Query("type"))
 	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
