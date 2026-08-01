@@ -199,6 +199,9 @@ export interface LogOtherData {
     }
     // Locality hint resolved from the client IP (GeoIP). Admin-only.
     geo?: GeoInfo
+    // Client fingerprint hint (UA/header profile). Admin-only, nested under
+    // admin_info so user-facing paths strip it with the whole object.
+    client_profile?: ClientProfile
   }
   // Language-independent operation descriptor (audit/login logs).
   // Frontend renders localized content from action + params via i18n templates.
@@ -252,7 +255,6 @@ export interface LogOtherData {
   expr_b64?: string
   matched_tier?: string
   reasoning_effort?: string
-  client_profile?: ClientProfile
   input_tokens_total?: number
   image?: boolean
   image_ratio?: number

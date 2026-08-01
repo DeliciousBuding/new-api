@@ -549,9 +549,9 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
       {
         id: 'client',
         header: t('Client'),
-        accessorFn: (row) => parseLogOther(row.other)?.client_profile,
+        accessorFn: (row) => parseLogOther(row.other)?.admin_info?.client_profile,
         cell: ({ row }) => {
-          const profile = parseLogOther(row.original.other)?.client_profile
+          const profile = parseLogOther(row.original.other)?.admin_info?.client_profile
           if (!profile) return null
           return <ClientProfileBadge profile={profile} />
         },

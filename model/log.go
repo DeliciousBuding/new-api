@@ -149,8 +149,6 @@ func formatUserLogs(logs []*Log, startIdx int) {
 			delete(otherMap, "admin_info")
 			// Remove operation-audit details (operator/route info), admin-only.
 			delete(otherMap, "audit_info")
-			// Remove client fingerprint hint, admin-only (TokenDance audit topic).
-			delete(otherMap, "client_profile")
 			// delete(otherMap, "reject_reason")
 			// delete(otherMap, "stream_status")
 		}

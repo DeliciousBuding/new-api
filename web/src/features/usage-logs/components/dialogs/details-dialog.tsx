@@ -700,10 +700,15 @@ export function DetailsDialog(props: DetailsDialogProps) {
             />
           )}
 
-          {props.isAdmin && other?.client_profile && (
+          {props.isAdmin && other?.admin_info?.client_profile && (
             <DetailRow
               label={t('Client')}
-              value={<ClientProfileBadge profile={other.client_profile} compact />}
+              value={
+                <ClientProfileBadge
+                  profile={other.admin_info.client_profile}
+                  compact
+                />
+              }
             />
           )}
 
