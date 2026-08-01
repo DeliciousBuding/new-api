@@ -691,7 +691,6 @@
     "Cache Filters": "缓存筛选",
     "Cache Rate": "缓存命中率",
     "Cache read price": "缓存读取价格",
-    "Cache rate measures cached input tokens over the selected period": "缓存命中率衡量所选时段内缓存命中的输入占比",
     "Cache repeated prompt prefixes for cheaper, faster reuse": "缓存重复的提示词前缀，复用更快、更省钱",
     "Cache write": "缓存写入",
     "Cache Write": "缓存写入",
@@ -2379,9 +2378,6 @@
     "io.net Deployments": "io.net 部署",
     "IP": "IP",
     "IP Address": "IP 地址",
-    "Country:": "国家：",
-    "City:": "城市：",
-    "ASN:": "ASN：",
     "IP Filter Mode": "IP 过滤模式",
     "IP Restriction": "IP 限制",
     "IP Whitelist (supports CIDR)": "IP 白名单（支持 CIDR 表达式）",
@@ -3665,7 +3661,6 @@
     "Recommended": "推荐",
     "Recommended actions": "推荐操作",
     "Recommended to keep this high to avoid upstream throttling.": "建议保持此值较高，以避免上游限流。",
-    "Record IP Address": "记录 IP 地址",
     "Record quota usage": "记录配额使用量",
     "Recursion Strategy": "递归策略",
     "Recursive": "递归",
@@ -5238,8 +5233,8 @@
     "Zhipu": "智谱",
     "Zhipu V4": "智谱 V4",
     "Zoom": "缩放",
-    "Record client IP addresses": "Record client IP addresses",
-    "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.": "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.",
-    "Client": "Client"
+    "Record client IP addresses": "记录客户端 IP 地址",
+    "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.": "在每条消费与错误日志中记录客户端来源 IP。关闭可减小日志体积。",
+    "Client": "客户端"
   }
 }

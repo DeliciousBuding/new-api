@@ -195,7 +195,7 @@ export function CacheEfficiencyChart(props: CacheEfficiencyChartProps) {
                 <TooltipContent className='max-w-[16rem]'>
                   <span className='text-xs'>
                     {t(
-                      'Cache rate measures cached input tokens over the selected period'
+                      'Cache rate measures cached input tokens over the selected period. Approximate for streaming responses.'
                     )}
                   </span>
                 </TooltipContent>
