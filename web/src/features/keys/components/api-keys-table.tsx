@@ -20,7 +20,7 @@ import { useQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import type { Table as TanstackTable } from '@tanstack/react-table'
 import { Database } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -45,7 +45,7 @@ import { useTableUrlState } from '@/hooks/use-table-url-state'
 import { formatQuota } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-import { getApiKeys, searchApiKeys } from '../api'
+import { getApiKeys, getCacheStats, searchApiKeys } from '../api'
 import {
   API_KEY_STATUS,
   API_KEY_STATUS_OPTIONS,
@@ -190,7 +190,6 @@ export function ApiKeysTable() {
   const { t } = useTranslation()
   const { refreshTrigger } = useApiKeys()
   const [now, setNow] = useState(() => Date.now())
-  const columns = useApiKeysColumns(now)
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -275,6 +274,20 @@ export function ApiKeysTable() {
   })
 
   const apiKeys = data?.items || []
+
+  // Per-key cache usage aggregates for the Cache Rate column (7-day window).
+  const pageTokenIds = apiKeys.map((k) => k.id)
+  const { data: cacheStatsData } = useQuery({
+    queryKey: ['keys-cache-stats', JSON.stringify(pageTokenIds)],
+    queryFn: () => getCacheStats(pageTokenIds),
+    enabled: pageTokenIds.length > 0,
+    placeholderData: (previousData) => previousData,
+  })
+  const cacheStats = useMemo(
+    () => new Map((cacheStatsData ?? []).map((s) => [s.token_id, s])),
+    [cacheStatsData]
+  )
+  const columns = useApiKeysColumns(now, cacheStats)
 
   const { table } = useDataTable({
     data: apiKeys,
