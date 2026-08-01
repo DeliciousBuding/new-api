@@ -139,11 +139,13 @@ func TestRuntimeSchemaErrorFailsOpen(t *testing.T) {
 
 // TestRuntimeEnabledStatus proves a healthy init leaves the runtime enabled,
 // exposes the effective IP trust tier, and that Status never touches the
-// store (no SQL on the status path).
+// store (no SQL on the status path). TRUSTED_PROXIES=none pins the strict
+// direct-connect tier so the assertion is deterministic.
 func TestRuntimeEnabledStatus(t *testing.T) {
 	clearObserverEnv(t)
 	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
 	t.Setenv("RELAY_OBSERVER_RECORD_IP", "true")
+	t.Setenv("TRUSTED_PROXIES", "none")
 	store := &scriptedStore{}
 	rec := &openerRecorder{store: store}
 	rt := NewRuntime()
@@ -364,4 +366,154 @@ func TestRuntimeStatusJSONShape(t *testing.T) {
 	assert.True(t, strings.Contains(s, `"CircuitOpen"`), s)
 	assert.NotContains(t, s, "dsn")
 	assert.NotContains(t, s, "hmac")
+}
+
+// TestRuntimeInitPanicFailsOpen proves a store opener that panics disables the
+// observer instead of crashing the process (SSOT: all observer entry points
+// recover panics; the observer never panics).
+func TestRuntimeInitPanicFailsOpen(t *testing.T) {
+	clearObserverEnv(t)
+	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	rt := NewRuntime()
+	rt.openStore = func(ctx context.Context, cfg Config) (Store, error) {
+		panic("scripted opener panic")
+	}
+	require.NotPanics(t, rt.Init)
+	st := rt.Status()
+	assert.False(t, st.Enabled)
+	assert.Equal(t, ReasonStoreInitFailed, st.ReasonCode)
+}
+
+// TestRuntimeNilStoreFailsOpen proves an opener that succeeds without a store
+// disables the observer: a nil store would panic the shutdown path (a nil
+// interface method call on Store.Close inside Dispatcher.Stop).
+func TestRuntimeNilStoreFailsOpen(t *testing.T) {
+	clearObserverEnv(t)
+	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	rt := NewRuntime()
+	rt.openStore = func(ctx context.Context, cfg Config) (Store, error) {
+		return nil, nil
+	}
+	rt.Init()
+	st := rt.Status()
+	assert.False(t, st.Enabled)
+	assert.Equal(t, ReasonStoreInitFailed, st.ReasonCode)
+}
+
+// panicCloseStore is a scripted store whose Close panics, proving the runtime
+// absorbs a store release failure during shutdown instead of crashing the main
+// shutdown path.
+type panicCloseStore struct {
+	scriptedStore
+}
+
+func (s *panicCloseStore) Close(ctx context.Context) error {
+	panic("scripted store close panic")
+}
+
+// TestRuntimeClosePanicAbsorbed proves a store Close panic during shutdown is
+// absorbed by the runtime: the main shutdown outcome never changes (SSOT:
+// "an observer Stop failure never changes the main shutdown outcome").
+func TestRuntimeClosePanicAbsorbed(t *testing.T) {
+	clearObserverEnv(t)
+	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	rt := NewRuntime()
+	rt.openStore = func(ctx context.Context, cfg Config) (Store, error) {
+		return &panicCloseStore{}, nil
+	}
+	rt.Init()
+	require.True(t, rt.Status().Enabled)
+	require.NotPanics(t, func() { rt.Close(context.Background()) })
+	st := rt.Status()
+	assert.False(t, st.Enabled)
+	assert.Equal(t, ReasonDisabled, st.ReasonCode)
+}
+
+// TestRuntimeIPTrustRequiresDualOptIn proves the effective tier is "none"
+// unless both opt-ins are on: the NewAPI system setting (LogRecordIpEnabled)
+// and RELAY_OBSERVER_RECORD_IP (SSOT IP section).
+func TestRuntimeIPTrustRequiresDualOptIn(t *testing.T) {
+	clearObserverEnv(t)
+	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	t.Setenv("RELAY_OBSERVER_RECORD_IP", "true")
+	orig := common.LogRecordIpEnabled
+	common.LogRecordIpEnabled = false
+	t.Cleanup(func() { common.LogRecordIpEnabled = orig })
+	rt := NewRuntime()
+	rt.openStore = (&openerRecorder{store: &scriptedStore{}}).open
+	rt.Init()
+	st := rt.Status()
+	require.True(t, st.Enabled)
+	assert.Equal(t, IPTrustNone, st.IPTrust)
+}
+
+// TestRuntimeIPTrustProxyUnderDefaultTrust proves the tier is "proxy" under
+// the default trusted-CIDR configuration (TRUSTED_PROXIES unset), because
+// gin.ClientIP() may then derive the peer from X-Forwarded-For (SSOT: peers on
+// trusted-proxy networks may supply X-Forwarded-For).
+func TestRuntimeIPTrustProxyUnderDefaultTrust(t *testing.T) {
+	clearObserverEnv(t)
+	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	t.Setenv("RELAY_OBSERVER_RECORD_IP", "true")
+	t.Setenv("TRUSTED_PROXIES", "")
+	rt := NewRuntime()
+	rt.openStore = (&openerRecorder{store: &scriptedStore{}}).open
+	rt.Init()
+	st := rt.Status()
+	require.True(t, st.Enabled)
+	assert.Equal(t, IPTrustProxy, st.IPTrust)
+}
+
+// TestRuntimeIPTrustDirectStrictConnect proves the tier is "direct" only under
+// TRUSTED_PROXIES=none, where ClientIP() is the RemoteAddr origin.
+func TestRuntimeIPTrustDirectStrictConnect(t *testing.T) {
+	clearObserverEnv(t)
+	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	t.Setenv("RELAY_OBSERVER_RECORD_IP", "true")
+	t.Setenv("TRUSTED_PROXIES", "none")
+	rt := NewRuntime()
+	rt.openStore = (&openerRecorder{store: &scriptedStore{}}).open
+	rt.Init()
+	st := rt.Status()
+	require.True(t, st.Enabled)
+	assert.Equal(t, IPTrustDirect, st.IPTrust)
+}
+
+// TestRuntimeSchemaSubpathClassifiedMismatch proves the schema classification
+// also covers the verify sub-path errors (information_schema listing) that
+// store_pg.go returns without the "schema verify:" wrapper: they are schema
+// check failures, not store init failures.
+func TestRuntimeSchemaSubpathClassifiedMismatch(t *testing.T) {
+	clearObserverEnv(t)
+	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	rec := &openerRecorder{err: errors.New("relayobserver: list observer tables: permission denied for table information_schema")}
+	rt := NewRuntime()
+	rt.openStore = rec.open
+	rt.Init()
+	assert.Equal(t, ReasonSchemaMismatch, rt.Status().ReasonCode)
+}
+
+// TestRuntimeInitStoreOpenBounded proves the store open is bounded: a store
+// opener that blocks until its context expires cannot stall Init (and with it
+// NewAPI startup, which calls Init synchronously before listening) past the
+// open budget. The opener sees a cancellable context and the runtime ends up
+// disabled fail-open.
+func TestRuntimeInitStoreOpenBounded(t *testing.T) {
+	clearObserverEnv(t)
+	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	rt := NewRuntime()
+	rt.openTimeout = 50 * time.Millisecond
+	rt.openStore = func(ctx context.Context, cfg Config) (Store, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	start := time.Now()
+	rt.Init()
+	elapsed := time.Since(start)
+	// The runtime never stalls Init past the budget; the opener's own wait is
+	// cut short by the runtime-provided context, not by the test.
+	assert.Less(t, elapsed, time.Second)
+	st := rt.Status()
+	assert.False(t, st.Enabled)
+	assert.Equal(t, ReasonStoreInitFailed, st.ReasonCode)
 }

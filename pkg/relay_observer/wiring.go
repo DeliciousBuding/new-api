@@ -2,8 +2,12 @@ package relayobserver
 
 import (
 	"context"
+	"os"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 // This file wires the frozen components into the single runtime face that
@@ -30,6 +34,12 @@ const (
 	stateClosed
 )
 
+// storeOpenBudget bounds a single store open during Init. NewAPI calls Init
+// synchronously before it starts listening, so a hung DNS or TCP connection
+// must never stall process startup beyond this budget (SSOT: observer failures
+// never alter process startup).
+const storeOpenBudget = 5 * time.Second
+
 // storeOpener is the store construction seam of the runtime. Production uses
 // defaultStoreOpener (which adapts OpenPGStore); tests inject a controlled
 // opener so no real database is ever contacted.
@@ -55,6 +65,10 @@ type Runtime struct {
 	store  Store
 
 	openStore storeOpener
+
+	// openTimeout bounds the store open during Init; <= 0 uses storeOpenBudget.
+	// It is a test seam: production never sets it.
+	openTimeout time.Duration
 }
 
 // NewRuntime returns a disabled-by-default runtime composition. Status can be
@@ -72,12 +86,23 @@ func NewRuntime() *Runtime {
 // startup is absorbed internally: the runtime becomes disabled with a safe
 // ReasonCode and Init never returns an error, so NewAPI startup is never
 // affected. Init is idempotent (later calls are no-ops) and concurrency-safe.
+// The store open runs under the bounded open budget, and a panicking opener
+// disables the observer instead of crashing the process (SSOT: all observer
+// entry points recover panics).
 func (r *Runtime) Init() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.state != stateUninitialized {
 		return
 	}
+	// Fail-open wrapper: any panic from the opener seam, the dispatcher
+	// constructor, or Start disables the observer. Recover runs while the
+	// lock is still held, so disableLocked stays consistent.
+	defer func() {
+		if recover() != nil {
+			r.disableLocked(ReasonStoreInitFailed)
+		}
+	}()
 	cfg, err := ConfigFromEnv()
 	if err != nil {
 		r.disableLocked(ReasonConfigInvalid)
@@ -87,9 +112,21 @@ func (r *Runtime) Init() {
 		r.disableLocked(ReasonDisabled)
 		return
 	}
-	store, err := r.openStore(context.Background(), cfg)
+	timeout := r.openTimeout
+	if timeout <= 0 {
+		timeout = storeOpenBudget
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	store, err := r.openStore(ctx, cfg)
 	if err != nil {
 		r.disableLocked(storeInitReason(err))
+		return
+	}
+	if store == nil {
+		// A nil store would panic the shutdown path (Store.Close inside
+		// Dispatcher.Stop); fail open instead of wiring it.
+		r.disableLocked(ReasonStoreInitFailed)
 		return
 	}
 	disp := NewDispatcher(cfg, store)
@@ -103,8 +140,9 @@ func (r *Runtime) Init() {
 // Close stops the worker and releases the store inside the caller's budget
 // (main passes a hard two-second context). It is idempotent and
 // concurrency-safe; the dispatcher absorbs its own stop and store-close
-// failures, so Close never changes the main shutdown outcome. A runtime that
-// was never initialized or already closed is a no-op.
+// failures, so Close never changes the main shutdown outcome. A store Close
+// that panics is absorbed here for the same reason. A runtime that was never
+// initialized or already closed is a no-op.
 func (r *Runtime) Close(ctx context.Context) {
 	r.mu.Lock()
 	if r.state != stateEnabled {
@@ -116,7 +154,9 @@ func (r *Runtime) Close(ctx context.Context) {
 	r.reason = ReasonDisabled
 	r.mu.Unlock()
 	// Dispatcher.Stop owns the store release: it passes the remaining budget
-	// to Store.Close (the adapter's Close is idempotent).
+	// to Store.Close (the adapter's Close is idempotent). A panic from either
+	// must never change the main shutdown outcome.
+	defer func() { _ = recover() }()
 	disp.Stop(ctx)
 }
 
@@ -150,26 +190,37 @@ func (r *Runtime) disableLocked(reason ReasonCode) {
 // The error text comes from this package (store_pg.go) and is stable: schema
 // verify/bootstrap failures map to ReasonSchemaMismatch, everything else
 // (unsupported DSN, pool open or ping failure) maps to ReasonStoreInitFailed.
-// The raw error never crosses the status, API, or log boundary.
+// The verify sub-path errors (information_schema listing and scanning) are
+// schema check failures too, returned without the "schema verify:" wrapper,
+// so they are matched explicitly. The raw error never crosses the status,
+// API, or log boundary.
 func storeInitReason(err error) ReasonCode {
 	if err == nil {
 		return ReasonStoreInitFailed
 	}
 	msg := err.Error()
 	if strings.HasPrefix(msg, "relayobserver: schema verify:") ||
-		strings.HasPrefix(msg, "relayobserver: schema bootstrap:") {
+		strings.HasPrefix(msg, "relayobserver: schema bootstrap:") ||
+		strings.HasPrefix(msg, "relayobserver: list observer tables:") ||
+		strings.HasPrefix(msg, "relayobserver: scan observer table:") {
 		return ReasonSchemaMismatch
 	}
 	return ReasonStoreInitFailed
 }
 
-// ipTrustFor derives the effective IP trust tier of the running configuration:
-// "none" while the dual-opt-in RecordIP policy is off, "direct" when capture
-// is on (the proxy tier is decided by later phases from the trusted-proxy
-// configuration).
+// ipTrustFor derives the effective IP trust tier of the running
+// configuration, mirroring the SSOT semantics: capture is on only when both
+// opt-ins hold — the NewAPI system setting (common.LogRecordIpEnabled) and
+// RELAY_OBSERVER_RECORD_IP — and with capture on, the tier is "direct" only
+// under TRUSTED_PROXIES=none strict direct-connect. Under the default
+// trusted-CIDR configuration or an explicit proxy list, gin.ClientIP() may
+// derive the peer from X-Forwarded-For, so the tier is "proxy".
 func ipTrustFor(cfg Config) IPTrust {
-	if !cfg.RecordIP {
+	if !cfg.RecordIP || !common.LogRecordIpEnabled {
 		return IPTrustNone
 	}
-	return IPTrustDirect
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")), "none") {
+		return IPTrustDirect
+	}
+	return IPTrustProxy
 }

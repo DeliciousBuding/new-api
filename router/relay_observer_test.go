@@ -36,6 +36,12 @@ func TestRelayObserverStatusRouteRegistered(t *testing.T) {
 
 func TestRelayObserverStatusAuthMatrix(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	// The auth chain reads model.DB/model.LOG_DB and common.RedisEnabled.
+	// Swap them for this test's private sqlite instance and restore the
+	// package globals afterwards so later tests never observe this fixture.
+	origRedis := common.RedisEnabled
+	origDB := model.DB
+	origLogDB := model.LOG_DB
 	common.RedisEnabled = false
 
 	db, err := gorm.Open(sqlite.Open("file:"+strings.ReplaceAll(t.Name(), "/", "_")+"?mode=memory&cache=shared"), &gorm.Config{})
@@ -46,6 +52,9 @@ func TestRelayObserverStatusAuthMatrix(t *testing.T) {
 		if sqlDB, err := db.DB(); err == nil {
 			_ = sqlDB.Close()
 		}
+		common.RedisEnabled = origRedis
+		model.DB = origDB
+		model.LOG_DB = origLogDB
 	})
 	require.NoError(t, db.AutoMigrate(&model.User{}))
 
