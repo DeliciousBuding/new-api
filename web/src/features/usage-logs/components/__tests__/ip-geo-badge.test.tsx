@@ -73,7 +73,13 @@ reactTestGlobals.IS_REACT_ACT_ENVIRONMENT = true
 
 function renderBadge(props: {
   ip: string
-  geo?: { country_code?: string; country?: string; city?: string; asn?: number; asn_org?: string }
+  geo?: {
+    country_code?: string
+    country?: string
+    city?: string
+    asn?: number
+    asn_org?: string
+  }
 }) {
   const host = document.createElement('div')
   document.body.appendChild(host)
@@ -95,7 +101,10 @@ after(() => {
 describe('IpGeoBadge', () => {
   test('shows the raw IP address (no masking for admins)', () => {
     const { host, root } = renderBadge({ ip: '1.2.3.4' })
-    assert.ok(host.textContent?.includes('1.2.3.4'), 'IP must be visible in plain text')
+    assert.ok(
+      host.textContent?.includes('1.2.3.4'),
+      'IP must be visible in plain text'
+    )
     root.unmount()
   })
 
@@ -122,14 +131,23 @@ describe('IpGeoBadge', () => {
       ip: '1.2.3.4',
       geo: { country_code: 'cn', country: 'China' },
     })
-    assert.ok(!host.querySelector('[class*="fi-"]'), 'lowercase code must not map to a flag')
+    assert.ok(
+      !host.querySelector('[class*="fi-"]'),
+      'lowercase code must not map to a flag'
+    )
     root.unmount()
   })
 
   test('exposes locality details via popover trigger when geo is resolved', () => {
     const { host, root } = renderBadge({
       ip: '1.2.3.4',
-      geo: { country_code: 'CN', country: 'China', city: 'Shenzhen', asn: 4134, asn_org: 'Chinanet' },
+      geo: {
+        country_code: 'CN',
+        country: 'China',
+        city: 'Shenzhen',
+        asn: 4134,
+        asn_org: 'Chinanet',
+      },
     })
     assert.ok(
       host.querySelector('button'),

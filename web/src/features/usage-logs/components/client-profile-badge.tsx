@@ -45,7 +45,9 @@ const BRAND_ICONS: Partial<Record<ClientProfile, string>> = {
   chatgpt: 'ChatGPT.Color',
 }
 
-const FALLBACK_ICONS: Partial<Record<ClientProfile, ComponentType<{ className?: string }>>> = {
+const FALLBACK_ICONS: Partial<
+  Record<ClientProfile, ComponentType<{ className?: string }>>
+> = {
   gohttp: Bot,
   cliproxyapi: Repeat,
   chat: Smartphone,
@@ -67,7 +69,11 @@ interface ClientProfileBadgeProps {
   compact?: boolean
 }
 
-export function ClientProfileBadge({ profile, className, compact }: ClientProfileBadgeProps) {
+export function ClientProfileBadge({
+  profile,
+  className,
+  compact,
+}: ClientProfileBadgeProps) {
   const brandIcon = BRAND_ICONS[profile]
   const FallbackIcon = FALLBACK_ICONS[profile]
 

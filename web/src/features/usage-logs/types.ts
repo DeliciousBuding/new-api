@@ -138,7 +138,8 @@ export interface GeoInfo {
   asn_org?: string
 }
 
-export interface ChannelAffinityInfo {  rule_name?: string
+export interface ChannelAffinityInfo {
+  rule_name?: string
   selected_group?: string
   key_source?: string
   key_path?: string

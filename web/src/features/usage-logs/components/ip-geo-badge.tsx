@@ -1,5 +1,4 @@
 import 'flag-icons/css/flag-icons.min.css'
-
 import { Globe } from 'lucide-react'
 
 import { StatusBadge } from '@/components/status-badge'
@@ -37,19 +36,31 @@ export function IpGeoBadge({ ip, geo, className, compact }: IpGeoBadgeProps) {
 
   const flagEl = flag && (
     <span
-      className={cn('h-[14px] w-[18px] shrink-0 rounded-[2px] text-[14px]', flag)}
+      className={cn(
+        'h-[14px] w-[18px] shrink-0 rounded-[2px] text-[14px]',
+        flag
+      )}
       aria-hidden='true'
     />
   )
 
   if (compact) {
     return (
-      <span className={cn('inline-flex items-center gap-1.5 text-xs', className)}>
+      <span
+        className={cn('inline-flex items-center gap-1.5 text-xs', className)}
+      >
         {flagEl}
-        {!flag && <Globe className='text-muted-foreground size-3 shrink-0' aria-hidden='true' />}
-        <span className='whitespace-nowrap font-mono'>{ip}</span>
+        {!flag && (
+          <Globe
+            className='text-muted-foreground size-3 shrink-0'
+            aria-hidden='true'
+          />
+        )}
+        <span className='font-mono whitespace-nowrap'>{ip}</span>
         {geo?.city && <span className='text-muted-foreground'>{geo.city}</span>}
-        {geo?.country && <span className='text-muted-foreground'>{geo.country}</span>}
+        {geo?.country && (
+          <span className='text-muted-foreground'>{geo.country}</span>
+        )}
         {geo?.asn && <span className='text-muted-foreground'>AS{geo.asn}</span>}
       </span>
     )
@@ -65,7 +76,12 @@ export function IpGeoBadge({ ip, geo, className, compact }: IpGeoBadgeProps) {
       )}
     >
       {flagEl}
-      {!flag && <Globe className='text-muted-foreground size-3 shrink-0' aria-hidden='true' />}
+      {!flag && (
+        <Globe
+          className='text-muted-foreground size-3 shrink-0'
+          aria-hidden='true'
+        />
+      )}
       <span className='whitespace-nowrap'>{ip}</span>
     </StatusBadge>
   )
@@ -77,7 +93,11 @@ export function IpGeoBadge({ ip, geo, className, compact }: IpGeoBadgeProps) {
   // Hover: quick locality glance (city first, then country/ASN) — mirrors the
   // Sub2API usage-card pattern of a compact summary with details one level
   // deeper. Click still opens the full popover below.
-  const tooltipLine = [geo?.city, geo?.country, geo?.asn ? `AS${geo.asn}` : null]
+  const tooltipLine = [
+    geo?.city,
+    geo?.country,
+    geo?.asn ? `AS${geo.asn}` : null,
+  ]
     .filter(Boolean)
     .join(' · ')
 
@@ -85,7 +105,9 @@ export function IpGeoBadge({ ip, geo, className, compact }: IpGeoBadgeProps) {
     <TooltipProvider delay={300}>
       <Tooltip>
         <TooltipTrigger
-          render={<button type='button' className='inline-flex items-center gap-1' />}
+          render={
+            <button type='button' className='inline-flex items-center gap-1' />
+          }
         >
           {chip}
         </TooltipTrigger>

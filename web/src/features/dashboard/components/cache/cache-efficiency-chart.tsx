@@ -188,7 +188,9 @@ export function CacheEfficiencyChart(props: CacheEfficiencyChartProps) {
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger
-                  render={<span className='text-muted-foreground/60 inline-flex' />}
+                  render={
+                    <span className='text-muted-foreground/60 inline-flex' />
+                  }
                 >
                   <CircleAlert className='text-muted-foreground/60 size-3.5' />
                 </TooltipTrigger>
