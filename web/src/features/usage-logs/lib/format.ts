@@ -352,23 +352,28 @@ export function clientProfileLabel(profile: string | undefined): string {
 
 /**
  * Cache-read ratio (cache hits as a share of total input).
- * Denominator rule: on OpenAI-compatible paths the upstream provides
- * `input_tokens_total` (already includes cache reads) so it is used as-is;
- * on Claude-format paths `cache_tokens` comes back separately, so the
- * denominator is cache + input.
- * Verified against production logs (2026-08-01): DeepSeek's Anthropic-compatible
- * endpoint returns input_tokens excluding cache reads (40 samples, all
- * prompt << cache), so cache + input is the correct denominator there —
- * prompt_tokens alone would render a fake 100% for large context caches.
+ * Denominator rule:
+ * - `input_tokens_total` (OpenAI-compatible paths that provide it) is used
+ *   as-is — it already includes cache reads.
+ * - Claude-format paths (`claudeFormat`) report cache reads separately
+ *   (DeepSeek's Anthropic-compatible endpoint returns input_tokens excluding
+ *   cache reads, verified against 40 production samples), so the denominator
+ *   is cache + input.
+ * - Other OpenAI-compatible paths: `prompt_tokens` already includes cache
+ *   reads, so the denominator is prompt_tokens — adding cache again would
+ *   double-count and under-report (e.g. cache=33408/prompt=33409 would show
+ *   ~50% instead of ~100%).
  * Returns null when there is nothing to show.
  */
 export function computeCacheRate(
   cacheRead: number,
   promptTokens: number,
-  inputTokensTotal?: number
+  inputTokensTotal?: number,
+  claudeFormat?: boolean
 ): number | null {
   if (cacheRead <= 0) return null
-  const total = inputTokensTotal ?? cacheRead + promptTokens
+  const total =
+    inputTokensTotal ?? (claudeFormat ? cacheRead + promptTokens : promptTokens)
   if (total <= 0) return null
   return Math.min(100, Math.round((cacheRead / total) * 100))
 }

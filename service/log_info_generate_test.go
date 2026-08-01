@@ -288,6 +288,22 @@ func TestDetectClientProfile(t *testing.T) {
 			want:    "claude_sdk",
 		},
 		{
+			name: "claude cli with anthropic-version header stays claude_cli",
+			headers: map[string]string{
+				"User-Agent":        "claude-cli/2.1.205 (external, cli)",
+				"Anthropic-Version": "2023-06-01",
+			},
+			want: "claude_cli",
+		},
+		{
+			name: "claude desktop-3p ua with anthropic-version header",
+			headers: map[string]string{
+				"User-Agent":        "claude-cli/2.1.219 (external, claude-desktop-3p, agent-sdk/0.3.219)",
+				"Anthropic-Version": "2023-06-01",
+			},
+			want: "claude_desktop",
+		},
+		{
 			name:    "openai python ua",
 			headers: map[string]string{"User-Agent": "OpenAI/Python 2.24.0"},
 			want:    "openai_sdk",

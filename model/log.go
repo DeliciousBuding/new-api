@@ -154,6 +154,9 @@ func formatUserLogs(logs []*Log, startIdx int) {
 			// delete(otherMap, "reject_reason")
 			// delete(otherMap, "stream_status")
 		}
+		// IP is an audit element, admin-only (admin paths keep it via
+		// GetAllLogs which does not go through formatUserLogs).
+		logs[i].Ip = ""
 		logs[i].Other = common.MapToJsonStr(otherMap)
 	}
 	assignDisplayLogIds(logs, startIdx)

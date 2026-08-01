@@ -22,7 +22,13 @@ const { computeCacheRate } = await import('../../lib/format')
 describe('computeCacheRate', () => {
   test('claude format: denominator = cache + input', () => {
     // DeepSeek-style context cache: 90k cached vs 50 fresh input.
-    assert.equal(computeCacheRate(90240, 50, undefined), 100)
+    assert.equal(computeCacheRate(90240, 50, undefined, true), 100)
+  })
+
+  test('openai format: prompt_tokens already includes cache reads', () => {
+    // cache=33408 / prompt=33409 → true hit rate ≈ 100%, not ~50%.
+    assert.equal(computeCacheRate(33408, 33409, undefined, false), 100)
+    assert.equal(computeCacheRate(39424, 42869, undefined, false), 92)
   })
 
   test('openai format: uses upstream input_tokens_total when present', () => {

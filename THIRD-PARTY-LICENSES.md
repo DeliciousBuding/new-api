@@ -93,6 +93,7 @@ Transitive dependencies should be audited before a final external release.
 | web | production | npm | `cmdk` | `1.1.1` | MIT |
 | web | production | npm | `dayjs` | `1.11.21` | MIT |
 | web | production | npm | `dompurify` | `3.4.11` | Apache-2.0 OR MPL-2.0 |
+| web | production | npm | `flag-icons` | `7.5.0` | MIT |
 | web | production | npm | `i18next` | `26.3.6` | MIT |
 | web | production | npm | `i18next-browser-languagedetector` | `8.2.1` | MIT |
 | web | production | npm | `input-otp` | `1.4.2` | MIT |

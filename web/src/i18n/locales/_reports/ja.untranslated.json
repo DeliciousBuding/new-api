@@ -1,4 +1,5 @@
 {
+  "Cache Rate": "Cache Rate",
   "Country:": "Country:",
   "Record client IP addresses": "Record client IP addresses",
   "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.": "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.",

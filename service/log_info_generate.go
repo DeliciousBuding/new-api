@@ -123,7 +123,13 @@ func DetectClientProfile(c *gin.Context) string {
 		}
 	}
 	if h.Get("Anthropic-Version") != "" {
-		return "claude_sdk"
+		// claude-cli 等客户端同样携带 Anthropic-Version——先排除已可识别
+		// 的 Claude 客户端 UA，纯 SDK 调用才归 claude_sdk。
+		ua := strings.ToLower(c.Request.UserAgent())
+		if !strings.Contains(ua, "claude-cli/") && !strings.Contains(ua, "claude-desktop-3p") {
+			return "claude_sdk"
+		}
+		// 落入下方 Claude 族 UA 细分
 	}
 	if h.Get("X-Stainless-Lang") != "" || h.Get("X-Stainless-Runtime") != "" {
 		return "openai_sdk"
@@ -198,6 +204,8 @@ func DetectClientProfile(c *gin.Context) string {
 		default:
 			return "claude_cli"
 		}
+	case strings.Contains(ua, "claude-desktop-3p"):
+		return "claude_desktop"
 	case strings.Contains(ua, "claude/") && (strings.Contains(ua, "electron") || strings.Contains(ua, "msix")):
 		return "claude_desktop"
 	case strings.Contains(ua, "anthropic/js"):

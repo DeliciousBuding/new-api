@@ -687,6 +687,7 @@
     "Cache pricing": "缓存定价",
     "Cache ratio": "缓存倍率",
     "Cache Read": "缓存读取",
+    "Cache Rate": "缓存命中率",
     "Cache read price": "缓存读取价格",
     "Cache repeated prompt prefixes for cheaper, faster reuse": "缓存重复的提示词前缀，复用更快、更省钱",
     "Cache write": "缓存写入",

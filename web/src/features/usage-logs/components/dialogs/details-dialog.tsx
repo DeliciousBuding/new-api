@@ -413,9 +413,8 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
   const completionTokens = log.completion_tokens || 0
   const cacheRead = other.cache_tokens || 0
   // Same denominator rule as the list column: upstream total input when
-  // available, otherwise cache + input (Claude-format paths report cache
-  // reads separately).
-  const cacheRate = computeCacheRate(cacheRead, promptTokens, other.input_tokens_total)
+  // available, Claude-format paths use cache + input, others use prompt_tokens.
+  const cacheRate = computeCacheRate(cacheRead, promptTokens, other.input_tokens_total, other.claude)
   const cacheWrite = other.cache_creation_tokens || 0
   const cacheWrite5m = other.cache_creation_tokens_5m || 0
   const cacheWrite1h = other.cache_creation_tokens_1h || 0

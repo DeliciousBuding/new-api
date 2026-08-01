@@ -689,13 +689,15 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
         const cacheWriteTokens = hasSplitCache
           ? cacheWrite5m + cacheWrite1h
           : other?.cache_creation_tokens || 0
-        // Cache ratio denominator: upstream-provided total input (OpenAI-compatible
-        // paths) when available, otherwise cache + input (Claude-format paths
-        // report cache reads separately).
+        // Cache ratio denominator: upstream-provided total input
+        // (OpenAI-compatible paths) when available; Claude-format paths
+        // report cache reads separately so the denominator is cache + input;
+        // other OpenAI-compatible paths count prompt_tokens (includes cache).
         const cacheRate = computeCacheRate(
           cacheReadTokens,
           promptTokens,
-          other?.input_tokens_total
+          other?.input_tokens_total,
+          other?.claude
         )
 
         return (
@@ -705,24 +707,64 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
               {completionTokens.toLocaleString()}
             </span>
             {(cacheReadTokens > 0 || cacheWriteTokens > 0) && (
-              <div className='flex items-center gap-1 text-[11px]'>
-                {cacheReadTokens > 0 && (
-                  <span className='text-muted-foreground/60'>
-                    {t('Cache')}↓ {cacheReadTokens.toLocaleString()}
-                    {cacheRate !== null && (
-                      <span className='text-muted-foreground/40'>
-                        {' '}
-                        ({cacheRate}%)
-                      </span>
+              <TooltipProvider delay={300}>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={<span className='flex items-center gap-1 text-[11px]' />}
+                  >
+                  {cacheReadTokens > 0 && (
+                    <span className='text-muted-foreground/60'>
+                      {t('Cache')}↓ {cacheReadTokens.toLocaleString()}
+                      {cacheRate !== null && (
+                        <span className='text-muted-foreground/40'>
+                          {' '}
+                          ({cacheRate}%)
+                        </span>
+                      )}
+                    </span>
+                  )}
+                  {cacheWriteTokens > 0 && (
+                    <span className='text-muted-foreground/60'>
+                      ↑ {cacheWriteTokens.toLocaleString()}
+                    </span>
+                  )}
+                </TooltipTrigger>
+                <TooltipContent>
+                  <div className='space-y-1'>
+                    {cacheReadTokens > 0 && (
+                      <div className='flex items-center justify-between gap-4'>
+                        <span className='text-muted-foreground text-xs'>
+                          {t('Cache Read')}
+                        </span>
+                        <span className='font-mono text-xs tabular-nums'>
+                          {cacheReadTokens.toLocaleString()}
+                        </span>
+                      </div>
                     )}
-                  </span>
-                )}
-                {cacheWriteTokens > 0 && (
-                  <span className='text-muted-foreground/60'>
-                    ↑ {cacheWriteTokens.toLocaleString()}
-                  </span>
-                )}
-              </div>
+                    {cacheWriteTokens > 0 && (
+                      <div className='flex items-center justify-between gap-4'>
+                        <span className='text-muted-foreground text-xs'>
+                          {t('Cache Write')}
+                        </span>
+                        <span className='font-mono text-xs tabular-nums'>
+                          {cacheWriteTokens.toLocaleString()}
+                        </span>
+                      </div>
+                    )}
+                    {cacheRate !== null && (
+                      <div className='flex items-center justify-between gap-4'>
+                        <span className='text-muted-foreground text-xs'>
+                          {t('Cache Rate')}
+                        </span>
+                        <span className='font-mono text-xs tabular-nums'>
+                          {cacheRate}%
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             )}
           </div>
         )

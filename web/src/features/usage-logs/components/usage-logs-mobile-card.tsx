@@ -214,7 +214,8 @@ function MobileTokensField({ log }: { log: UsageLog }) {
   const cacheRate = computeCacheRate(
     cacheReadTokens,
     promptTokens,
-    other?.input_tokens_total
+    other?.input_tokens_total,
+    other?.claude
   )
   const showCache = cacheReadTokens > 0 || cacheWriteTokens > 0
 

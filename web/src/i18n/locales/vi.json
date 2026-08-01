@@ -687,6 +687,7 @@
     "Cache pricing": "Giá bộ nhớ đệm",
     "Cache ratio": "Tỷ lệ bộ nhớ đệm",
     "Cache Read": "Đọc bộ nhớ đệm",
+    "Cache Rate": "Cache Rate",
     "Cache read price": "Giá đọc cache",
     "Cache repeated prompt prefixes for cheaper, faster reuse": "Lưu cache phần đầu lời nhắc lặp lại để tái sử dụng nhanh và rẻ hơn",
     "Cache write": "Ghi cache",

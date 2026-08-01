@@ -687,6 +687,7 @@
     "Cache pricing": "Tarification du cache",
     "Cache ratio": "Ratio de cache",
     "Cache Read": "Lecture du cache",
+    "Cache Rate": "Cache Rate",
     "Cache read price": "Prix de lecture du cache",
     "Cache repeated prompt prefixes for cheaper, faster reuse": "Mettre en cache les préfixes répétés pour une réutilisation plus rapide et moins coûteuse",
     "Cache write": "Écriture du cache",

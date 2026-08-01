@@ -687,6 +687,7 @@
     "Cache pricing": "Цены кэша",
     "Cache ratio": "Коэффициент кэша",
     "Cache Read": "Чтение кэша",
+    "Cache Rate": "Cache Rate",
     "Cache read price": "Цена чтения кэша",
     "Cache repeated prompt prefixes for cheaper, faster reuse": "Кэшировать повторяющиеся префиксы промптов для дешёвого и быстрого повторного использования",
     "Cache write": "Запись кэша",
