@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/pkg/geoip"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -28,6 +29,31 @@ func applyExplicitLogTextFilter(tx *gorm.DB, column string, value string) (*gorm
 		return tx.Where(condition, pattern), nil
 	}
 	return tx.Where(column+" = ?", value), nil
+}
+
+// attachGeoInfoToOther nests locality hints under other.admin_info.geo
+// (admin-only via formatUserLogs, same as client_profile). No-op when the
+// geo lookup is unavailable or the IP is empty.
+func attachGeoInfoToOther(other map[string]interface{}, ip string) {
+	if other == nil || ip == "" {
+		return
+	}
+	info, ok := geoip.Lookup(ip)
+	if !ok {
+		return
+	}
+	adminInfo, ok := other["admin_info"].(map[string]interface{})
+	if !ok || adminInfo == nil {
+		adminInfo = map[string]interface{}{}
+		other["admin_info"] = adminInfo
+	}
+	adminInfo["geo"] = map[string]interface{}{
+		"country_code": info.CountryCode,
+		"country":      info.Country,
+		"city":         info.City,
+		"asn":          info.ASN,
+		"asn_org":      info.ASNOrg,
+	}
 }
 
 func buildLogLikeCondition(column string, value string) (string, string, error) {
@@ -126,6 +152,9 @@ func formatUserLogs(logs []*Log, startIdx int) {
 			// delete(otherMap, "reject_reason")
 			// delete(otherMap, "stream_status")
 		}
+		// IP is an audit element, admin-only (admin paths keep it via
+		// GetAllLogs which does not go through formatUserLogs).
+		logs[i].Ip = ""
 		logs[i].Other = common.MapToJsonStr(otherMap)
 	}
 	assignDisplayLogIds(logs, startIdx)
@@ -285,36 +314,34 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
-	otherStr := common.MapToJsonStr(other)
-	// 判断是否需要记录 IP
-	needRecordIp := false
-	if settingMap, err := GetUserSetting(userId, false); err == nil {
-		if settingMap.RecordIpLog {
-			needRecordIp = true
-		}
+	// 判断是否需要记录 IP（TokenDance audit topic：全局开关，默认记录；用户级 RecordIpLog 保留兼容）
+	needRecordIp := common.LogRecordIpEnabled
+	ip := ""
+	if needRecordIp {
+		ip = c.ClientIP()
 	}
+	if ip != "" {
+		attachGeoInfoToOther(other, ip)
+	}
+	// Serialize after locality hints are attached so admin_info.geo is included.
+	otherStr := common.MapToJsonStr(other)
 	log := &Log{
-		UserId:           userId,
-		Username:         username,
-		CreatedAt:        common.GetTimestamp(),
-		Type:             LogTypeError,
-		Content:          content,
-		PromptTokens:     0,
-		CompletionTokens: 0,
-		TokenName:        tokenName,
-		ModelName:        modelName,
-		Quota:            0,
-		ChannelId:        channelId,
-		TokenId:          tokenId,
-		UseTime:          useTimeSeconds,
-		IsStream:         isStream,
-		Group:            group,
-		Ip: func() string {
-			if needRecordIp {
-				return c.ClientIP()
-			}
-			return ""
-		}(),
+		UserId:            userId,
+		Username:          username,
+		CreatedAt:         common.GetTimestamp(),
+		Type:              LogTypeError,
+		Content:           content,
+		PromptTokens:      0,
+		CompletionTokens:  0,
+		TokenName:         tokenName,
+		ModelName:         modelName,
+		Quota:             0,
+		ChannelId:         channelId,
+		TokenId:           tokenId,
+		UseTime:           useTimeSeconds,
+		IsStream:          isStream,
+		Group:             group,
+		Ip:                ip,
 		RequestId:         requestId,
 		UpstreamRequestId: upstreamRequestId,
 		Other:             otherStr,
@@ -349,36 +376,34 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
 	createdAt := common.GetTimestamp()
-	otherStr := common.MapToJsonStr(params.Other)
-	// 判断是否需要记录 IP
-	needRecordIp := false
-	if settingMap, err := GetUserSetting(userId, false); err == nil {
-		if settingMap.RecordIpLog {
-			needRecordIp = true
-		}
+	// 判断是否需要记录 IP（TokenDance audit topic：全局开关，默认记录；用户级 RecordIpLog 保留兼容）
+	needRecordIp := common.LogRecordIpEnabled
+	ip := ""
+	if needRecordIp {
+		ip = c.ClientIP()
 	}
+	if ip != "" {
+		attachGeoInfoToOther(params.Other, ip)
+	}
+	// Serialize after locality hints are attached so admin_info.geo is included.
+	otherStr := common.MapToJsonStr(params.Other)
 	log := &Log{
-		UserId:           userId,
-		Username:         username,
-		CreatedAt:        createdAt,
-		Type:             LogTypeConsume,
-		Content:          params.Content,
-		PromptTokens:     params.PromptTokens,
-		CompletionTokens: params.CompletionTokens,
-		TokenName:        params.TokenName,
-		ModelName:        params.ModelName,
-		Quota:            params.Quota,
-		ChannelId:        params.ChannelId,
-		TokenId:          params.TokenId,
-		UseTime:          params.UseTimeSeconds,
-		IsStream:         params.IsStream,
-		Group:            params.Group,
-		Ip: func() string {
-			if needRecordIp {
-				return c.ClientIP()
-			}
-			return ""
-		}(),
+		UserId:            userId,
+		Username:          username,
+		CreatedAt:         createdAt,
+		Type:              LogTypeConsume,
+		Content:           params.Content,
+		PromptTokens:      params.PromptTokens,
+		CompletionTokens:  params.CompletionTokens,
+		TokenName:         params.TokenName,
+		ModelName:         params.ModelName,
+		Quota:             params.Quota,
+		ChannelId:         params.ChannelId,
+		TokenId:           params.TokenId,
+		UseTime:           params.UseTimeSeconds,
+		IsStream:          params.IsStream,
+		Group:             params.Group,
+		Ip:                ip,
 		RequestId:         requestId,
 		UpstreamRequestId: upstreamRequestId,
 		Other:             otherStr,
@@ -613,6 +638,144 @@ type Stat struct {
 	Quota int `json:"quota"`
 	Rpm   int `json:"rpm"`
 	Tpm   int `json:"tpm"`
+}
+
+// CacheUsageStat 是单个 token 在窗口内的缓存用量聚合（缓存读取/创建/输入）。
+type CacheUsageStat struct {
+	TokenId             int64 `json:"token_id"`
+	PromptTokens        int64 `json:"prompt_tokens"`
+	InputTokens         int64 `json:"input_tokens"`
+	CacheReadTokens     int64 `json:"cache_read_tokens"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens"`
+}
+
+// cacheJsonExtractExpr 返回按日志数据库类型提取 other JSON 字段的 SQL 表达式。
+// 缓存字段（cache_tokens / cache_creation_tokens）存在 other JSON 中而非独立列。
+func cacheJsonExtractExpr(field string) string {
+	switch {
+	case common.UsingLogDatabase(common.DatabaseTypePostgreSQL):
+		return "COALESCE((other::jsonb->>'" + field + "')::bigint, 0)"
+	case common.UsingLogDatabase(common.DatabaseTypeMySQL):
+		return "COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(other, '$." + field + "')) AS SIGNED), 0)"
+	case common.UsingLogDatabase(common.DatabaseTypeClickHouse):
+		return "JSONExtractInt(other, '" + field + "')"
+	default: // SQLite (built-in JSON1 extension)
+		return "COALESCE(CAST(json_extract(other, '$." + field + "') AS INTEGER), 0)"
+	}
+}
+
+// cacheJsonTextExtractExpr 返回按日志数据库类型提取 other JSON 文本字段的 SQL 表达式。
+func cacheJsonTextExtractExpr(field string) string {
+	switch {
+	case common.UsingLogDatabase(common.DatabaseTypePostgreSQL):
+		return "(other::jsonb->>'" + field + "')"
+	case common.UsingLogDatabase(common.DatabaseTypeMySQL):
+		return "JSON_UNQUOTE(JSON_EXTRACT(other, '$." + field + "'))"
+	case common.UsingLogDatabase(common.DatabaseTypeClickHouse):
+		return "JSONExtractString(other, '" + field + "')"
+	default: // SQLite (built-in JSON1 extension)
+		return "json_extract(other, '$." + field + "')"
+	}
+}
+
+// cacheJsonBoolExtractExpr 返回按日志数据库类型提取 other JSON 布尔字段的 SQL 表达式。
+func cacheJsonBoolExtractExpr(field string) string {
+	switch {
+	case common.UsingLogDatabase(common.DatabaseTypePostgreSQL):
+		return "COALESCE((other::jsonb->>'" + field + "')::boolean, false)"
+	case common.UsingLogDatabase(common.DatabaseTypeMySQL):
+		return "COALESCE(JSON_EXTRACT(other, '$." + field + "') = true, false)"
+	case common.UsingLogDatabase(common.DatabaseTypeClickHouse):
+		return "JSONExtractBool(other, '" + field + "')"
+	default: // SQLite (built-in JSON1 extension)
+		return "COALESCE(CAST(json_extract(other, '$." + field + "') AS INTEGER), 0)"
+	}
+}
+
+// cacheRateInputExpr 统一不同协议的缓存率分母：
+// - Anthropic usage 将普通输入、缓存读取、缓存创建分开上报；兼容旧日志 claude=true；
+// - 其他路径优先使用已规范化的 input_tokens_total；
+// - 老日志回退到 prompt_tokens（OpenAI 兼容语义已包含缓存读取）。
+func cacheRateInputExpr() string {
+	return "CASE WHEN (" + cacheJsonTextExtractExpr("usage_semantic") + " = 'anthropic' OR " + cacheJsonBoolExtractExpr("claude") + ") " +
+		"THEN COALESCE(prompt_tokens, 0) + " + cacheJsonExtractExpr("cache_tokens") + " + " + cacheJsonExtractExpr("cache_creation_tokens") + " " +
+		"ELSE COALESCE(NULLIF(" + cacheJsonExtractExpr("input_tokens_total") + ", 0), COALESCE(prompt_tokens, 0)) END"
+}
+
+// SumCacheUsageByTokenIds 聚合多个 token id 在时间窗口内的缓存用量。
+// 按 token_id 聚合（Log 表的 token_id 索引列）——token_name 跨用户可重复，
+// 按名字聚合会把不同用户的同名 key 数据合并。
+// 只统计消费日志（type=2）。
+func SumCacheUsageByTokenIds(tokenIds []int64, startTimestamp int64, endTimestamp int64) (map[int64]CacheUsageStat, error) {
+	stats := make(map[int64]CacheUsageStat)
+	if len(tokenIds) == 0 {
+		return stats, nil
+	}
+	rows := []CacheUsageStat{}
+	err := LOG_DB.Table("logs").
+		Select("token_id, COALESCE(SUM(prompt_tokens), 0) prompt_tokens, "+
+			"COALESCE(SUM("+cacheRateInputExpr()+"), 0) input_tokens, "+
+			"SUM("+cacheJsonExtractExpr("cache_tokens")+") cache_read_tokens, "+
+			"SUM("+cacheJsonExtractExpr("cache_creation_tokens")+") cache_creation_tokens").
+		Where("type = ?", LogTypeConsume).
+		Where("token_id IN ?", tokenIds).
+		Where("created_at >= ?", startTimestamp).
+		Where("created_at <= ?", endTimestamp).
+		Group("token_id").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		stats[r.TokenId] = r
+	}
+	return stats, nil
+}
+
+// CacheUsageDailyStat 是单个天桶（UTC 日，created_at/86400）内的缓存用量聚合。
+type CacheUsageDailyStat struct {
+	Day                 int64 `json:"day"`
+	PromptTokens        int64 `json:"prompt_tokens"`
+	InputTokens         int64 `json:"input_tokens"`
+	CacheReadTokens     int64 `json:"cache_read_tokens"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens"`
+}
+
+// cacheDayBucketExpr 返回按 UTC 日分桶的表达式。各库整除语义不同：
+// MySQL 的 `/` 返回 decimal 需 DIV，ClickHouse 需 intDiv；
+// PostgreSQL / SQLite 的 int/int 即为整除。
+func cacheDayBucketExpr() string {
+	switch {
+	case common.UsingLogDatabase(common.DatabaseTypeMySQL):
+		return "(created_at DIV 86400)"
+	case common.UsingLogDatabase(common.DatabaseTypeClickHouse):
+		return "intDiv(created_at, 86400)"
+	default:
+		return "(created_at / 86400)"
+	}
+}
+
+// SumCacheUsageDaily 聚合窗口内按天分桶的缓存用量（dashboard 缓存效率趋势）。
+// 天桶用 Unix 秒整除 86400（UTC 日边界，四库一致），前端按本地时区渲染标签；
+// 只统计消费日志（type=2）；空 tokenIds 表示全站聚合。
+func SumCacheUsageDaily(tokenIds []int64, startTimestamp int64, endTimestamp int64) ([]CacheUsageDailyStat, error) {
+	query := LOG_DB.Table("logs").
+		Select(cacheDayBucketExpr()+" AS day, COALESCE(SUM(prompt_tokens), 0) prompt_tokens, "+
+			"COALESCE(SUM("+cacheRateInputExpr()+"), 0) input_tokens, "+
+			"SUM("+cacheJsonExtractExpr("cache_tokens")+") cache_read_tokens, "+
+			"SUM("+cacheJsonExtractExpr("cache_creation_tokens")+") cache_creation_tokens").
+		Where("type = ?", LogTypeConsume).
+		Where("created_at >= ?", startTimestamp).
+		Where("created_at <= ?", endTimestamp)
+	if len(tokenIds) > 0 {
+		query = query.Where("token_id IN ?", tokenIds)
+	}
+	rows := []CacheUsageDailyStat{}
+	err := query.Group("day").Order("day ASC").Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {
