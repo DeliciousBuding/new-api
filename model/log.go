@@ -235,6 +235,10 @@ func RecordLoginLog(userId int, username string, content string, ip string, acti
 		other[k] = v
 	}
 	other["op"] = buildOpField(action, params)
+	// Locality hints nested under admin_info (admin-only, same as consume logs).
+	if ip != "" {
+		attachGeoInfoToOther(other, ip)
+	}
 	log := &Log{
 		UserId:    userId,
 		Username:  username,
@@ -266,6 +270,11 @@ func RecordOperationAuditLog(logUserId int, content string, ip string, action st
 	if len(auditInfo) > 0 {
 		other["audit_info"] = auditInfo
 	}
+	// Serialize after locality hints are attached so admin_info.geo is included
+	// (same pattern as RecordConsumeLog / RecordErrorLog).
+	if ip != "" {
+		attachGeoInfoToOther(other, ip)
+	}
 	log := &Log{
 		UserId:    logUserId,
 		Username:  username,
@@ -292,6 +301,11 @@ func RecordTopupLog(userId int, content string, callerIp string, paymentMethod s
 	}
 	other := map[string]interface{}{
 		"admin_info": adminInfo,
+	}
+	// Serialize after locality hints are attached so admin_info.geo is included
+	// (same pattern as RecordConsumeLog / RecordErrorLog).
+	if callerIp != "" {
+		attachGeoInfoToOther(other, callerIp)
 	}
 	log := &Log{
 		UserId:    userId,
