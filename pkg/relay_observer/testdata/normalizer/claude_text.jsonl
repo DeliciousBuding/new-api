@@ -1,0 +1,3 @@
+{"kind":"system","content":[{"type":"text","text":"system prompt"}],"logical_bytes":40,"hmac":"8983549fe11c4d69b1a52bb07dd0ec240ab1d85e66202e0f7d5a0f2c7a21718b"}
+{"kind":"message","role":"user","content":[{"type":"text","text":"hello"}],"logical_bytes":33,"hmac":"0cca3961157189715605d7f67c76ec619b73000fc5041775e4c3f845a7c92821"}
+{"kind":"message","role":"assistant","content":[{"type":"text","text":"hi"}],"logical_bytes":60,"hmac":"69c3eee37d6738714e33e8737345a7712bc43adc5e1e27509ce70537dc413651"}

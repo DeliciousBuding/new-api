@@ -49,4 +49,6 @@ COPY --from=geoip /tmp/dbip-city-lite.mmdb /tmp/dbip-asn-lite.mmdb /opt/geoip/
 COPY LICENSE NOTICE THIRD-PARTY-LICENSES.md /licenses/
 EXPOSE 3000
 WORKDIR /data
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD wget -q -O /dev/null http://127.0.0.1:3000/api/status || exit 1
 ENTRYPOINT ["/new-api"]
