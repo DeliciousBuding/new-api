@@ -32,6 +32,7 @@ const BRAND_ICONS: Partial<Record<ClientProfile, string>> = {
   roo_code: 'RooCode.Color',
   copilot: 'Copilot.Color',
   gemini_cli: 'GeminiCLI.Color',
+  gemini_sdk: 'Gemini.Color',
   perplexity: 'Perplexity.Color',
   poe: 'Poe.Color',
   openrouter: 'OpenRouter.Color',
@@ -59,6 +60,7 @@ const FALLBACK_ICONS: Partial<
   continue: Braces,
   zed: Braces,
   codex_browser: Globe,
+  qoder: Braces,
   http_client: Braces,
 }
 

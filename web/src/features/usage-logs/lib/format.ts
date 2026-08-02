@@ -331,6 +331,8 @@ export const CLIENT_PROFILE_LABELS: Record<string, string> = {
   codex_vscode: 'Codex VS Code',
   codex_browser: 'Codex Browser',
   gemini_cli: 'Gemini CLI',
+  gemini_sdk: 'Gemini SDK',
+  qoder: 'Qoder',
   perplexity: 'Perplexity',
   poe: 'Poe',
   openrouter: 'OpenRouter',

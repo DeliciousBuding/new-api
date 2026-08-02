@@ -718,6 +718,14 @@ export function DetailsDialog(props: DetailsDialogProps) {
             />
           )}
 
+          {props.isAdmin && other?.admin_info?.client_ua && (
+            <DetailRow
+              label={t('User Agent')}
+              value={other.admin_info.client_ua}
+              mono
+            />
+          )}
+
           {showAdminIp && (
             <DetailRow
               label={t('IP Address')}
