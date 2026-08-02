@@ -202,19 +202,20 @@ func finishNormalize(items []CanonicalItem, protocolGap bool, opts NormalizeOpti
 		res.ContentState = ContentStateGap
 		res.OmittedItems = len(items) - i
 		var droppedLogical int64
-		var droppedHmac string
 		for j := i; j < len(items); j++ {
 			droppedLogical += items[j].LogicalBytes
-			if droppedHmac == "" {
-				droppedHmac = items[j].Hmac
-			}
 		}
+		// The marker's digest is its own content digest, never the digest of a
+		// dropped item: T2.3 dedups content objects on (session, digest), so a
+		// marker keyed by a real item's digest would silently collide with
+		// that item's stored object and the marker (data, not silent loss)
+		// would disappear from reconstruction — or replace the real item.
 		gap := CanonicalItem{
 			Kind:         CanonicalKindGap,
 			LogicalBytes: droppedLogical,
-			Hmac:         droppedHmac,
 			Truncated:    true,
 		}
+		gap.Hmac = withHmac(gap, opts).Hmac
 		if gapPayload, err := common.Marshal(gap); err == nil && total+int64(len(gapPayload)) <= limit {
 			res.Items = append(res.Items, gap)
 			total += int64(len(gapPayload))

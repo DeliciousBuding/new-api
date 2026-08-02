@@ -911,16 +911,13 @@ func TestNormalizerResponsesInstructionsNonString(t *testing.T) {
 
 // TestNormalizerItemHMACMatches proves every item digest is the keyed HMAC of
 // its own canonical content layer — the digest T2.3 uses for content dedup.
-// The gap marker is excluded: it references the digest of the dropped tail
-// start instead of carrying its own content digest.
+// Gap markers carry their own content digest too (never a dropped item's
+// digest, which would collide with that item's content object).
 func TestNormalizerItemHMACMatches(t *testing.T) {
 	for _, tc := range normalizerFixtures() {
 		t.Run(tc.name, func(t *testing.T) {
 			res := NormalizeRequest(tc.format, tc.req, tc.opts)
 			for _, it := range res.Items {
-				if it.Kind == CanonicalKindGap {
-					continue
-				}
 				// The digest covers the content layer, so the hmac field is
 				// cleared before re-marshaling for the comparison.
 				core := it

@@ -1,3 +1,3 @@
 {"kind":"message","role":"user","content":[{"type":"text","text":"alpha alpha alpha alpha"}],"logical_bytes":82,"hmac":"744a8bbe2443171888a94fab4350365419942874ae1133f1c4d1c1c188926ba8"}
 {"kind":"message","role":"user","content":[{"type":"text","text":"bravo bravo bravo bravo"}],"logical_bytes":82,"hmac":"413725534564255089de376e8f5a50bd5e8052d571fe915cd1170fa1831fd4f4"}
-{"kind":"gap","logical_bytes":90,"hmac":"e877232ba9bf559cad3816c87c5513ee5557a78c44492b513a1a6e01adf92213","truncated":true}
+{"kind":"gap","logical_bytes":90,"hmac":"bacd743e71eb464fe21a2c08e61e253ef3aeaf0177120b7175871842109b5327","truncated":true}
