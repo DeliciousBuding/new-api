@@ -3,6 +3,7 @@ package controller
 import (
 	"net/http"
 	"sync"
+	"time"
 
 	relayobserver "github.com/QuantumNous/new-api/pkg/relay_observer"
 
@@ -15,15 +16,31 @@ import (
 // router/api-router.go, so Admin and User receive 403 even when calling the
 // route directly; frontend hiding is convenience, not authorization.
 
+// ObserverRuntime is the minimal runtime surface the Root observer
+// controllers need: the in-memory status snapshot, the bounded query surface
+// with its query timeout, and the content HMAC key. *relayobserver.Runtime
+// satisfies it (main wires the real runtime); tests inject fakes to cover
+// every failure path, exactly like the store opener seam.
+type ObserverRuntime interface {
+	// Status returns the safe in-memory observer status snapshot.
+	Status() relayobserver.Status
+	// QuerySurface exposes the bounded Root query port, its query timeout,
+	// and availability: (nil, 0, false) when the observer cannot run queries.
+	QuerySurface() (relayobserver.QueryStore, time.Duration, bool)
+	// HMACKey returns the content HMAC key; an empty key skips the digest
+	// re-verification of the turn context reconstruction.
+	HMACKey() string
+}
+
 var (
 	relayObserverMu sync.RWMutex
-	relayObserverRT *relayobserver.Runtime
+	relayObserverRT ObserverRuntime
 )
 
 // SetRelayObserverRuntime wires the process-level observer runtime into the
 // controller. main calls it once after Init; tests inject controlled runtimes
 // (and nil to restore the unwired state). Concurrency-safe.
-func SetRelayObserverRuntime(rt *relayobserver.Runtime) {
+func SetRelayObserverRuntime(rt ObserverRuntime) {
 	relayObserverMu.Lock()
 	defer relayObserverMu.Unlock()
 	relayObserverRT = rt

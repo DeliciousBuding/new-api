@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"net"
 	"sort"
 	"strings"
 	"sync"
@@ -116,6 +117,14 @@ func (f *fakeQueryDB) QueryRow(ctx context.Context, query string, args ...any) r
 		return &fakeQueryRow{err: f.err}
 	}
 	switch {
+	case strings.Contains(query, "FROM observer_sessions") && strings.Contains(query, "WHERE id ="):
+		sid := args[0].(string)
+		for _, s := range f.sessions {
+			if s.id == sid {
+				return &fakeQueryRow{values: []any{s.id, s.nodeScope, s.userID, s.clientFamily, s.firstSeen, s.lastSeen, s.turnCount, s.gapCount}}
+			}
+		}
+		return &fakeQueryRow{err: sql.ErrNoRows}
 	case strings.Contains(query, "FROM observer_sessions") && strings.Contains(query, "count(*)"):
 		return &fakeQueryRow{values: []any{int64(len(f.sessions))}}
 	case strings.Contains(query, "FROM observer_turns") && strings.Contains(query, "content_state"):
@@ -440,7 +449,7 @@ func turnAt(i int) fakeTurnRow {
 		completionTokens: 20,
 		cachedTokens:     5,
 		quota:            3000,
-		attempts:         []byte(`[{"ChannelID":1,"Group":"default","StatusCode":200,"ErrorCode":"","ElapsedMS":5}]`),
+		attempts:         []byte(`[{"channel_id":1,"group":"default","status_code":200,"error_code":"","elapsed_ms":5}]`),
 		attemptsOmitted:  0,
 		contentState:     ContentStateFull,
 	}
@@ -1080,4 +1089,167 @@ func TestListTurnsFilterArgs(t *testing.T) {
 	assert.Contains(t, sqlText, "session_id = $1")
 	assert.Contains(t, sqlText, "user_id = $2")
 	assert.Contains(t, sqlText, "LIMIT $3")
+}
+
+// ---------------------------------------------------------------------------
+// T3.2: GetSession, filter dimensions, and the overview self-truncation
+
+// TestGetSessionFound proves GetSession returns the metadata row of an
+// existing session, reading no content columns.
+func TestGetSessionFound(t *testing.T) {
+	f := newFakeQueryDB()
+	fillSessions(f, 2)
+	id := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	out, err := getSessionQ(context.Background(), f, id)
+	require.NoError(t, err)
+	assert.Equal(t, id, out.SessionID)
+	assert.Equal(t, "node-a", out.NodeScope)
+	assert.Equal(t, int64(7), out.UserID)
+	assert.Equal(t, "codex", out.ClientFamily)
+	assert.Equal(t, epoch, out.LastSeen)
+	assert.Equal(t, int64(1), out.TurnCount)
+}
+
+// TestGetSessionNotFound proves a missing session row is classified
+// not_found, mapping onto the Root controller's 404.
+func TestGetSessionNotFound(t *testing.T) {
+	f := newFakeQueryDB()
+	fillSessions(f, 1)
+	_, err := getSessionQ(context.Background(), f, uuid.MustParse("00000000-0000-0000-0000-0000000000ff"))
+	require.Error(t, err)
+	assert.Equal(t, QueryErrNotFound, queryErrKind(t, err))
+}
+
+// TestGetSessionContextExpired proves GetSession honors the caller context
+// like every other query: an expired context is the timeout classification.
+func TestGetSessionContextExpired(t *testing.T) {
+	f := newFakeQueryDB()
+	fillSessions(f, 1)
+	f.block = make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := getSessionQ(ctx, f, uuid.MustParse("00000000-0000-0000-0000-000000000001"))
+	require.Error(t, err)
+	assert.Equal(t, QueryErrTimeout, queryErrKind(t, err))
+}
+
+// TestGetSessionQueryError proves a store failure surfaces with the query
+// session prefix for logs, exactly like the list queries.
+func TestGetSessionQueryError(t *testing.T) {
+	f := newFakeQueryDB()
+	fillSessions(f, 1)
+	f.err = fmt.Errorf("relayobserver: simulate session query failure")
+	_, err := getSessionQ(context.Background(), f, uuid.MustParse("00000000-0000-0000-0000-000000000001"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "query session")
+}
+
+// TestListSessionsExtendedFilters proves the T3.2 filter dimensions reach the
+// SQL in order: direct sessions columns are plain equality conditions and the
+// turn-derived filters are EXISTS subqueries over observer_turns that reuse
+// the session/turn index coverage.
+func TestListSessionsExtendedFilters(t *testing.T) {
+	f := newFakeQueryDB()
+	fillSessions(f, 5)
+	ip := net.ParseIP("198.51.100.7")
+	success := false
+	_, err := listSessionsQ(context.Background(), f, SessionQuery{
+		NodeScope:    "node-b",
+		ClientFamily: "claude",
+		Model:        "gpt-5",
+		Success:      &success,
+		Country:      "US",
+		ASN:          15169,
+		IP:           ip,
+		PageSize:     2,
+	})
+	require.NoError(t, err)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	require.Len(t, f.sqls, 1)
+	sqlText := f.sqls[0]
+	assert.Contains(t, sqlText, "node_scope = $1")
+	assert.Contains(t, sqlText, "client_family = $2")
+	assert.Contains(t, sqlText, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.model = $3)")
+	assert.Contains(t, sqlText, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.success = $4)")
+	assert.Contains(t, sqlText, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.country_code = $5)")
+	assert.Contains(t, sqlText, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.asn = $6)")
+	assert.Contains(t, sqlText, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.client_ip = $7::inet)")
+	assert.Contains(t, sqlText, "LIMIT $8")
+}
+
+// TestListSessionsOptionalFiltersOmitted proves every T3.2 filter is optional:
+// the empty query emits no filter condition at all, so unfiltered pages keep
+// their original SQL shape.
+func TestListSessionsOptionalFiltersOmitted(t *testing.T) {
+	f := newFakeQueryDB()
+	fillSessions(f, 3)
+	_, err := listSessionsQ(context.Background(), f, SessionQuery{PageSize: 2})
+	require.NoError(t, err)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	require.Len(t, f.sqls, 1)
+	sqlText := f.sqls[0]
+	assert.NotContains(t, sqlText, "EXISTS")
+	assert.NotContains(t, sqlText, "client_family = ")
+	assert.Contains(t, sqlText, "ORDER BY last_seen DESC, id DESC LIMIT $1")
+}
+
+// TestListTurnsExtendedFilters proves the T3.2 turn filter dimensions reach
+// the SQL in order as plain equality conditions on the turns row itself.
+func TestListTurnsExtendedFilters(t *testing.T) {
+	f := newFakeQueryDB()
+	fillTurns(f, 5)
+	sid := uuid.MustParse("00000000-0000-0000-0000-0000000000aa")
+	success := true
+	_, err := listTurnsQ(context.Background(), f, TurnQuery{
+		SessionID: &sid,
+		UserID:    9,
+		Model:     "gpt-5",
+		Success:   &success,
+		ErrorType: "upstream_error",
+		PageSize:  2,
+	})
+	require.NoError(t, err)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	require.Len(t, f.sqls, 1)
+	sqlText := f.sqls[0]
+	assert.Contains(t, sqlText, "session_id = $1")
+	assert.Contains(t, sqlText, "user_id = $2")
+	assert.Contains(t, sqlText, "model = $3")
+	assert.Contains(t, sqlText, "success = $4")
+	assert.Contains(t, sqlText, "error_type = $5")
+	assert.Contains(t, sqlText, "LIMIT $6")
+}
+
+// TestOverviewSelfTruncatesWindows proves the P2-1 fix: the overview response
+// never exceeds the requested window count even when the underlying buckets
+// cover more spans (the LIMIT backstop is windows+1 only to prove more data
+// exists; the extras are trimmed).
+func TestOverviewSelfTruncatesWindows(t *testing.T) {
+	f := newFakeQueryDB()
+	// Five one-second turns spread across five distinct buckets of the
+	// 3600-second window span.
+	for i := 0; i < 5; i++ {
+		tr := turnAt(i)
+		f.turns = append(f.turns, tr)
+	}
+	out, err := overviewQ(context.Background(), f, OverviewQuery{WindowSeconds: 3600, Windows: 3})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(out.Windows), 3, "the response must never exceed the requested window count")
+}
+
+// TestOverviewTruncatesAllExtras proves the truncation applies to the full
+// excess: with every bucket populated, the response stays at the request.
+func TestOverviewTruncatesAllExtras(t *testing.T) {
+	f := newFakeQueryDB()
+	for i := 0; i < 60; i++ {
+		tr := turnAt(i)
+		tr.occurredAt = epoch.Add(time.Duration(i) * 10 * time.Minute)
+		f.turns = append(f.turns, tr)
+	}
+	out, err := overviewQ(context.Background(), f, OverviewQuery{WindowSeconds: 3600, Windows: 5})
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(out.Windows), 5)
 }

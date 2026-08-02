@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -364,4 +365,131 @@ func TestIntegrationQueryJSONBContract(t *testing.T) {
 	var contentRows int
 	require.NoError(t, openFixturePool(t, dsn).QueryRow(`SELECT count(*) FROM observer_content_objects`).Scan(&contentRows))
 	assert.Zero(t, contentRows)
+}
+
+// TestIntegrationQueryGetSession covers GetSession on the real database: an
+// existing session returns its metadata row and an unknown id classifies
+// not_found (T3.2 contract extension).
+func TestIntegrationQueryGetSession(t *testing.T) {
+	dsn := integrationDSN(t)
+	store := resetObserverSchema(t, dsn)
+	defer store.Close(context.Background())
+
+	db := openFixturePool(t, dsn)
+	scope := "t32-query-getsession"
+	id := uuid.MustParse("30000000-0000-0000-0000-000000000001")
+	insertQuerySession(t, db, id, scope, epoch.Add(time.Hour))
+
+	qs, err := NewQueryStore(store)
+	require.NoError(t, err)
+
+	out, err := qs.GetSession(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, id, out.SessionID)
+	assert.Equal(t, scope, out.NodeScope)
+	assert.Equal(t, int64(7), out.UserID)
+	assert.Equal(t, "codex", out.ClientFamily)
+	assert.Equal(t, int64(3), out.TurnCount)
+	assert.Equal(t, int64(1), out.GapCount)
+
+	_, err = qs.GetSession(context.Background(), uuid.MustParse("30000000-0000-0000-0000-0000000000ff"))
+	require.Error(t, err)
+	var qe *QueryError
+	require.ErrorAs(t, err, &qe)
+	assert.Equal(t, QueryErrNotFound, qe.Kind)
+}
+
+// TestIntegrationQueryFilterDimensions covers the T3.2 filter dimensions on
+// the real database: the session list's turn-derived EXISTS filters
+// (model/success/country/asn/ip) and the turn list's own filters
+// (model/success/error_type) return exactly the matching rows.
+func TestIntegrationQueryFilterDimensions(t *testing.T) {
+	dsn := integrationDSN(t)
+	store := resetObserverSchema(t, dsn)
+	defer store.Close(context.Background())
+
+	db := openFixturePool(t, dsn)
+	scope := "t32-query-filters"
+	sidA := uuid.MustParse("30000000-0000-0000-0000-00000000000a")
+	sidB := uuid.MustParse("30000000-0000-0000-0000-00000000000b")
+	insertQuerySession(t, db, sidA, scope, epoch.Add(2*time.Hour))
+	insertQuerySession(t, db, sidB, scope, epoch.Add(time.Hour))
+
+	// Session A: one successful gpt-5 turn from US/ASN 15169/198.51.100.7.
+	// Session B: one failed claude-5 turn from JP/ASN 1/198.51.100.8.
+	turnA := sampleEvent()
+	turnA.NodeScope = scope
+	turnA.EventID = "flt-a-1"
+	turnA.SessionID = &sidA
+	turnA.OccurredAt = epoch.Add(30 * time.Minute)
+	turnA.Model = "gpt-5"
+	turnA.Success = true
+	turnA.ErrorType = ""
+	turnA.CountryCode = "US"
+	turnA.ASN = 15169
+	turnA.ClientIP = net.ParseIP("198.51.100.7")
+	turnA.IPTrust = IPTrustDirect
+
+	turnB := sampleEvent()
+	turnB.NodeScope = scope
+	turnB.EventID = "flt-b-1"
+	turnB.SessionID = &sidB
+	turnB.OccurredAt = epoch.Add(20 * time.Minute)
+	turnB.Model = "claude-5"
+	turnB.Success = false
+	turnB.ErrorType = "upstream_error"
+	turnB.CountryCode = "JP"
+	turnB.ASN = 1
+	turnB.ClientIP = net.ParseIP("198.51.100.8")
+	turnB.IPTrust = IPTrustDirect
+	require.NoError(t, store.WriteBatch(context.Background(), []Event{turnA, turnB}))
+
+	qs, err := NewQueryStore(store)
+	require.NoError(t, err)
+
+	sessionsWith := func(q SessionQuery) []uuid.UUID {
+		t.Helper()
+		page, err := qs.ListSessions(context.Background(), q)
+		require.NoError(t, err)
+		ids := make([]uuid.UUID, 0, len(page.Items))
+		for _, it := range page.Items {
+			ids = append(ids, it.SessionID)
+		}
+		return ids
+	}
+	assert.ElementsMatch(t, []uuid.UUID{sidA}, sessionsWith(SessionQuery{Model: "gpt-5"}))
+	assert.ElementsMatch(t, []uuid.UUID{sidB}, sessionsWith(SessionQuery{Model: "claude-5"}))
+	success := true
+	assert.ElementsMatch(t, []uuid.UUID{sidA}, sessionsWith(SessionQuery{Success: &success}))
+	success = false
+	assert.ElementsMatch(t, []uuid.UUID{sidB}, sessionsWith(SessionQuery{Success: &success}))
+	assert.ElementsMatch(t, []uuid.UUID{sidA}, sessionsWith(SessionQuery{Country: "US"}))
+	assert.ElementsMatch(t, []uuid.UUID{sidB}, sessionsWith(SessionQuery{Country: "JP"}))
+	assert.ElementsMatch(t, []uuid.UUID{sidA}, sessionsWith(SessionQuery{ASN: 15169}))
+	assert.ElementsMatch(t, []uuid.UUID{sidB}, sessionsWith(SessionQuery{ASN: 1}))
+	assert.ElementsMatch(t, []uuid.UUID{sidA}, sessionsWith(SessionQuery{IP: net.ParseIP("198.51.100.7")}))
+	assert.ElementsMatch(t, []uuid.UUID{sidB}, sessionsWith(SessionQuery{IP: net.ParseIP("198.51.100.8")}))
+	// No filter returns both sessions.
+	assert.ElementsMatch(t, []uuid.UUID{sidA, sidB}, sessionsWith(SessionQuery{}))
+
+	turnsWith := func(q TurnQuery) []uuid.UUID {
+		t.Helper()
+		page, err := qs.ListTurns(context.Background(), q)
+		require.NoError(t, err)
+		ids := make([]uuid.UUID, 0, len(page.Items))
+		for _, it := range page.Items {
+			ids = append(ids, *it.SessionID)
+		}
+		return ids
+	}
+	assert.ElementsMatch(t, []uuid.UUID{sidA}, turnsWith(TurnQuery{Model: "gpt-5"}))
+	assert.ElementsMatch(t, []uuid.UUID{sidB}, turnsWith(TurnQuery{Model: "claude-5"}))
+	success = true
+	assert.ElementsMatch(t, []uuid.UUID{sidA}, turnsWith(TurnQuery{Success: &success}))
+	success = false
+	assert.ElementsMatch(t, []uuid.UUID{sidB}, turnsWith(TurnQuery{Success: &success}))
+	assert.ElementsMatch(t, []uuid.UUID{sidB}, turnsWith(TurnQuery{ErrorType: "upstream_error"}))
+	// An empty error type means "no filter", not "no error".
+	assert.ElementsMatch(t, []uuid.UUID{sidA, sidB}, turnsWith(TurnQuery{ErrorType: ""}))
+	assert.Empty(t, turnsWith(TurnQuery{ErrorType: "no_such_error"}))
 }

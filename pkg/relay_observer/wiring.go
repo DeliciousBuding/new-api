@@ -69,6 +69,26 @@ type Runtime struct {
 	// openTimeout bounds the store open during Init; <= 0 uses storeOpenBudget.
 	// It is a test seam: production never sets it.
 	openTimeout time.Duration
+
+	// queryTimeout is the Root query budget stored from the init configuration
+	// (Config.QueryTimeout, which ConfigFromEnv clamps into [1ms, 2s]). The
+	// Root controllers read it through QuerySurface and bound every
+	// database-backed query with it.
+	queryTimeout time.Duration
+	// hmacKey is the content HMAC key of the running configuration; it is a
+	// secret and must never appear in status output, logs, or API responses.
+	// An empty key skips the per-item digest re-verification of the turn
+	// context reconstruction (T2.3 semantics).
+	hmacKey string
+	// queryStore lazily caches the bounded query surface wrapper created from
+	// the enabled store on first QuerySurface call.
+	queryStore QueryStore
+	// querySurface is the query-surface seam of the runtime. Production leaves
+	// it nil, so QuerySurface uses the default lazy wrapper over the enabled
+	// store; tests inject a controlled surface (same pattern as openStore) so
+	// no real database is ever contacted. The seam must not call back into
+	// QuerySurface while the runtime lock is held.
+	querySurface func() (QueryStore, time.Duration, bool)
 }
 
 // NewRuntime returns a disabled-by-default runtime composition. Status can be
@@ -134,6 +154,8 @@ func (r *Runtime) Init() {
 	disp.Start()
 	r.disp = disp
 	r.store = store
+	r.queryTimeout = cfg.QueryTimeout
+	r.hmacKey = cfg.HMACKey
 	r.state = stateEnabled
 }
 
@@ -177,6 +199,44 @@ func (r *Runtime) Status() Status {
 		ReasonCode: r.reason,
 		IPTrust:    IPTrustNone,
 	}
+}
+
+// QuerySurface exposes the bounded Root query port of an enabled runtime:
+// the QueryStore, the stored query timeout, and availability. A disabled,
+// uninitialized, closed, or nil-store runtime reports (nil, 0, false) so the
+// Root controllers emit the degraded envelope instead of touching a query
+// surface that cannot run. The QueryStore wrapper is created lazily on the
+// first call and cached; a store that cannot be wrapped (any non-PostgreSQL
+// adapter) also reports unavailable, matching the fail-open contract. The
+// injected querySurface seam replaces the whole default behavior. Safe to
+// call concurrently with any other method.
+func (r *Runtime) QuerySurface() (QueryStore, time.Duration, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.querySurface != nil {
+		return r.querySurface()
+	}
+	if r.state != stateEnabled || r.store == nil {
+		return nil, 0, false
+	}
+	if r.queryStore == nil {
+		qs, err := NewQueryStore(r.store)
+		if err != nil {
+			return nil, 0, false
+		}
+		r.queryStore = qs
+	}
+	return r.queryStore, r.queryTimeout, true
+}
+
+// HMACKey returns the content HMAC key of the running configuration. An empty
+// key skips the per-item digest re-verification of the turn context
+// reconstruction (T3.1 semantics); the value is a secret and must never cross
+// the status, API, or log boundary.
+func (r *Runtime) HMACKey() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.hmacKey
 }
 
 // disableLocked moves the runtime into the fail-open disabled state with a

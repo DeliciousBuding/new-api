@@ -99,13 +99,14 @@ type Event struct {
 }
 
 // AttemptSummary is one bounded downstream channel attempt: channel id, group,
-// status/error code, and elapsed milliseconds.
+// status/error code, and elapsed milliseconds. The JSON tags serve the Root
+// turn DTO (T3.2); the observer itself never serializes attempts directly.
 type AttemptSummary struct {
-	ChannelID  int64
-	Group      string
-	StatusCode int
-	ErrorCode  string
-	ElapsedMS  int64
+	ChannelID  int64  `json:"channel_id"`
+	Group      string `json:"group"`
+	StatusCode int    `json:"status_code"`
+	ErrorCode  string `json:"error_code"`
+	ElapsedMS  int64  `json:"elapsed_ms"`
 }
 
 // ReasonCode is a stable, secret-free reason for a disabled or degraded

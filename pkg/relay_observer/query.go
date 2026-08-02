@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -69,6 +71,9 @@ const (
 	// QueryErrTimeout marks a query that expired its context (caller timeout)
 	// before starting or while waiting for the query semaphore.
 	QueryErrTimeout QueryErrorKind = "timeout"
+	// QueryErrNotFound marks a query whose target row does not exist (for
+	// example GET /sessions/:id of an unknown session).
+	QueryErrNotFound QueryErrorKind = "not_found"
 )
 
 // QueryError is a classified bounded query failure. Kind is stable and
@@ -101,6 +106,8 @@ func classifiedQueryError(kind QueryErrorKind, msg string, err error) error {
 
 // ---------------------------------------------------------------------------
 // frozen query contracts (consumed directly by the T3.2 Root controllers)
+// (frozen + T3.2 extensions: GetSession, not_found, and the filter
+// dimensions)
 
 // OverviewQuery selects the bounded aggregate windows of GET /overview.
 type OverviewQuery struct {
@@ -139,12 +146,36 @@ type OverviewResult struct {
 }
 
 // SessionQuery selects one page of GET /sessions. Filters are optional; the
-// page is ordered by (last_seen DESC, id DESC) with keyset pagination.
+// page is ordered by (last_seen DESC, id DESC) with keyset pagination. The
+// turn-derived filters (Model, Success, Country, ASN, IP) are evaluated as
+// EXISTS subqueries over observer_turns, reusing the idx_observer_turns_*
+// index coverage, because the sessions table carries no per-turn columns.
 type SessionQuery struct {
 	// NodeScope restricts to one node scope; empty means all.
 	NodeScope string
 	// UserID restricts to one user; 0 means all.
 	UserID int64
+	// ClientFamily restricts to one session client family; empty means all.
+	ClientFamily string
+	// Model restricts to sessions that have at least one turn with this model;
+	// empty means all.
+	Model string
+	// Success restricts to sessions that have at least one successful (or,
+	// when false, failed) turn; nil means all.
+	Success *bool
+	// Country restricts to sessions with at least one turn from this country
+	// code; empty means all.
+	Country string
+	// ASN restricts to sessions with at least one turn from this ASN; 0 means
+	// all.
+	ASN int64
+	// IP restricts to sessions with at least one turn from this client IP;
+	// nil means all.
+	IP net.IP
+	// IPTrust restricts to sessions with at least one turn captured at this
+	// trust tier; empty means all (T3.2 extension beyond the T3.1 field set,
+	// consumed by the Root controller's ip_trust whitelist).
+	IPTrust IPTrust
 	// From/To bound the session recency by last_seen; zero means unbounded.
 	From time.Time
 	To   time.Time
@@ -176,6 +207,15 @@ type TurnQuery struct {
 	SessionID *uuid.UUID
 	// UserID restricts to one user; 0 means all.
 	UserID int64
+	// Model restricts to one model; empty means all.
+	Model string
+	// Success restricts to successful (or, when false, failed) turns; nil
+	// means all.
+	Success *bool
+	// ErrorType restricts to one error type; empty means all.
+	ErrorType string
+	// IPTrust restricts to turns captured at this trust tier; empty means all.
+	IPTrust IPTrust
 	// PageSize is clamped into [DefaultPageSize, MaxPageSize].
 	PageSize int
 	// Cursor is the opaque keyset cursor of the next page; empty means the
@@ -262,6 +302,9 @@ type QueryStore interface {
 	Overview(ctx context.Context, query OverviewQuery) (OverviewResult, error)
 	// ListSessions returns one keyset page of sessions, ordered by recency.
 	ListSessions(ctx context.Context, query SessionQuery) (SessionPage, error)
+	// GetSession returns the metadata row of one session; a session with no
+	// row is reported with the not_found classification.
+	GetSession(ctx context.Context, id uuid.UUID) (SessionSummary, error)
 	// ListTurns returns one keyset page of turns, ordered by time.
 	ListTurns(ctx context.Context, query TurnQuery) (TurnPage, error)
 	// TurnContext reconstructs one turn's content, bounded to one checkpoint
@@ -413,6 +456,37 @@ func listSessionsQ(ctx context.Context, q contentQuerier, query SessionQuery) (S
 		conds = append(conds, "user_id = $"+strconv.Itoa(len(args)+1))
 		args = append(args, query.UserID)
 	}
+	if query.ClientFamily != "" {
+		conds = append(conds, "client_family = $"+strconv.Itoa(len(args)+1))
+		args = append(args, query.ClientFamily)
+	}
+	// Turn-derived filters are EXISTS subqueries over observer_turns, reusing
+	// the idx_observer_turns_session_id/model index coverage: a session is
+	// listed only when at least one of its turns matches the filter.
+	if query.Model != "" {
+		conds = append(conds, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.model = $"+strconv.Itoa(len(args)+1)+")")
+		args = append(args, query.Model)
+	}
+	if query.Success != nil {
+		conds = append(conds, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.success = $"+strconv.Itoa(len(args)+1)+")")
+		args = append(args, *query.Success)
+	}
+	if query.Country != "" {
+		conds = append(conds, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.country_code = $"+strconv.Itoa(len(args)+1)+")")
+		args = append(args, query.Country)
+	}
+	if query.ASN != 0 {
+		conds = append(conds, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.asn = $"+strconv.Itoa(len(args)+1)+")")
+		args = append(args, query.ASN)
+	}
+	if query.IP != nil {
+		conds = append(conds, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.client_ip = $"+strconv.Itoa(len(args)+1)+"::inet)")
+		args = append(args, query.IP.String())
+	}
+	if query.IPTrust != "" {
+		conds = append(conds, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.ip_trust = $"+strconv.Itoa(len(args)+1)+")")
+		args = append(args, string(query.IPTrust))
+	}
 	if !query.From.IsZero() {
 		conds = append(conds, "last_seen >= $"+strconv.Itoa(len(args)+1))
 		args = append(args, query.From)
@@ -485,6 +559,22 @@ func listTurnsQ(ctx context.Context, q contentQuerier, query TurnQuery) (TurnPag
 	if query.UserID != 0 {
 		conds = append(conds, "user_id = $"+strconv.Itoa(len(args)+1))
 		args = append(args, query.UserID)
+	}
+	if query.Model != "" {
+		conds = append(conds, "model = $"+strconv.Itoa(len(args)+1))
+		args = append(args, query.Model)
+	}
+	if query.Success != nil {
+		conds = append(conds, "success = $"+strconv.Itoa(len(args)+1))
+		args = append(args, *query.Success)
+	}
+	if query.ErrorType != "" {
+		conds = append(conds, "error_type = $"+strconv.Itoa(len(args)+1))
+		args = append(args, query.ErrorType)
+	}
+	if query.IPTrust != "" {
+		conds = append(conds, "ip_trust = $"+strconv.Itoa(len(args)+1))
+		args = append(args, string(query.IPTrust))
 	}
 	if query.Cursor != "" {
 		at, id, err := decodeKeysetCursor(query.Cursor)
@@ -595,6 +685,12 @@ LIMIT $3`, float64(winSec), start, windows+1)
 	if err := rows.Err(); err != nil {
 		return out, fmt.Errorf("relayobserver: query overview windows: %w", err)
 	}
+	// The response never exceeds the requested window count: the LIMIT is
+	// windows+1 only to prove that more data exists, and the extras are
+	// trimmed here (P2-1: overview output self-truncates to the request).
+	if len(out.Windows) > windows {
+		out.Windows = out.Windows[:windows]
+	}
 
 	if err := q.QueryRow(ctx, `SELECT count(*) FROM observer_sessions`).Scan(&out.SessionCount); err != nil {
 		return out, fmt.Errorf("relayobserver: query overview session count: %w", err)
@@ -623,6 +719,30 @@ func turnContextQ(ctx context.Context, q contentQuerier, query ContextQuery) (Tu
 	return TurnContextResult{TurnID: rt.TurnID, Ordinal: rt.Ordinal, Items: rt.Items}, nil
 }
 
+// getSessionQ loads one session's metadata row through the query seam. A
+// missing row is classified not_found so the Root controller can map it onto
+// a 404; content objects are never read on this path.
+func getSessionQ(ctx context.Context, q contentQuerier, id uuid.UUID) (SessionSummary, error) {
+	if err := ctx.Err(); err != nil {
+		return SessionSummary{}, classifiedQueryError(QueryErrTimeout, "query context expired", err)
+	}
+	var s SessionSummary
+	var idText string
+	err := q.QueryRow(ctx, `SELECT id::text, node_scope, user_id, client_family, first_seen, last_seen, turn_count, gap_count
+FROM observer_sessions WHERE id = $1`, id.String()).Scan(&idText, &s.NodeScope, &s.UserID, &s.ClientFamily, &s.FirstSeen, &s.LastSeen, &s.TurnCount, &s.GapCount)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SessionSummary{}, classifiedQueryError(QueryErrNotFound, "session not found", err)
+	}
+	if err != nil {
+		return SessionSummary{}, fmt.Errorf("relayobserver: query session: %w", err)
+	}
+	s.SessionID, err = uuid.Parse(idText)
+	if err != nil {
+		return SessionSummary{}, fmt.Errorf("relayobserver: query session: invalid session id %q: %w", idText, err)
+	}
+	return s, nil
+}
+
 // ---------------------------------------------------------------------------
 // QueryStore methods: semaphore-gated adapters over the seam functions.
 
@@ -643,6 +763,17 @@ func (q *pgQueryStore) ListSessions(ctx context.Context, query SessionQuery) (Se
 	err := q.withSlot(ctx, func() error {
 		var err error
 		out, err = listSessionsQ(ctx, sqlDBAdapter{db: q.store.db}, query)
+		return err
+	})
+	return out, err
+}
+
+// GetSession implements QueryStore.
+func (q *pgQueryStore) GetSession(ctx context.Context, id uuid.UUID) (SessionSummary, error) {
+	var out SessionSummary
+	err := q.withSlot(ctx, func() error {
+		var err error
+		out, err = getSessionQ(ctx, sqlDBAdapter{db: q.store.db}, id)
 		return err
 	})
 	return out, err

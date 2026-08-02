@@ -2,6 +2,7 @@ package relayobserver
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -516,4 +518,149 @@ func TestRuntimeInitStoreOpenBounded(t *testing.T) {
 	st := rt.Status()
 	assert.False(t, st.Enabled)
 	assert.Equal(t, ReasonStoreInitFailed, st.ReasonCode)
+}
+
+// ---------------------------------------------------------------------------
+// T3.2 query surface and HMAC key wiring
+
+// fakeQueryStore is a minimal QueryStore stub for the querySurface seam: the
+// wiring tests only assert that the seam result passes through unchanged, so
+// every method returns zero values.
+type fakeQueryStore struct {
+	store Store
+}
+
+func (fakeQueryStore) Overview(ctx context.Context, query OverviewQuery) (OverviewResult, error) {
+	return OverviewResult{}, nil
+}
+
+func (fakeQueryStore) ListSessions(ctx context.Context, query SessionQuery) (SessionPage, error) {
+	return SessionPage{}, nil
+}
+
+func (fakeQueryStore) ListTurns(ctx context.Context, query TurnQuery) (TurnPage, error) {
+	return TurnPage{}, nil
+}
+
+func (fakeQueryStore) TurnContext(ctx context.Context, query ContextQuery) (TurnContextResult, error) {
+	return TurnContextResult{}, nil
+}
+
+func (fakeQueryStore) GetSession(ctx context.Context, id uuid.UUID) (SessionSummary, error) {
+	return SessionSummary{}, nil
+}
+
+// TestRuntimeQuerySurfaceUninitialized proves an uninitialized runtime has no
+// query surface: (nil, 0, false) so the Root controllers emit the degraded
+// envelope instead of touching a query that cannot run.
+func TestRuntimeQuerySurfaceUninitialized(t *testing.T) {
+	rt := NewRuntime()
+	qs, timeout, ok := rt.QuerySurface()
+	assert.Nil(t, qs)
+	assert.Zero(t, timeout)
+	assert.False(t, ok)
+}
+
+// TestRuntimeQuerySurfaceDisabled proves a runtime disabled by configuration
+// has no query surface either, exactly like the uninitialized state.
+func TestRuntimeQuerySurfaceDisabled(t *testing.T) {
+	clearObserverEnv(t)
+	t.Setenv("RELAY_OBSERVER_ENABLED", "false")
+	rt := NewRuntime()
+	rt.Init()
+	qs, timeout, ok := rt.QuerySurface()
+	assert.Nil(t, qs)
+	assert.Zero(t, timeout)
+	assert.False(t, ok)
+}
+
+// TestRuntimeQuerySurfaceNonPGStore proves a runtime whose store cannot be
+// wrapped by the query port (any non-PostgreSQL adapter) reports the query
+// surface unavailable: the wrapper is created lazily and a wrap failure is
+// fail-open, never a panic.
+func TestRuntimeQuerySurfaceNonPGStore(t *testing.T) {
+	clearObserverEnv(t)
+	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	rt := NewRuntime()
+	rt.openStore = (&openerRecorder{store: &scriptedStore{}}).open
+	rt.Init()
+	require.True(t, rt.Status().Enabled)
+	qs, timeout, ok := rt.QuerySurface()
+	assert.Nil(t, qs)
+	assert.Zero(t, timeout)
+	assert.False(t, ok)
+}
+
+// TestRuntimeQuerySurfaceWrapsPGStore proves the default path wraps the
+// enabled PostgreSQL store lazily: the first call creates the bounded query
+// surface and caches it (repeated calls return the same instance), and the
+// stored query timeout from the configuration is passed through. The pool is
+// never dialed: sql.Open is lazy and the wrapper never queries.
+func TestRuntimeQuerySurfaceWrapsPGStore(t *testing.T) {
+	clearObserverEnv(t)
+	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	t.Setenv("RELAY_OBSERVER_QUERY_TIMEOUT_MS", "250")
+	db, err := sql.Open("pgx", "postgres://observer:observer@127.0.0.1:55433/relay_observer")
+	require.NoError(t, err)
+	defer db.Close()
+	rt := NewRuntime()
+	rt.openStore = (&openerRecorder{store: newPGStore(db)}).open
+	rt.Init()
+	require.True(t, rt.Status().Enabled)
+
+	qs, timeout, ok := rt.QuerySurface()
+	require.True(t, ok)
+	require.NotNil(t, qs)
+	assert.Equal(t, 250*time.Millisecond, timeout)
+	qs2, timeout2, ok2 := rt.QuerySurface()
+	require.True(t, ok2)
+	assert.Same(t, qs, qs2, "the query surface wrapper must be cached")
+	assert.Equal(t, timeout, timeout2)
+}
+
+// TestRuntimeQuerySurfaceSeamInjected proves the private querySurface seam
+// replaces the whole default behavior: an injected surface is returned
+// verbatim, so tests can drive every controller failure path without a real
+// store (same pattern as the openStore seam).
+func TestRuntimeQuerySurfaceSeamInjected(t *testing.T) {
+	rt := NewRuntime()
+	scripted := &scriptedStore{}
+	rt.querySurface = func() (QueryStore, time.Duration, bool) {
+		return fakeQueryStore{store: scripted}, 7 * time.Second, true
+	}
+	qs, timeout, ok := rt.QuerySurface()
+	assert.True(t, ok)
+	assert.Equal(t, 7*time.Second, timeout)
+	_, isFake := qs.(fakeQueryStore)
+	assert.True(t, isFake, "the seam result must pass through unchanged")
+
+	// The seam may also report an unavailable surface.
+	rt.querySurface = func() (QueryStore, time.Duration, bool) {
+		return nil, 0, false
+	}
+	qs, timeout, ok = rt.QuerySurface()
+	assert.Nil(t, qs)
+	assert.Zero(t, timeout)
+	assert.False(t, ok)
+}
+
+// TestRuntimeHMACKeyEmptyByDefault proves the HMAC key of an uninitialized or
+// key-less runtime is empty, which the turn context reconstruction treats as
+// "skip the digest re-verification" (T3.1 semantics).
+func TestRuntimeHMACKeyEmptyByDefault(t *testing.T) {
+	rt := NewRuntime()
+	assert.Empty(t, rt.HMACKey())
+}
+
+// TestRuntimeHMACKeyStoredFromConfig proves Init stores the configured HMAC
+// key and the runtime hands it back verbatim (the Root turn-context handler
+// uses it for the T2.3 digest re-verification).
+func TestRuntimeHMACKeyStoredFromConfig(t *testing.T) {
+	clearObserverEnv(t)
+	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	t.Setenv("RELAY_OBSERVER_HMAC_KEY", "test-hmac-key-material")
+	rt := NewRuntime()
+	rt.openStore = (&openerRecorder{store: &scriptedStore{}}).open
+	rt.Init()
+	assert.Equal(t, "test-hmac-key-material", rt.HMACKey())
 }
