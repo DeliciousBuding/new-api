@@ -24,7 +24,14 @@ For commercial licensing, please contact support@quantumnous.com
  * session's turns + canonical context). The guard lives in the route
  * (_authenticated/observability/route.tsx); this component renders only for
  * ROLE.SUPER_ADMIN.
+ *
+ * T4.3 seam: the session shown on the Session Detail tab arrives through the
+ * route search param `?session=<id>` (URL-state, same pattern as
+ * useTableUrlState). Clicking a row on the Sessions tab writes the param via
+ * onSelectSession; the Session Detail tab receives it as its sessionId prop
+ * and renders its default empty state when absent.
  */
+import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
@@ -32,11 +39,23 @@ import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 import { OverviewTab } from './pages/overview-tab'
-import { SessionsTab } from './pages/sessions-tab'
 import { SessionDetailTab } from './pages/session-detail-tab'
+import { SessionsTab } from './pages/sessions-tab'
+
+const route = getRouteApi('/_authenticated/observability')
 
 export function Observability() {
   const { t } = useTranslation()
+  const navigate = useNavigate()
+  const { session } = route.useSearch()
+  const sessionId = session ?? null
+
+  const handleSelectSession = (next: string | null) => {
+    navigate({
+      to: '/observability',
+      search: { session: next ?? undefined },
+    })
+  }
 
   return (
     <SectionPageLayout>
@@ -61,10 +80,13 @@ export function Observability() {
             <OverviewTab />
           </TabsContent>
           <TabsContent value='sessions'>
-            <SessionsTab />
+            <SessionsTab
+              selectedSessionId={sessionId}
+              onSelectSession={handleSelectSession}
+            />
           </TabsContent>
           <TabsContent value='session-detail'>
-            <SessionDetailTab />
+            <SessionDetailTab sessionId={sessionId} />
           </TabsContent>
         </Tabs>
       </SectionPageLayout.Content>

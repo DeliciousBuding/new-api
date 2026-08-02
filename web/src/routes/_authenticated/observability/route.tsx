@@ -17,10 +17,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { createFileRoute, redirect } from '@tanstack/react-router'
+import { z } from 'zod'
 
 import { Observability } from '@/features/observability'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
+
+/**
+ * T4.3 seam — the ?session=<id> URL-state that feeds the Session Detail tab
+ * (pattern: usage-logs/$section.tsx validateSearch; the workspace index
+ * reads it with getRouteApi and passes it to SessionDetailTab). Exported so
+ * the seam is directly testable.
+ */
+export const observabilitySearchSchema = z.object({
+  session: z.string().optional(),
+})
 
 export const Route = createFileRoute('/_authenticated/observability')({
   beforeLoad: () => {
@@ -34,6 +45,7 @@ export const Route = createFileRoute('/_authenticated/observability')({
   },
   // Static route metadata (this router version's replacement for the removed
   // `meta` route option; consumed via StaticDataRouteOption augmentation).
+  validateSearch: observabilitySearchSchema,
   staticData: {
     title: 'Observability',
   },
