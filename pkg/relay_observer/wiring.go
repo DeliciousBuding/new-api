@@ -212,21 +212,33 @@ func (r *Runtime) Status() Status {
 // call concurrently with any other method.
 func (r *Runtime) QuerySurface() (QueryStore, time.Duration, bool) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.querySurface != nil {
-		return r.querySurface()
-	}
-	if r.state != stateEnabled || r.store == nil {
-		return nil, 0, false
-	}
-	if r.queryStore == nil {
-		qs, err := NewQueryStore(r.store)
-		if err != nil {
+	seam := r.querySurface
+	timeout := r.queryTimeout
+	if seam == nil {
+		// Default path: the wrapper creation stays under the lock (it is
+		// idempotent and cheap), but the seam — a test-injected callback that
+		// may re-enter the runtime — must never run while r.mu is held.
+		if r.state != stateEnabled || r.store == nil {
+			r.mu.Unlock()
 			return nil, 0, false
 		}
-		r.queryStore = qs
+		if r.queryStore == nil {
+			qs, err := NewQueryStore(r.store)
+			if err != nil {
+				r.mu.Unlock()
+				return nil, 0, false
+			}
+			r.queryStore = qs
+		}
+		qs := r.queryStore
+		r.mu.Unlock()
+		return qs, timeout, true
 	}
-	return r.queryStore, r.queryTimeout, true
+	r.mu.Unlock()
+	// The seam runs outside the lock: an injected callback that calls back
+	// into the runtime (QuerySurface, HMACKey, Status) can never deadlock on
+	// r.mu (P2-2 hardening).
+	return seam()
 }
 
 // HMACKey returns the content HMAC key of the running configuration. An empty

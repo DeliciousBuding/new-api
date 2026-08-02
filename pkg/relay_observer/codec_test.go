@@ -243,6 +243,23 @@ func TestDecodeRejectsOversizedDeclaredLength(t *testing.T) {
 	require.True(t, ok, "oversized declared length must return a classified ContentError")
 }
 
+// TestDecodeRejectsItemAboveSSOTHardMaximum is the P3 regression: the decode
+// cap must align with the SSOT per-normalized-item hard maximum (1 MiB), not
+// the 16 MiB per-event cap. A declared logical length of one byte above the
+// item maximum is a decode bomb and must be rejected; the old cap admitted it
+// (and with it a 16x memory amplification on the query path).
+func TestDecodeRejectsItemAboveSSOTHardMaximum(t *testing.T) {
+	item := sampleItem(t)
+	payload, _, err := encodeItem(item)
+	require.NoError(t, err)
+
+	_, err = decodeItem(payload, item.Hmac, MaxItemBytes+1, testHMACKey)
+	require.Error(t, err)
+	code, ok := ContentErrorOf(err)
+	require.True(t, ok, "a declared length above the item hard maximum must be classified")
+	assert.Equal(t, ContentErrCorrupt, code)
+}
+
 // TestItemDigestBytes locks the digest representation: the 64-hex HMAC string
 // becomes the 32-byte column value, and malformed digests are rejected.
 func TestItemDigestBytes(t *testing.T) {

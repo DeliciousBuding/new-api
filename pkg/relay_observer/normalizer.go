@@ -1,6 +1,7 @@
 package relayobserver
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 
@@ -952,11 +953,15 @@ func tailGapItem(tail any, opts NormalizeOptions) CanonicalItem {
 
 // hmacDigest returns the hex keyed digest of raw; an absent key yields the
 // empty digest instead of panicking (fail-open for the missing-key config).
+// The digest hashes the raw bytes directly: the old path converted raw to a
+// string and back, copying the payload twice on every item (P1-4). The key is
+// converted once per call (keys are tiny configuration values); the hex
+// output keeps the single small allocation that the returned string needs.
 func hmacDigest(rawBytes []byte, key string) string {
 	if key == "" {
 		return ""
 	}
-	return common.HmacSha256(string(rawBytes), key)
+	return hex.EncodeToString(common.HmacSha256Raw(rawBytes, []byte(key)))
 }
 
 // logicalBytesOf reports the marshaled byte length of an original DTO value,

@@ -26,9 +26,18 @@ import (
 // declared logical length above it is rejected before any proportional
 // allocation.
 
-// maxItemDecodeBytes is the per-content-object decode cap: the SSOT per-event
-// canonical byte hard maximum (RELAY_OBSERVER_MAX_REQUEST_BYTES hard clamp).
-const maxItemDecodeBytes = int64(MaxMaxRequestBytes)
+// MaxItemBytes is the SSOT per-normalized-item hard maximum from the Runtime
+// Limits table ("normalized item | 256 KiB | 1 MiB"). It is the single source
+// of truth for every per-item byte bound: the codec decode cap and the zstd
+// decoder memory limit align to it.
+const MaxItemBytes = 1 << 20
+
+// maxItemDecodeBytes is the per-content-object decode cap: the SSOT per-item
+// hard maximum above. The cap deliberately does not follow the per-event
+// canonical cap (RELAY_OBSERVER_MAX_REQUEST_BYTES, up to 16 MiB): a stored
+// item can never exceed the item maximum, so admitting a larger declared
+// length would let a corrupt payload amplify query-path memory 16x.
+const maxItemDecodeBytes = int64(MaxItemBytes)
 
 // decodeSlackBytes covers zstd frame overhead and incompressible expansion on
 // top of the declared logical bound for the decoder memory cap.
@@ -202,31 +211,23 @@ func decodeItem(payload []byte, wantDigest string, wantLogical int64, key string
 		return CanonicalItem{}, classifiedErrorWrap(ContentErrCorrupt, "decode canonical item JSON", err)
 	}
 	if item.Kind != CanonicalKindGap && key != "" && wantDigest != "" {
-		computed, err := digestOfItemBytes(raw, key)
+		// Re-compute the digest over the already-parsed item with the digest
+		// field cleared. The old path re-unmarshaled and re-marshaled the raw
+		// bytes just to do this; the item is already in hand, so clearing the
+		// field and marshaling once is byte-identical (Marshal of the parsed
+		// item is deterministic) and skips a full second JSON parse (P0-1).
+		recomputed := item
+		recomputed.Hmac = ""
+		payload, err := common.Marshal(recomputed)
 		if err != nil {
 			return CanonicalItem{}, classifiedErrorWrap(ContentErrCorrupt, "re-compute content-layer digest", err)
 		}
+		computed := hmacDigest(payload, key)
 		if computed != wantDigest {
 			return CanonicalItem{}, classifiedError(ContentErrDigestMismatch, "stored digest %s does not match decoded item", wantDigest)
 		}
 	}
 	return item, nil
-}
-
-// digestOfItemBytes recomputes the content-layer digest of stored item bytes
-// exactly like the normalizer does: the digest covers all fields except the
-// digest itself, so the stored digest field is cleared before hashing.
-func digestOfItemBytes(raw []byte, key string) (string, error) {
-	var item CanonicalItem
-	if err := common.Unmarshal(raw, &item); err != nil {
-		return "", err
-	}
-	item.Hmac = ""
-	payload, err := common.Marshal(item)
-	if err != nil {
-		return "", err
-	}
-	return hmacDigest(payload, key), nil
 }
 
 // itemDigestBytes decodes a 64-hex content digest into the 32-byte column

@@ -664,3 +664,35 @@ func TestRuntimeHMACKeyStoredFromConfig(t *testing.T) {
 	rt.Init()
 	assert.Equal(t, "test-hmac-key-material", rt.HMACKey())
 }
+
+// TestQuerySurfaceSeamCalledWithoutLock is the P2-2 regression: an injected
+// query-surface seam must be called outside the runtime lock. The old code
+// invoked the seam while holding r.mu, so a seam that re-enters the runtime
+// (QuerySurface, HMACKey, Status) deadlocked on the same lock. The seam here
+// re-enters via HMACKey; the call must complete, never deadlock.
+func TestQuerySurfaceSeamCalledWithoutLock(t *testing.T) {
+	rt := NewRuntime()
+	rt.mu.Lock()
+	rt.state = stateEnabled
+	rt.queryTimeout = time.Second
+	rt.queryStore = fakeQueryStore{}
+	rt.mu.Unlock()
+
+	rt.querySurface = func() (QueryStore, time.Duration, bool) {
+		_ = rt.HMACKey() // re-enters the runtime lock; deadlocks if the seam runs under r.mu
+		return fakeQueryStore{}, 2 * time.Second, true
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		qs, timeout, ok := rt.QuerySurface()
+		require.True(t, ok)
+		assert.Equal(t, 2*time.Second, timeout)
+		assert.NotNil(t, qs)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("QuerySurface seam deadlocked on the runtime lock")
+	}
+}

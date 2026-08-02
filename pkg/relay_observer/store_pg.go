@@ -40,6 +40,10 @@ const (
 const (
 	observerSchemaV1 = 1
 	observerSchemaV2 = 2
+	observerSchemaV3 = 3
+	// observerSchemaCurrent is the newest schema version; keep it in sync
+	// when a migration file is appended.
+	observerSchemaCurrent = observerSchemaV3
 
 	// observerSchemaLockKey is the fixed advisory-lock key serializing
 	// concurrent bootstrap attempts against the same database.
@@ -57,7 +61,7 @@ const (
 // upgrade. Each file is idempotent and runs inside the bootstrap transaction.
 // The list is frozen by convention: future migrations append a new file and a
 // new schema version constant, never mutate this list.
-var observerMigrations = []string{"migrations/001_v1.sql", "migrations/002_v2.sql"}
+var observerMigrations = []string{"migrations/001_v1.sql", "migrations/002_v2.sql", "migrations/003_v3.sql"}
 
 // ErrUnsupportedDSN classifies a SQL DSN the observer cannot use: it is empty,
 // a SQLite/MySQL DSN, or not parseable by pgx as a PostgreSQL URI or keyword
@@ -190,19 +194,19 @@ func (a dbtxAdapter) ExecContext(ctx context.Context, query string, args ...any)
 }
 
 // verifySchema performs the bounded startup schema check: the version table
-// must hold exactly [1] (complete v1, upgrade pending at bootstrap) or
-// [1, 2] (current), and every required observer table must exist. On the
-// current version it also checks the v2 column so a schema whose version row
-// lies about its structure is rejected. It never runs DDL, scans data
-// tables, or executes VACUUM.
+// must hold exactly [1] (complete v1, upgrade pending at bootstrap), [1, 2]
+// (complete v2, upgrade pending at bootstrap), or [1, 2, 3] (current), and
+// every required observer table must exist. On the current version it also
+// checks the v2 column so a schema whose version row lies about its structure
+// is rejected. It never runs DDL, scans data tables, or executes VACUUM.
 func verifySchema(ctx context.Context, db dbtx) error {
 	versions, err := readSchemaVersions(ctx, db)
 	if err != nil {
 		return fmt.Errorf("relayobserver: schema verify: %w", err)
 	}
 	current := isVersionListCurrent(versions)
-	if !current && !isVersionListV1(versions) {
-		return fmt.Errorf("relayobserver: schema verify: version mismatch: have %v, want [%d] or [%d, %d]", versions, observerSchemaV1, observerSchemaV1, observerSchemaV2)
+	if !current && !isVersionListV1(versions) && !isVersionListV2(versions) {
+		return fmt.Errorf("relayobserver: schema verify: version mismatch: have %v, want [%d] or [%d, %d] or [%d, %d, %d]", versions, observerSchemaV1, observerSchemaV1, observerSchemaV2, observerSchemaV1, observerSchemaV2, observerSchemaV3)
 	}
 	missing, err := missingObserverTables(ctx, db)
 	if err != nil {
@@ -212,8 +216,9 @@ func verifySchema(ctx context.Context, db dbtx) error {
 		return fmt.Errorf("relayobserver: schema verify: missing required tables %v", missing)
 	}
 	if current {
-		// The version row claims v2; the v2 column must actually exist, so a
-		// dropped column is caught here instead of failing the retention pass.
+		// The version row claims the current schema; the v2 column must
+		// actually exist, so a dropped column is caught here instead of
+		// failing the retention pass.
 		has, err := observerV2ColumnExists(ctx, db)
 		if err != nil {
 			return err
@@ -253,10 +258,16 @@ func isVersionListV1(versions []int) bool {
 	return len(versions) == 1 && versions[0] == observerSchemaV1
 }
 
-// isVersionListCurrent reports whether versions is exactly the current state
-// [1, 2].
-func isVersionListCurrent(versions []int) bool {
+// isVersionListV2 reports whether versions is exactly the complete v2 state
+// [1, 2], the schema that still awaits the v3 upgrade at bootstrap.
+func isVersionListV2(versions []int) bool {
 	return len(versions) == 2 && versions[0] == observerSchemaV1 && versions[1] == observerSchemaV2
+}
+
+// isVersionListCurrent reports whether versions is exactly the current state
+// [1, 2, 3].
+func isVersionListCurrent(versions []int) bool {
+	return len(versions) == 3 && versions[0] == observerSchemaV1 && versions[1] == observerSchemaV2 && versions[2] == observerSchemaV3
 }
 
 // observerV2ColumnExists reports whether the v2 created_at column exists on
@@ -385,44 +396,65 @@ func bootstrapSchema(ctx context.Context, db *sql.DB) error {
 
 // bootstrapSchemaTx applies the schema upgrades the current state needs,
 // inside the caller's transaction: an empty schema applies every migration in
-// order, a complete v1 schema applies only the v2 upgrade, and a complete
-// current schema is an idempotent no-op. A partial or mismatched schema fails
-// with an error and is left untouched.
+// order, a complete v1 schema applies the v2 and v3 upgrades, a complete v2
+// schema applies only the v3 upgrade, and a complete current schema is an
+// idempotent no-op. A partial or mismatched schema fails with an error and is
+// left untouched.
 func bootstrapSchemaTx(ctx context.Context, tx dbtx, tables map[string]bool, versions []int) error {
 	switch {
 	case len(tables) == 0 && len(versions) == 0:
 		// The observer schema is empty: apply every migration in order.
 		for _, file := range observerMigrations {
-			sqlText, err := migrationsFS.ReadFile(file)
-			if err != nil {
-				return fmt.Errorf("relayobserver: schema bootstrap: read migration: %w", err)
-			}
-			if _, err := tx.ExecContext(ctx, string(sqlText)); err != nil {
-				return fmt.Errorf("relayobserver: schema bootstrap: apply %s: %w", file, err)
+			if err := applyMigrationTx(ctx, tx, file); err != nil {
+				return err
 			}
 		}
-	case isVersionListV1(versions) && allRequiredTablesPresent(tables):
-		// Complete v1 awaiting the upgrade: apply only the v2 migration. The
-		// migration is idempotent, so a repeated bootstrap is a no-op. A
-		// partial schema never reaches this branch — it must never be
-		// patched.
-		file := observerMigrations[len(observerMigrations)-1]
-		sqlText, err := migrationsFS.ReadFile(file)
-		if err != nil {
-			return fmt.Errorf("relayobserver: schema bootstrap: read migration: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, string(sqlText)); err != nil {
-			return fmt.Errorf("relayobserver: schema bootstrap: apply %s: %w", file, err)
+	case (isVersionListV1(versions) || isVersionListV2(versions)) && allRequiredTablesPresent(tables):
+		// Complete older schema awaiting the upgrade: apply the pending
+		// migrations from the current version upward. Each migration is
+		// idempotent, so a repeated bootstrap is a no-op. A partial schema
+		// never reaches this branch — it must never be patched.
+		for _, file := range pendingMigrations(versions) {
+			if err := applyMigrationTx(ctx, tx, file); err != nil {
+				return err
+			}
 		}
 	default:
-		// Existing observer tables that are not the complete v1 schema are
+		// Existing observer tables that are not a complete older schema are
 		// never patched; the error disables the observer. A complete current
 		// schema passes verify and the bootstrap is an idempotent no-op.
 		if err := verifySchema(ctx, tx); err != nil {
-			return fmt.Errorf("relayobserver: schema bootstrap: existing schema is not complete v1 or v2: %w", err)
+			return fmt.Errorf("relayobserver: schema bootstrap: existing schema is not complete: %w", err)
 		}
 	}
 	return nil
+}
+
+// applyMigrationTx reads one embedded migration and executes it on the
+// caller's transaction.
+func applyMigrationTx(ctx context.Context, tx dbtx, file string) error {
+	sqlText, err := migrationsFS.ReadFile(file)
+	if err != nil {
+		return fmt.Errorf("relayobserver: schema bootstrap: read migration: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, string(sqlText)); err != nil {
+		return fmt.Errorf("relayobserver: schema bootstrap: apply %s: %w", file, err)
+	}
+	return nil
+}
+
+// pendingMigrations returns the migrations a complete schema with the given
+// version rows still needs, in order: [1] yields 002 and 003; [1, 2] yields
+// 003. Version rows are 1-indexed against the migration file order, so the
+// count of applied migrations equals the number of version rows.
+func pendingMigrations(versions []int) []string {
+	var pending []string
+	for i, file := range observerMigrations {
+		if i+1 > len(versions) {
+			pending = append(pending, file)
+		}
+	}
+	return pending
 }
 
 // allRequiredTablesPresent reports whether every required observer table is

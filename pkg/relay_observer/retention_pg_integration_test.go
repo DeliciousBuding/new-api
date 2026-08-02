@@ -131,11 +131,13 @@ func openRetentionStores(t *testing.T, dsn string) (Store, RetentionStore) {
 	return s, rs
 }
 
-// TestIntegrationMigrationV2Lifecycle covers the versioned migration path on
-// the live database: an empty schema bootstraps straight to v2, a v1 schema
-// upgrades in place, repeated bootstrap is idempotent, verify rejects an
-// unknown version, and the v2 column is present with a non-null value.
-func TestIntegrationMigrationV2Lifecycle(t *testing.T) {
+// TestIntegrationMigrationLifecycle covers the versioned migration path on
+// the live database: an empty schema bootstraps straight to the current
+// version, a complete v1 schema upgrades in place through v2 and v3, a
+// complete v2 schema upgrades through v3 only, repeated bootstrap is
+// idempotent, verify rejects an unknown version, and the v2 column and v3
+// indexes are present with their expected shapes.
+func TestIntegrationMigrationLifecycle(t *testing.T) {
 	dsn := integrationDSN(t)
 	db := openFixturePool(t, dsn)
 	cleanupObserverSchema(t, db)
@@ -156,23 +158,41 @@ func TestIntegrationMigrationV2Lifecycle(t *testing.T) {
 		WHERE table_schema = current_schema() AND table_name = 'observer_content_objects' AND column_name = 'created_at')`).Scan(&colExists))
 	assert.False(t, colExists, "a hand-built v1 schema must not have the v2 column yet")
 
-	// Bootstrap upgrades v1 -> v2 inside its transaction.
+	// Bootstrap upgrades v1 -> v2 -> v3 inside its transaction.
 	store, err = OpenPGStore(ctx, dsn, SchemaModeBootstrap)
-	require.NoError(t, err, "bootstrap must upgrade a complete v1 schema to v2")
+	require.NoError(t, err, "bootstrap must upgrade a complete v1 schema to the current version")
 	require.NoError(t, store.Close(ctx))
-	assertSchemaVersions(t, db, []int{1, 2})
+	assertSchemaVersions(t, db, []int{1, 2, 3})
 	require.NoError(t, db.QueryRow(`SELECT EXISTS (SELECT 1 FROM information_schema.columns
 		WHERE table_schema = current_schema() AND table_name = 'observer_content_objects' AND column_name = 'created_at')`).Scan(&colExists))
 	assert.True(t, colExists, "bootstrap must add the v2 created_at column")
 	var notNull int
 	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_content_objects WHERE created_at IS NULL`).Scan(&notNull))
 	assert.Zero(t, notNull, "created_at is NOT NULL")
+	assertV3Indexes(t, db)
 
 	// Repeated bootstrap is an idempotent no-op on the current schema.
 	store, err = OpenPGStore(ctx, dsn, SchemaModeBootstrap)
 	require.NoError(t, err, "repeated bootstrap must be idempotent")
 	require.NoError(t, store.Close(ctx))
-	assertSchemaVersions(t, db, []int{1, 2})
+	assertSchemaVersions(t, db, []int{1, 2, 3})
+
+	// A complete v2 schema (001 + 002) upgrades through v3 only.
+	cleanupObserverSchema(t, db)
+	v2SQL, err := migrationsFS.ReadFile(observerMigrations[1])
+	require.NoError(t, err)
+	_, err = db.Exec(string(v1SQL))
+	require.NoError(t, err)
+	_, err = db.Exec(string(v2SQL))
+	require.NoError(t, err)
+	store, err = OpenPGStore(ctx, dsn, SchemaModeVerify)
+	require.NoError(t, err, "verify must accept a complete v2 schema")
+	require.NoError(t, store.Close(ctx))
+	store, err = OpenPGStore(ctx, dsn, SchemaModeBootstrap)
+	require.NoError(t, err, "bootstrap must upgrade a complete v2 schema to v3")
+	require.NoError(t, store.Close(ctx))
+	assertSchemaVersions(t, db, []int{1, 2, 3})
+	assertV3Indexes(t, db)
 
 	// Verify rejects an unknown version row.
 	_, err = db.Exec("INSERT INTO observer_schema_versions (version, applied_at) VALUES (99, now())")
@@ -188,7 +208,29 @@ func TestIntegrationMigrationV2Lifecycle(t *testing.T) {
 	store, err = OpenPGStore(ctx, dsn, SchemaModeBootstrap)
 	require.NoError(t, err, "bootstrap must create the current schema on an empty database")
 	require.NoError(t, store.Close(ctx))
-	assertSchemaVersions(t, db, []int{1, 2})
+	assertSchemaVersions(t, db, []int{1, 2, 3})
+	assertV3Indexes(t, db)
+}
+
+// assertV3Indexes asserts the three v3 composite indexes exist with the exact
+// column shapes the keyset page lists and the model EXISTS probe need.
+func assertV3Indexes(t *testing.T, db *sql.DB) {
+	t.Helper()
+	for _, tt := range []struct {
+		index   string
+		table   string
+		columns string
+	}{
+		{index: "idx_observer_sessions_last_seen_id", table: "observer_sessions", columns: "last_seen, id"},
+		{index: "idx_observer_turns_occurred_at_id", table: "observer_turns", columns: "occurred_at, id"},
+		{index: "idx_observer_turns_session_id_model", table: "observer_turns", columns: "session_id, model"},
+	} {
+		var exists bool
+		require.NoError(t, db.QueryRow(`SELECT EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = current_schema() AND tablename = $1 AND indexname = $2)`, tt.table, tt.index).Scan(&exists))
+		assert.True(t, exists, "v3 index %s on %s must exist", tt.index, tt.table)
+	}
 }
 
 // assertSchemaVersions asserts the exact version list of the live schema.

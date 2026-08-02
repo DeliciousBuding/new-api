@@ -156,6 +156,7 @@ type rowIter interface {
 // against the Store port.
 type contentTx interface {
 	QueryRow(ctx context.Context, query string, args ...any) rowScanner
+	Query(ctx context.Context, query string, args ...any) (rowIter, error)
 	Exec(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
@@ -172,6 +173,14 @@ type sqlTxAdapter struct{ tx *sql.Tx }
 
 func (a sqlTxAdapter) QueryRow(ctx context.Context, query string, args ...any) rowScanner {
 	return a.tx.QueryRowContext(ctx, query, args...)
+}
+
+func (a sqlTxAdapter) Query(ctx context.Context, query string, args ...any) (rowIter, error) {
+	rows, err := a.tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 func (a sqlTxAdapter) Exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
@@ -421,11 +430,32 @@ func bindAliasRowTx(ctx context.Context, tx contentTx, nodeScope string, userID 
 // returns the turn's digest list, gap presence, and canonical byte total.
 func insertContentObjectsTx(ctx context.Context, tx contentTx, sessionID uuid.UUID, items []CanonicalItem) (contentTurnMeta, error) {
 	meta := contentTurnMeta{digests: make([]string, 0, len(items))}
+	// Probe the UNIQUE (session_id, item_digest) index once for the whole
+	// turn before encoding anything: items already stored (system prompts,
+	// repeated tool outputs) skip the zstd encode and the INSERT entirely
+	// (P0-2). The INSERT keeps ON CONFLICT DO NOTHING as the race backstop,
+	// so a concurrent append of the same digest still dedups correctly.
+	missing, err := missingContentObjectsTx(ctx, tx, sessionID, items)
+	if err != nil {
+		return meta, err
+	}
 	for _, it := range items {
 		meta.digests = append(meta.digests, it.Hmac)
 		if it.Kind == CanonicalKindGap {
 			meta.hasGap = true
 		}
+		// The logical byte total covers every item of the turn, already
+		// stored or not: it is the turn's canonical byte accounting written
+		// to the context row and must not shrink when dedup skips a
+		// re-encode. This marshal is the same measurement encodeItem performs;
+		// only the compression and the INSERT are skipped for stored items.
+		raw, err := common.Marshal(it)
+		if err != nil {
+			return meta, fmt.Errorf("relayobserver: append content: measure item: %w", err)
+		}
+		meta.logicalBytes += int64(len(raw))
+	}
+	for _, it := range missing {
 		raw, err := itemDigestBytes(it.Hmac)
 		if err != nil {
 			return meta, fmt.Errorf("relayobserver: append content: invalid item digest: %w", err)
@@ -434,13 +464,58 @@ func insertContentObjectsTx(ctx context.Context, tx contentTx, sessionID uuid.UU
 		if err != nil {
 			return meta, fmt.Errorf("relayobserver: append content: encode item: %w", err)
 		}
-		meta.logicalBytes += logical
 		if _, err := tx.Exec(ctx, `INSERT INTO observer_content_objects (session_id, item_digest, kind, role, codec, payload, logical_bytes, stored_bytes, truncated) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (session_id, item_digest) DO NOTHING`,
 			sessionID.String(), raw, it.Kind, it.Role, contentCodecZstd, payload, logical, len(payload), it.Truncated); err != nil {
 			return meta, fmt.Errorf("relayobserver: append content: insert content object: %w", err)
 		}
 	}
 	return meta, nil
+}
+
+// missingContentObjectsTx returns the items of one turn that have no stored
+// content object yet, probed with one indexed query against the UNIQUE
+// (session_id, item_digest) constraint. Digests repeated within the turn are
+// probed once; the returned slice keeps the items in original order.
+func missingContentObjectsTx(ctx context.Context, tx contentTx, sessionID uuid.UUID, items []CanonicalItem) ([]CanonicalItem, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	raws := make([][]byte, 0, len(items))
+	seen := make(map[string]bool, len(items))
+	for _, it := range items {
+		if seen[it.Hmac] {
+			continue // duplicate in this turn: only the first occurrence can be new
+		}
+		seen[it.Hmac] = true
+		raw, err := itemDigestBytes(it.Hmac)
+		if err != nil {
+			return nil, fmt.Errorf("relayobserver: append content: invalid item digest: %w", err)
+		}
+		raws = append(raws, raw)
+	}
+	rows, err := tx.Query(ctx, `SELECT item_digest FROM observer_content_objects WHERE session_id = $1 AND item_digest = ANY($2)`, sessionID.String(), raws)
+	if err != nil {
+		return nil, fmt.Errorf("relayobserver: append content: probe stored objects: %w", err)
+	}
+	defer closeRows(rows)
+	stored := make(map[string]bool, len(raws))
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("relayobserver: append content: scan stored object digest: %w", err)
+		}
+		stored[hex.EncodeToString(raw)] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("relayobserver: append content: probe stored objects: %w", err)
+	}
+	var missing []CanonicalItem
+	for _, it := range items {
+		if !stored[it.Hmac] {
+			missing = append(missing, it)
+		}
+	}
+	return missing, nil
 }
 
 // lockHeadTx ensures the session head row exists and locks it, returning the

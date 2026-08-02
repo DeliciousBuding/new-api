@@ -144,6 +144,13 @@ type Dispatcher struct {
 	// hold a ticket-holding request path in flight while Stop drains.
 	sendGate func()
 
+	// reserveGate is a test-only pause point after the byte reservation and
+	// before the channel send, while the reservation is held. It is nil in
+	// production; the reservation-leak regression test panics here to prove
+	// a bug inside the reserved-but-not-yet-sent window rolls the budget
+	// back instead of leaking it.
+	reserveGate func()
+
 	pendingCount atomic.Int64
 	pendingBytes atomic.Int64
 
@@ -247,12 +254,27 @@ func (d *Dispatcher) SetIPTrust(t IPTrust) {
 // circuit, a full queue, or an exhausted byte budget is rejected. Returns
 // false when the event was dropped.
 func (d *Dispatcher) TryEnqueue(ev *Event, reservation int64) (ok bool) {
+	// reserved/registered track the admission state for the deferred recover:
+	// a panic after the byte reservation but before the event reaches the
+	// queue must roll the reservation and the count registration back, or a
+	// bug would leak the byte budget permanently and silently zero admission
+	// (P2-1 hardening). Once the event is queued the worker owns the release,
+	// and both flags are cleared so the defer never double-releases.
+	reserved := false
+	registered := false
 	defer func() {
 		if r := recover(); r != nil {
 			// Defensive: the request path must stay fail-open even if a bug
-			// panics here. A reservation, if already taken, stays reserved and
-			// the admission budget degrades gracefully instead of crashing.
+			// panics here. A reservation, if already taken, is rolled back so
+			// the admission budget keeps working; fail-open is unaffected but
+			// the degradation is no longer silently permanent.
 			ok = false
+			if reserved {
+				d.releaseBytes(reservation)
+			}
+			if registered {
+				d.pendingCount.Add(-1)
+			}
 			d.droppedTotal.Add(1)
 		}
 	}()
@@ -300,15 +322,23 @@ func (d *Dispatcher) TryEnqueue(ev *Event, reservation int64) (ok bool) {
 			d.droppedTotal.Add(1)
 			return false
 		}
+		reserved = true
+		if d.reserveGate != nil {
+			d.reserveGate()
+		}
 		// Register the queue count before the send: the worker can release it
 		// as soon as it receives the event, and the release must never be
 		// observable before the registration (no negative queue view).
 		d.pendingCount.Add(1)
+		registered = true
 		select {
 		case d.probeCh <- qe:
+			reserved, registered = false, false
 		default:
 			d.pendingCount.Add(-1)
+			registered = false
 			d.releaseBytes(reservation)
+			reserved = false
 			d.circuitState.Store(int32(circuitHalfOpen))
 			d.droppedTotal.Add(1)
 			return false
@@ -318,12 +348,20 @@ func (d *Dispatcher) TryEnqueue(ev *Event, reservation int64) (ok bool) {
 			d.droppedTotal.Add(1)
 			return false
 		}
+		reserved = true
+		if d.reserveGate != nil {
+			d.reserveGate()
+		}
 		d.pendingCount.Add(1)
+		registered = true
 		select {
 		case d.enqueue <- qe:
+			reserved, registered = false, false
 		default:
 			d.pendingCount.Add(-1)
+			registered = false
 			d.releaseBytes(reservation)
+			reserved = false
 			d.droppedTotal.Add(1)
 			return false
 		}

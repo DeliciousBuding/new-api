@@ -1206,3 +1206,29 @@ func TestZeroReservationAtByteCapAdmitted(t *testing.T) {
 	assert.Equal(t, int64(0), d.pendingCount.Load())
 	assert.Equal(t, int64(0), d.pendingBytes.Load())
 }
+
+// TestTryEnqueuePanicAfterReserveReleasesBudget is the P2-1 regression: a
+// panic inside TryEnqueue after the byte reservation but before the event
+// reaches the queue must roll the reservation back. The old code recovered
+// without releasing, so one bug panic leaked the reservation permanently and
+// the admission budget silently degraded toward zero (everything dropped). The
+// reserveGate seam panics exactly in that window; afterwards the budget must
+// be fully usable again and the counters must show the drop.
+func TestTryEnqueuePanicAfterReserveReleasesBudget(t *testing.T) {
+	d, _ := newTestDispatcher(t, &scriptedStore{}, nil)
+
+	d.reserveGate = func() { panic("scripted panic in the reserved window") }
+	defer func() { d.reserveGate = nil }()
+
+	require.False(t, d.TryEnqueue(sampleEventPtr(), 100))
+	assert.Equal(t, int64(0), d.pendingCount.Load(), "the count registration must be rolled back")
+	assert.Equal(t, int64(0), d.pendingBytes.Load(), "the byte reservation must be rolled back")
+	assert.Equal(t, int64(1), d.droppedTotal.Load())
+
+	// The budget must be usable after the panic: a normal event is admitted
+	// with its full reservation, proving nothing leaked.
+	d.reserveGate = nil
+	require.True(t, d.TryEnqueue(sampleEventPtr(), 100))
+	assert.Equal(t, int64(100), d.pendingBytes.Load())
+	assert.Equal(t, int64(1), d.pendingCount.Load())
+}
