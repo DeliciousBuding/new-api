@@ -542,19 +542,25 @@ func TestAppendTurnGroupRotation(t *testing.T) {
 	assert.Equal(t, int64(0), f.tx.heads[sid.String()].ordinal.Int64, "head points at the new full")
 }
 
-// TestAppendTurnNoSessionOrItemsIsNoop locks the fail-open seam: turns
-// without aliases or items produce no rows.
+// TestAppendTurnNoSessionOrItemsIsNoop locks the fail-open seam and the T2
+// decoupling contract: a turn without aliases produces no rows, while a turn
+// with aliases but without items is still tracked as a session-only append —
+// the session and its counters advance, but no content or context rows are
+// created.
 func TestAppendTurnNoSessionOrItemsIsNoop(t *testing.T) {
 	f := newFakeFixture(t, "noop-session")
 
 	noAlias := ContentInput{NodeScope: f.node, UserID: f.user, TurnID: uuid.New(), Items: []CanonicalItem{{Kind: CanonicalKindMessage}}}
 	require.NoError(t, appendTurnTx(context.Background(), f.tx, &noAlias))
 	assert.Empty(t, f.tx.contexts)
-
-	noItems := ContentInput{NodeScope: f.node, UserID: f.user, Aliases: []Alias{f.alias}, TurnID: uuid.New()}
-	require.NoError(t, appendTurnTx(context.Background(), f.tx, &noItems))
-	assert.Empty(t, f.tx.contexts)
 	assert.Empty(t, f.tx.sessions)
+
+	noItems := ContentInput{NodeScope: f.node, UserID: f.user, Aliases: []Alias{f.alias}, TurnID: uuid.New(), ContentState: ContentStateGap}
+	require.NoError(t, appendTurnTx(context.Background(), f.tx, &noItems))
+	assert.Empty(t, f.tx.contexts, "session-only appends must not create context rows")
+	require.Len(t, f.tx.sessions, 1, "session-only appends must still track the session")
+	// The decoupled path advances last_seen / turn_count and marks the gap.
+	assert.True(t, f.tx.turnSessions[noItems.TurnID.String()] != "", "the turn must be bound to the session")
 }
 
 // TestAppendTurnAuxiliaryConflictStaysSeparate locks the v1 conflict rule: an
@@ -1130,7 +1136,7 @@ func TestLookupAliasRejectsCorruptBinding(t *testing.T) {
 	require.NoError(t, err)
 	fx.aliases[aliasKey("n", 7, 1, raw, "codex_cli")] = "not-a-uuid"
 	alias := Alias{Version: 1, Digest: strings.Repeat("e", 64), Scope: ScopeCodexCLI}
-	_, err = lookupAliasSessionTx(context.Background(), fx, "n", 7, alias)
+	_, err = lookupAliasSessionTx(context.Background(), fx, "n", 7, alias, false)
 	require.Error(t, err)
 	_, ok := ContentErrorOf(err)
 	assert.False(t, ok, "a corrupt binding is a data error, not a content classification")

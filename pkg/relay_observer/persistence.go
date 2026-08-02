@@ -258,11 +258,15 @@ func appendTurnsTx(ctx context.Context, tx contentTx, turns []ContentInput) erro
 
 // appendTurnTx persists one turn inside the caller's transaction: session
 // resolution, idempotency check, content dedup, head serialization, context
-// insert, head advance, and session counters.
+// insert, head advance, and session counters. The session contract is
+// decoupled from content (T2 decoupling): a turn with aliases is tracked even
+// when normalization produced no items — the session is resolved, the turn's
+// session_id is backfilled, and last_seen / turn_count / gap_count advance,
+// while no content objects, context rows, or session head are created.
 func appendTurnTx(ctx context.Context, tx contentTx, in *ContentInput) error {
-	if len(in.Aliases) == 0 || len(in.Items) == 0 {
-		// No session alias, or metadata-only content: nothing to persist.
-		// The turn row itself is written by the turn writer (WriteBatch).
+	if len(in.Aliases) == 0 {
+		// No session alias: nothing to bind or persist. The turn row itself
+		// is written by the turn writer (WriteBatch).
 		return nil
 	}
 	sessionID, err := resolveSessionTx(ctx, tx, in)
@@ -277,6 +281,16 @@ func appendTurnTx(ctx context.Context, tx contentTx, in *ContentInput) error {
 	if _, err := tx.Exec(ctx, `UPDATE observer_turns SET session_id = $1 WHERE id = $2 AND session_id IS NULL`,
 		sessionID.String(), in.TurnID.String()); err != nil {
 		return fmt.Errorf("relayobserver: append content: backfill turn session: %w", err)
+	}
+	if len(in.Items) == 0 {
+		// Session-only append: the turn has an identity but capture produced
+		// no items (budget truncation below the minimal envelope, an
+		// unsupported format, or a metadata-only outcome). The session is
+		// still tracked — its counters and last_seen advance — so session
+		// views see the turn even though the context endpoint reports no
+		// canonical content. No content objects, context rows, or head rows
+		// are created by this path.
+		return bumpSessionTx(ctx, tx, in, sessionID, in.ContentState == ContentStateGap)
 	}
 	// Idempotency: a turn whose context row already exists is a no-op. The
 	// content objects and the head were already written by the first append.
@@ -340,7 +354,7 @@ func appendTurnTx(ctx context.Context, tx contentTx, in *ContentInput) error {
 // session is likewise left untouched.
 func resolveSessionTx(ctx context.Context, tx contentTx, in *ContentInput) (uuid.UUID, error) {
 	primary := in.Aliases[0]
-	sid, err := lookupAliasSessionTx(ctx, tx, in.NodeScope, in.UserID, primary)
+	sid, err := lookupAliasSessionTx(ctx, tx, in.NodeScope, in.UserID, primary, true)
 	if err == nil {
 		return sid, bindAuxiliaryTx(ctx, tx, in, sid)
 	}
@@ -364,7 +378,7 @@ func resolveSessionTx(ctx context.Context, tx contentTx, in *ContentInput) (uuid
 		// (cross-profile equal value). Re-look-up by scope: a same-scope
 		// race adopts the winning session; a cross-profile conflict leaves
 		// the new session unbound (remain separate in v1).
-		existing, err := lookupAliasSessionTx(ctx, tx, in.NodeScope, in.UserID, primary)
+		existing, err := lookupAliasSessionTx(ctx, tx, in.NodeScope, in.UserID, primary, true)
 		if err == nil {
 			if existing != sid {
 				// The just-created session lost the race and carries nothing
@@ -391,7 +405,7 @@ func resolveSessionTx(ctx context.Context, tx contentTx, in *ContentInput) (uuid
 // different session is a v1 conflict and is left separate.
 func bindAuxiliaryTx(ctx context.Context, tx contentTx, in *ContentInput, sid uuid.UUID) error {
 	for _, a := range in.Aliases[1:] {
-		bound, err := lookupAliasSessionTx(ctx, tx, in.NodeScope, in.UserID, a)
+		bound, err := lookupAliasSessionTx(ctx, tx, in.NodeScope, in.UserID, a, false)
 		if err == nil {
 			if bound == sid {
 				continue // already bound to this session: idempotent
@@ -408,7 +422,7 @@ func bindAuxiliaryTx(ctx context.Context, tx contentTx, in *ContentInput, sid uu
 		if !ok {
 			// Lost a race with another session's binding: re-check, then
 			// keep the existing binding.
-			bound, err := lookupAliasSessionTx(ctx, tx, in.NodeScope, in.UserID, a)
+			bound, err := lookupAliasSessionTx(ctx, tx, in.NodeScope, in.UserID, a, false)
 			if err != nil {
 				return fmt.Errorf("relayobserver: append content: auxiliary alias raced without a binding: %w", err)
 			}
@@ -424,15 +438,26 @@ func bindAuxiliaryTx(ctx context.Context, tx contentTx, in *ContentInput, sid uu
 // alias's profile (provider column): an alias identity is
 // (node_scope, user_id, key_version, digest, scope), so a value colliding
 // across profiles never resolves to the other profile's session. It returns
-// sql.ErrNoRows when none is bound.
-func lookupAliasSessionTx(ctx context.Context, tx contentTx, nodeScope string, userID int64, a Alias) (uuid.UUID, error) {
+// sql.ErrNoRows when none is bound. lockSession makes the lookup lock the
+// owning session row (FOR UPDATE OF s) until the transaction commits: the
+// append path uses it for the primary alias so the session row becomes the
+// unified serialization boundary shared with retention deletion — append
+// always holds session → head → content, retention holds session → head,
+// never the reverse (T3 lock-order contract). Auxiliary lookups stay
+// lock-free: they never serialize against retention.
+func lookupAliasSessionTx(ctx context.Context, tx contentTx, nodeScope string, userID int64, a Alias, lockSession bool) (uuid.UUID, error) {
 	raw, err := itemDigestBytes(a.Digest)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("relayobserver: append content: invalid alias digest: %w", err)
 	}
 	var sid string
-	err = tx.QueryRow(ctx, `SELECT session_id::text FROM observer_session_aliases WHERE node_scope = $1 AND user_id = $2 AND key_version = $3 AND alias_digest = $4 AND provider = $5`,
-		nodeScope, userID, a.Version, raw, string(a.Scope)).Scan(&sid)
+	var query string
+	if lockSession {
+		query = `SELECT s.id::text FROM observer_session_aliases a JOIN observer_sessions s ON s.id = a.session_id WHERE a.node_scope = $1 AND a.user_id = $2 AND a.key_version = $3 AND a.alias_digest = $4 AND a.provider = $5 FOR UPDATE OF s`
+	} else {
+		query = `SELECT session_id::text FROM observer_session_aliases WHERE node_scope = $1 AND user_id = $2 AND key_version = $3 AND alias_digest = $4 AND provider = $5`
+	}
+	err = tx.QueryRow(ctx, query, nodeScope, userID, a.Version, raw, string(a.Scope)).Scan(&sid)
 	if err != nil {
 		return uuid.Nil, err
 	}

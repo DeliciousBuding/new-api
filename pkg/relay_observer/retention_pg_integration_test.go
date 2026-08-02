@@ -660,3 +660,178 @@ func explainJSON(t *testing.T, db *sql.DB, query string, args ...any) string {
 	require.NoError(t, err)
 	return raw
 }
+
+// TestIntegrationRetentionLockOrderSerializesAppendVsRetention locks the T3
+// lock-order contract with two real database connections: the append path
+// takes the session row lock through the alias lookup (FOR UPDATE OF s)
+// before touching the head/content, and retention takes the same session row
+// lock before deleting — one shared serialization point, so the two paths can
+// never wait on each other in opposite order (deadlock) or delete a session
+// that just became active again.
+//
+// Scenario A (append wins): the append holds the session lock, the retention
+// delete blocks on it, the append commits, and the retention re-check sees
+// the refreshed last_seen and no-ops — the session survives.
+// Scenario B (retention wins): the retention delete holds the lock and
+// removes the session, the append's alias lookup blocks until the delete
+// commits and then observes the session is gone (ErrNoRows) — the append
+// would recreate a fresh session instead of resurrecting the deleted one.
+func TestIntegrationRetentionLockOrderSerializesAppendVsRetention(t *testing.T) {
+	dsn := integrationDSN(t)
+	s := resetObserverSchema(t, dsn)
+	defer s.Close(context.Background())
+	db := openFixturePool(t, dsn)
+
+	// --- Scenario A: append wins, retention no-ops on the refreshed row ---
+	t.Run("append_wins_session_survives", func(t *testing.T) {
+		scope := uniqueScope("t51-lock-a")
+		sid := insertSessionRow(t, db, scope, time.Now().Add(-31*24*time.Hour))
+		// The alias row mirrors the real lookup parameters (codex_cli scope,
+		// user id 1) so the append-side FOR UPDATE OF s query matches it.
+		_, err := db.Exec(`INSERT INTO observer_session_aliases (node_scope, user_id, key_version, provider, source, alias_digest, session_id, first_seen, last_seen)
+			VALUES ($1, 1, 1, 'codex_cli', 'header', $2, $3, now(), now())`, scope, digestA, sid)
+		require.NoError(t, err)
+		cutoff := time.Now().Add(-30 * 24 * time.Hour)
+
+		conn1, err := db.Conn(context.Background())
+		require.NoError(t, err)
+		defer conn1.Close()
+		conn2, err := db.Conn(context.Background())
+		require.NoError(t, err)
+		defer conn2.Close()
+
+		// conn1: the append path locks the session row through the alias
+		// lookup and keeps the transaction open.
+		tx1, err := conn1.BeginTx(context.Background(), nil)
+		require.NoError(t, err)
+		var got string
+		require.NoError(t, tx1.QueryRowContext(context.Background(),
+			`SELECT s.id::text FROM observer_session_aliases a JOIN observer_sessions s ON s.id = a.session_id
+			 WHERE a.node_scope = $1 AND a.user_id = $2 AND a.key_version = $3 AND a.alias_digest = $4 AND a.provider = $5
+			 FOR UPDATE OF s`,
+			scope, 1, 1, digestA, "codex_cli").Scan(&got))
+		assert.Equal(t, sid, got, "the append must lock the fixture session")
+
+		// conn2: the retention delete blocks on the same row.
+		type delResult struct{ err error }
+		delDone := make(chan delResult, 1)
+		go func() {
+			tx2, err := conn2.BeginTx(context.Background(), nil)
+			if err != nil {
+				delDone <- delResult{err}
+				return
+			}
+			defer tx2.Rollback()
+			_, err = tx2.ExecContext(context.Background(), `SET LOCAL lock_timeout = '5s'`)
+			if err != nil {
+				delDone <- delResult{err}
+				return
+			}
+			var lastSeen time.Time
+			err = tx2.QueryRowContext(context.Background(),
+				`SELECT last_seen FROM observer_sessions WHERE id = $1 FOR UPDATE`, sid).Scan(&lastSeen)
+			if err == nil && !lastSeen.Before(cutoff) {
+				err = nil // the re-check no-ops: nothing to delete
+			} else if err == nil {
+				_, err = tx2.ExecContext(context.Background(),
+					`DELETE FROM observer_session_aliases WHERE session_id = $1`, sid)
+			}
+			delDone <- delResult{err}
+		}()
+
+		// While conn1 holds the lock, the retention delete must not finish.
+		select {
+		case r := <-delDone:
+			t.Fatalf("retention delete finished while the append held the lock: %v", r.err)
+		case <-time.After(300 * time.Millisecond):
+		}
+
+		// The append refreshes last_seen and commits; the retention delete
+		// unblocks, re-checks the cutoff, and skips.
+		_, err = tx1.ExecContext(context.Background(),
+			`UPDATE observer_sessions SET last_seen = now() WHERE id = $1`, sid)
+		require.NoError(t, err)
+		require.NoError(t, tx1.Commit())
+		select {
+		case r := <-delDone:
+			require.NoError(t, r.err, "retention must complete without error after the append commits")
+		case <-time.After(5 * time.Second):
+			t.Fatal("retention delete stayed blocked after the append committed (lock released?)")
+		}
+		var n int
+		require.NoError(t, db.QueryRowContext(context.Background(),
+			`SELECT count(*) FROM observer_sessions WHERE id = $1`, sid).Scan(&n))
+		assert.Equal(t, 1, n, "the reactivated session must survive retention")
+	})
+
+	// --- Scenario B: retention wins, the append observes the session gone ---
+	t.Run("retention_wins_append_recreates", func(t *testing.T) {
+		scope := uniqueScope("t51-lock-b")
+		sid := insertSessionRow(t, db, scope, time.Now().Add(-31*24*time.Hour))
+		_, err := db.Exec(`INSERT INTO observer_session_aliases (node_scope, user_id, key_version, provider, source, alias_digest, session_id, first_seen, last_seen)
+			VALUES ($1, 1, 1, 'codex_cli', 'header', $2, $3, now(), now())`, scope, digestA, sid)
+		require.NoError(t, err)
+
+		conn1, err := db.Conn(context.Background())
+		require.NoError(t, err)
+		defer conn1.Close()
+		conn2, err := db.Conn(context.Background())
+		require.NoError(t, err)
+		defer conn2.Close()
+
+		// conn1: retention locks and deletes the session in one transaction.
+		tx1, err := conn1.BeginTx(context.Background(), nil)
+		require.NoError(t, err)
+		var lastSeen time.Time
+		require.NoError(t, tx1.QueryRowContext(context.Background(),
+			`SELECT last_seen FROM observer_sessions WHERE id = $1 FOR UPDATE`, sid).Scan(&lastSeen))
+
+		// conn2: the append's alias lookup blocks on the same row.
+		type lookResult struct{ found string; err error }
+		lookDone := make(chan lookResult, 1)
+		go func() {
+			tx2, err := conn2.BeginTx(context.Background(), nil)
+			if err != nil {
+				lookDone <- lookResult{err: err}
+				return
+			}
+			defer tx2.Rollback()
+			_, err = tx2.ExecContext(context.Background(), `SET LOCAL lock_timeout = '5s'`)
+			if err != nil {
+				lookDone <- lookResult{err: err}
+				return
+			}
+			var found string
+			err = tx2.QueryRowContext(context.Background(),
+				`SELECT s.id::text FROM observer_session_aliases a JOIN observer_sessions s ON s.id = a.session_id
+				 WHERE a.node_scope = $1 AND a.user_id = $2 AND a.key_version = $3 AND a.alias_digest = $4 AND a.provider = $5
+				 FOR UPDATE OF s`,
+				scope, 1, 1, digestA, "codex_cli").Scan(&found)
+			lookDone <- lookResult{found: found, err: err}
+		}()
+
+		select {
+		case r := <-lookDone:
+			t.Fatalf("append lookup finished while retention held the lock: found=%q err=%v", r.found, r.err)
+		case <-time.After(300 * time.Millisecond):
+		}
+
+		// Retention deletes the session and commits; the append's lookup
+		// unblocks and observes the alias is gone — the append would create a
+		// fresh session for the new activity.
+		_, err = tx1.ExecContext(context.Background(),
+			`DELETE FROM observer_session_aliases WHERE session_id = $1`, sid)
+		require.NoError(t, err)
+		_, err = tx1.ExecContext(context.Background(),
+			`DELETE FROM observer_sessions WHERE id = $1`, sid)
+		require.NoError(t, err)
+		require.NoError(t, tx1.Commit())
+		select {
+		case r := <-lookDone:
+			require.ErrorIs(t, r.err, sql.ErrNoRows, "the append must observe the deleted session as gone, not resurrect it")
+			assert.Empty(t, r.found)
+		case <-time.After(5 * time.Second):
+			t.Fatal("append lookup stayed blocked after the retention delete committed")
+		}
+	})
+}

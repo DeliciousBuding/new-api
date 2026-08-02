@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -286,4 +287,105 @@ func TestIntegrationContentPipelineTruncationWritesGapMarker(t *testing.T) {
 	assert.Equal(t, CanonicalKindGap, last.Kind)
 	assert.True(t, last.Truncated)
 	assert.Greater(t, last.LogicalBytes, int64(0))
+}
+
+// TestIntegrationSessionOnlyAppendTracksIdentityWithoutContent locks the T2
+// decoupling contract: a turn with a resolvable session identity whose
+// capture produced no items (budget truncation below the minimal envelope)
+// still binds the session — the session row, the alias bindings, the turn's
+// session_id backfill, last_seen, turn_count, and gap_count all advance —
+// while no content objects, context rows, or head rows are created.
+func TestIntegrationSessionOnlyAppendTracksIdentityWithoutContent(t *testing.T) {
+	dsn := integrationDSN(t)
+	resetObserverSchema(t, dsn)
+	store := openVerifyStore(t, dsn)
+	t.Cleanup(func() { require.NoError(t, store.Close(context.Background())) })
+
+	// A tiny reservation truncates normalization to zero items (the canonical
+	// overhead of one message item exceeds the budget, and the gap marker
+	// does not fit either), which used to short-circuit before identity
+	// resolution and lose the session entirely.
+	body := `{"model":"gpt-5","messages":[{"role":"user","content":"tiny"}]}`
+	reqObj := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	reqObj.Header.Set("X-Codex-Turn-Metadata", `{"thread_id":"t26-thr-only","session_id":"t26-ses-only"}`)
+
+	var req dto.Request = &dto.GeneralOpenAIRequest{}
+	require.NoError(t, common.Unmarshal([]byte(body), req))
+
+	disp := newPipelineDispatcher(t, store, func(c *Config) { c.BatchSize = 1 })
+	ev := sampleEvent()
+	ev.EventID = "t26-req-only"
+	ev.RelayFormat = string(types.RelayFormatOpenAI)
+	ev.Request = &req
+	ev.Identity = IdentityInput{Headers: reqObj.Header, Body: []byte(body)}
+	require.True(t, disp.TryEnqueue(&ev, 16))
+
+	db := openFixturePool(t, dsn)
+	turnID := turnRowID("node-a", "t26-req-only")
+	require.Eventually(t, func() bool {
+		var n int
+		require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_turns WHERE id = $1 AND session_id IS NOT NULL`, turnID.String()).Scan(&n))
+		return n == 1
+	}, 5*time.Second, 10*time.Millisecond)
+
+	// The session exists with one turn and one gap. The session id is a uuid
+	// column; scan it as text.
+	var sid string
+	var turnCount, gapCount int64
+	require.NoError(t, db.QueryRow(`SELECT id::text, turn_count, gap_count FROM observer_sessions WHERE turn_count = 1 AND gap_count = 1`).Scan(&sid, &turnCount, &gapCount))
+	assert.Equal(t, int64(1), turnCount)
+	assert.Equal(t, int64(1), gapCount, "the session-only gap state must advance gap_count")
+
+	// The aliases are bound.
+	var aliasCount int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_session_aliases WHERE session_id = $1`, sid).Scan(&aliasCount))
+	assert.Equal(t, 2, aliasCount, "turn_thread and turn_session aliases must both bind")
+
+	// No content, no context, no head rows for the session.
+	var objects, contexts, heads int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_content_objects WHERE session_id = $1`, sid).Scan(&objects))
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_contexts WHERE session_id = $1`, sid).Scan(&contexts))
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_session_heads WHERE session_id = $1`, sid).Scan(&heads))
+	assert.Zero(t, objects, "session-only append must not create content objects")
+	assert.Zero(t, contexts, "session-only append must not create context rows")
+	assert.Zero(t, heads, "session-only append must not create a session head")
+}
+
+// TestIntegrationSessionOnlyAppendMetadataOnly locks the decoupled contract
+// for the metadata-only outcome: a requestless-but-identified event still
+// binds the session and the turn, and creates no content rows.
+func TestIntegrationSessionOnlyAppendMetadataOnly(t *testing.T) {
+	dsn := integrationDSN(t)
+	resetObserverSchema(t, dsn)
+	store := openVerifyStore(t, dsn)
+	t.Cleanup(func() { require.NoError(t, store.Close(context.Background())) })
+
+	disp := newPipelineDispatcher(t, store, func(c *Config) { c.BatchSize = 1 })
+	ev := sampleEvent()
+	ev.EventID = "t26-req-meta"
+	// No request: the metadata-only outcome. Identity material still present.
+	ev.Identity = IdentityInput{
+		Headers: http.Header{"X-Codex-Turn-Metadata": {`{"thread_id":"t26-thr-meta","session_id":"t26-ses-meta"}`}},
+	}
+	require.True(t, disp.TryEnqueue(&ev, 16))
+
+	db := openFixturePool(t, dsn)
+	turnID := turnRowID("node-a", "t26-req-meta")
+	require.Eventually(t, func() bool {
+		var n int
+		require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_turns WHERE id = $1 AND session_id IS NOT NULL`, turnID.String()).Scan(&n))
+		return n == 1
+	}, 5*time.Second, 10*time.Millisecond)
+
+	var sid string
+	var turnCount, gapCount int64
+	require.NoError(t, db.QueryRow(`SELECT id::text, turn_count, gap_count FROM observer_sessions WHERE turn_count = 1`).Scan(&sid, &turnCount, &gapCount))
+	assert.Equal(t, int64(1), turnCount)
+	assert.Zero(t, gapCount, "a metadata-only outcome is not a capture gap")
+
+	var objects, contexts int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_content_objects WHERE session_id = $1`, sid).Scan(&objects))
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_contexts WHERE session_id = $1`, sid).Scan(&contexts))
+	assert.Zero(t, objects)
+	assert.Zero(t, contexts)
 }

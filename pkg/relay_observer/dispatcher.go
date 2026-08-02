@@ -666,9 +666,7 @@ func (d *Dispatcher) planContent(batch []queuedEvent) []ContentInput {
 	for i := range batch {
 		qe := &batch[i]
 		ev := qe.ev
-		if ev == nil || ev.Request == nil {
-			// No parsed request: the request-path default (metadata-only)
-			// already stands; there is nothing to capture.
+		if ev == nil {
 			continue
 		}
 		plan := d.normalizeOne(ev, qe.reservation)
@@ -678,19 +676,15 @@ func (d *Dispatcher) planContent(batch []queuedEvent) []ContentInput {
 			// marker or metadata-only state (Status contract).
 			d.contentGaps.Add(1)
 		}
-		if plan.state == ContentStateMetadataOnly {
-			continue
-		}
-		if len(plan.items) == 0 {
-			// Full normalization of an empty request: nothing to persist.
-			continue
-		}
+		// Identity resolution is decoupled from content capture (T2
+		// decoupling): a turn with a resolvable session identity is tracked
+		// even when normalization produced no items, so session views see
+		// every turn of an identity chain regardless of capture outcome.
 		idRes, err := ResolveIdentity(ev.Identity, km)
 		if err != nil || idRes.Primary.Digest == "" {
 			// No resolvable session identity (unknown profile, missing or
-			// oversized sources, or an unconfigured HMAC key): the content has
-			// no session to hang on — AppendTurns of a turn without aliases is
-			// a no-op by T2.3 design, so no append is planned. The event keeps
+			// oversized sources, or an unconfigured HMAC key): no session to
+			// bind. A turn without aliases is never tracked — the event keeps
 			// its normalized ContentState.
 			continue
 		}
@@ -698,11 +692,12 @@ func (d *Dispatcher) planContent(batch []queuedEvent) []ContentInput {
 		aliases = append(aliases, idRes.Primary)
 		aliases = append(aliases, idRes.Auxiliary...)
 		appends = append(appends, ContentInput{
-			NodeScope: ev.NodeScope,
-			UserID:    ev.UserID,
-			Aliases:   aliases,
-			TurnID:    turnRowID(ev.NodeScope, ev.EventID),
-			Items:     plan.items,
+			NodeScope:    ev.NodeScope,
+			UserID:       ev.UserID,
+			Aliases:      aliases,
+			TurnID:       turnRowID(ev.NodeScope, ev.EventID),
+			ContentState: plan.state,
+			Items:        plan.items,
 		})
 	}
 	return appends
