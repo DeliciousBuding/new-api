@@ -1056,7 +1056,7 @@ func TestGapMarkerDigestNeverCollidesWithRealItem(t *testing.T) {
 
 	t.Run("real item stored first, marker lost", func(t *testing.T) {
 		f := newFakeFixture(t, "gap-collision-forward")
-		opts := NormalizeOptions{Reservation: 1 << 20, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey}
+		opts := NormalizeOptions{CaptureLimit: 1 << 20, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey}
 
 		// Turn 1 fits the cap: every item is stored as real content.
 		full := NormalizeRequest(string(types.RelayFormatOpenAI), buildChat(7), opts)
@@ -1073,7 +1073,7 @@ func TestGapMarkerDigestNeverCollidesWithRealItem(t *testing.T) {
 			sum6 += payloadOf(t, it)
 		}
 		limit := sum6 + 250
-		truncated := NormalizeRequest(string(types.RelayFormatOpenAI), buildChat(8), NormalizeOptions{Reservation: limit, MaxRequestBytes: limit, HMACKey: testHMACKey})
+		truncated := NormalizeRequest(string(types.RelayFormatOpenAI), buildChat(8), NormalizeOptions{CaptureLimit: limit, MaxRequestBytes: limit, HMACKey: testHMACKey})
 		require.Equal(t, ContentStateGap, truncated.ContentState)
 		require.Len(t, truncated.Items, 7, "six kept items plus one marker")
 		marker := truncated.Items[len(truncated.Items)-1]
@@ -1098,9 +1098,9 @@ func TestGapMarkerDigestNeverCollidesWithRealItem(t *testing.T) {
 		// is stored as a real item only in the later divergent turn 2. The
 		// limit keeps a, b and the marker (~170 bytes) and drops c.
 		c := buildChat(3)
-		first := NormalizeRequest(string(types.RelayFormatOpenAI), c, NormalizeOptions{Reservation: 1 << 20, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey})
+		first := NormalizeRequest(string(types.RelayFormatOpenAI), c, NormalizeOptions{CaptureLimit: 1 << 20, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey})
 		limit := payloadOf(t, first.Items[0]) + payloadOf(t, first.Items[1]) + 250
-		truncated := NormalizeRequest(string(types.RelayFormatOpenAI), c, NormalizeOptions{Reservation: limit, MaxRequestBytes: limit, HMACKey: testHMACKey})
+		truncated := NormalizeRequest(string(types.RelayFormatOpenAI), c, NormalizeOptions{CaptureLimit: limit, MaxRequestBytes: limit, HMACKey: testHMACKey})
 		require.Equal(t, ContentStateGap, truncated.ContentState)
 		require.Len(t, truncated.Items, 3, "two kept items plus one marker")
 		marker := truncated.Items[len(truncated.Items)-1]
@@ -1112,7 +1112,7 @@ func TestGapMarkerDigestNeverCollidesWithRealItem(t *testing.T) {
 
 		// Turn 2 diverges (prefix compaction is valid): the request fits and
 		// "c" is a real item again.
-		full := NormalizeRequest(string(types.RelayFormatOpenAI), c, NormalizeOptions{Reservation: 1 << 20, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey})
+		full := NormalizeRequest(string(types.RelayFormatOpenAI), c, NormalizeOptions{CaptureLimit: 1 << 20, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey})
 		require.Equal(t, ContentStateFull, full.ContentState)
 		t2 := ContentInput{NodeScope: f.node, UserID: f.user, Aliases: []Alias{f.alias}, TurnID: uuid.New(), Items: full.Items}
 		require.NoError(t, appendTurnTx(context.Background(), f.tx, &t2))

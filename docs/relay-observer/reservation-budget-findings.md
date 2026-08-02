@@ -5,6 +5,12 @@
 
 ## 0. 结论速览
 
+> 状态：P0-B 预算拆解已实现（2026-08-03，PR #12）：capture limit 与 admission 分离
+> （`RELAY_OBSERVER_MAX_CAPTURE_BYTES_PER_TURN`），最小 envelope 保证 gap marker
+> 可容纳（`RELAY_OBSERVER_MIN_CAPTURE_ENVELOPE_BYTES`）。session/content 解耦
+> （P0-A）与锁序统一（T3）同期完成。剩余：head-anchor + tail-biased selector（P0-C，
+> 等源码研究报告）。
+
 1. **内容捕获与会话追踪被同一个根因杀死**：canonical 膨胀使预算（=body size）永远不够 → 小请求 items 全空 → `planContent` 的 `len(plan.items)==0` 短路 → **身份解析、session 创建、内容写入全部跳过**。
 2. 身份识别链本身**正常**（实弹验证：X-Codex-Turn-Metadata 正确解析为 codex_cli scope 别名）。
 3. 修复优先级 = P0：预算口径修正 + tail-first 保留（不是"大请求优化"，是"一切请求的捕获救回"）。

@@ -64,16 +64,20 @@ const (
 // rather than by the later byte cap alone.
 const maxNormalizedItems = 2048
 
-// NormalizeOptions carries the per-event budget and the digest key into the
-// normalizer. Reservation is the event's admission reservation (the request
-// body size); MaxRequestBytes is the global RELAY_OBSERVER_MAX_REQUEST_BYTES
-// cap. The effective canonical byte cap is min(reservation, maxRequestBytes).
-// HMACKey is the observer key used for item digests; it must never be written
-// into canonical output.
+// NormalizeOptions carries the per-event capture budget and the digest key
+// into the normalizer. CaptureLimit is the canonical content cap of one turn
+// (RELAY_OBSERVER_MAX_CAPTURE_BYTES_PER_TURN) — decoupled from the queue
+// admission estimate, which only bounds queue memory (P0-B). MaxRequestBytes
+// is the global RELAY_OBSERVER_MAX_REQUEST_BYTES cap; the effective limit is
+// min(captureLimit, maxRequestBytes). MinCaptureEnvelopeBytes reserves the
+// worst-case gap marker inside the limit, so a truncated capture always
+// closes with an explicit marker. HMACKey is the observer key used for item
+// digests; it must never be written into canonical output.
 type NormalizeOptions struct {
-	Reservation     int64
-	MaxRequestBytes int64
-	HMACKey         string
+	CaptureLimit           int64
+	MaxRequestBytes        int64
+	MinCaptureEnvelopeBytes int64
+	HMACKey                string
 }
 
 // NormalizeResult is the outcome of one normalization. ContentState reuses the
@@ -177,14 +181,24 @@ func NormalizeRequest(relayFormat string, req dto.Request, opts NormalizeOptions
 }
 
 // finishNormalize applies the canonical byte cap and assembles the result.
-// The effective cap is min(reservation, maxRequestBytes); an over-limit tail
-// is truncated and closed by an explicit gap marker that stays structurally
-// valid JSON.
+// The effective cap is min(captureLimit, maxRequestBytes). The selection
+// budget reserves the worst-case gap marker (MinCaptureEnvelopeBytes) inside
+// the cap, so an over-limit tail is always closed by an explicit gap marker
+// that stays structurally valid JSON — the marker is data, not silent loss,
+// and never competes with item selection for the last bytes.
 func finishNormalize(items []CanonicalItem, protocolGap bool, opts NormalizeOptions) NormalizeResult {
-	limit := opts.Reservation
+	limit := opts.CaptureLimit
 	if opts.MaxRequestBytes < limit {
 		limit = opts.MaxRequestBytes
 	}
+	envelope := opts.MinCaptureEnvelopeBytes
+	if envelope < 0 {
+		envelope = 0
+	}
+	if envelope > limit {
+		envelope = limit
+	}
+	selectionLimit := limit - envelope
 	res := NormalizeResult{ContentState: ContentStateFull}
 	var total int64
 	var i int
@@ -193,7 +207,7 @@ func finishNormalize(items []CanonicalItem, protocolGap bool, opts NormalizeOpti
 		if err != nil {
 			return NormalizeResult{ContentState: ContentStateMetadataOnly}
 		}
-		if total+int64(len(payload)) > limit {
+		if total+int64(len(payload)) > selectionLimit {
 			break
 		}
 		res.Items = append(res.Items, items[i])

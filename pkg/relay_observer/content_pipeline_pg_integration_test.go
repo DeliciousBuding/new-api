@@ -246,7 +246,7 @@ func TestIntegrationContentPipelineTruncationWritesGapMarker(t *testing.T) {
 	var req dto.Request = &dto.GeneralOpenAIRequest{}
 	require.NoError(t, common.Unmarshal([]byte(body), req))
 	full := NormalizeRequest(string(types.RelayFormatOpenAI), req, NormalizeOptions{
-		Reservation: 1 << 20, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey,
+		CaptureLimit: 1 << 20, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey,
 	})
 	require.Equal(t, ContentStateFull, full.ContentState)
 	var total int64
@@ -256,7 +256,14 @@ func TestIntegrationContentPipelineTruncationWritesGapMarker(t *testing.T) {
 		total += int64(len(p))
 	}
 
-	disp := newPipelineDispatcher(t, store, func(c *Config) { c.BatchSize = 1 })
+	disp := newPipelineDispatcher(t, store, func(c *Config) {
+		c.BatchSize = 1
+		// The capture cap (P0-B) drives the truncation, no longer the
+		// admission reservation. 200 bytes fits the gap marker but not the
+		// first message item, so the capture truncates with an explicit
+		// marker.
+		c.MaxCaptureBytesPerTurn = 200
+	})
 	ev := sampleEvent()
 	ev.EventID = "t26-req-gap"
 	ev.NodeScope = "t26-node"
@@ -312,7 +319,12 @@ func TestIntegrationSessionOnlyAppendTracksIdentityWithoutContent(t *testing.T) 
 	var req dto.Request = &dto.GeneralOpenAIRequest{}
 	require.NoError(t, common.Unmarshal([]byte(body), req))
 
-	disp := newPipelineDispatcher(t, store, func(c *Config) { c.BatchSize = 1 })
+	disp := newPipelineDispatcher(t, store, func(c *Config) {
+		c.BatchSize = 1
+		// A capture cap below the minimal envelope truncates to zero items
+		// (the decoupled session-only path).
+		c.MaxCaptureBytesPerTurn = 8
+	})
 	ev := sampleEvent()
 	ev.EventID = "t26-req-only"
 	ev.RelayFormat = string(types.RelayFormatOpenAI)

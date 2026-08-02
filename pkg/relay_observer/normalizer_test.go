@@ -57,7 +57,7 @@ type fixtureCase struct {
 }
 
 func roomyOpts() NormalizeOptions {
-	return NormalizeOptions{Reservation: 1 << 20, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey}
+	return NormalizeOptions{CaptureLimit: 1 << 20, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey}
 }
 
 func normalizerFixtures() []fixtureCase {
@@ -127,7 +127,7 @@ func normalizerFixtures() []fixtureCase {
 				{"role":"user","content":[{"type":"input_text","text":"charlie charlie charlie charlie"}]}
 			]`),
 		},
-		opts: NormalizeOptions{Reservation: 500, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey},
+		opts: NormalizeOptions{CaptureLimit: 500, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey},
 	}
 
 	// ---------- OpenAI Chat ----------
@@ -206,7 +206,7 @@ func normalizerFixtures() []fixtureCase {
 				{Role: "user", Content: "charlie charlie charlie charlie"},
 			},
 		},
-		opts: NormalizeOptions{Reservation: 500, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey},
+		opts: NormalizeOptions{CaptureLimit: 500, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey},
 	}
 
 	// ---------- Claude Messages ----------
@@ -277,7 +277,7 @@ func normalizerFixtures() []fixtureCase {
 				{Role: "user", Content: "charlie charlie charlie charlie"},
 			},
 		},
-		opts: NormalizeOptions{Reservation: 500, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey},
+		opts: NormalizeOptions{CaptureLimit: 500, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey},
 	}
 
 	return []fixtureCase{
@@ -374,7 +374,7 @@ func TestNormalizerTruncationBounds(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			o := opts
-			o.Reservation = tc.limit
+			o.CaptureLimit = tc.limit
 			o.MaxRequestBytes = tc.limit
 			res := NormalizeRequest(string(types.RelayFormatOpenAI), req, o)
 			assert.Equal(t, tc.wantState, res.ContentState)
@@ -417,21 +417,84 @@ func TestNormalizerCanonicalLimitSources(t *testing.T) {
 	small := int64(120)
 	large := int64(1 << 20)
 
-	byReservation := NormalizeRequest(string(types.RelayFormatClaude), req, NormalizeOptions{
-		Reservation: small, MaxRequestBytes: large, HMACKey: testHMACKey,
+	byCaptureLimit := NormalizeRequest(string(types.RelayFormatClaude), req, NormalizeOptions{
+		CaptureLimit: small, MaxRequestBytes: large, HMACKey: testHMACKey,
 	})
 	byMaxRequestBytes := NormalizeRequest(string(types.RelayFormatClaude), req, NormalizeOptions{
-		Reservation: large, MaxRequestBytes: small, HMACKey: testHMACKey,
+		CaptureLimit: large, MaxRequestBytes: small, HMACKey: testHMACKey,
 	})
 	both := NormalizeRequest(string(types.RelayFormatClaude), req, NormalizeOptions{
-		Reservation: small, MaxRequestBytes: small, HMACKey: testHMACKey,
+		CaptureLimit: small, MaxRequestBytes: small, HMACKey: testHMACKey,
 	})
 
-	assert.Equal(t, ContentStateGap, byReservation.ContentState)
+	assert.Equal(t, ContentStateGap, byCaptureLimit.ContentState)
 	assert.Equal(t, ContentStateGap, byMaxRequestBytes.ContentState)
-	assert.Equal(t, byReservation.Items, byMaxRequestBytes.Items)
-	assert.Equal(t, byReservation.Items, both.Items)
-	assert.Equal(t, byReservation.CanonicalBytes, byMaxRequestBytes.CanonicalBytes)
+	assert.Equal(t, byCaptureLimit.Items, byMaxRequestBytes.Items)
+	assert.Equal(t, byCaptureLimit.Items, both.Items)
+	assert.Equal(t, byCaptureLimit.CanonicalBytes, byMaxRequestBytes.CanonicalBytes)
+}
+
+// TestNormalizerEnvelopeReservesGapMarker locks the P0-B envelope contract:
+// the selection budget reserves the worst-case gap marker inside the capture
+// limit. With an envelope, a truncating capture always closes with an
+// explicit gap marker; without one, the first item can consume the whole
+// budget and the marker silently disappears (the empty/gap-less failure mode
+// the envelope closes).
+func TestNormalizerEnvelopeReservesGapMarker(t *testing.T) {
+	req := &dto.GeneralOpenAIRequest{
+		Model: "gpt-5",
+		Messages: []dto.Message{
+			{Role: "user", Content: strings.Repeat("alpha ", 40)},
+			{Role: "user", Content: "bravo"},
+		},
+	}
+
+	// Calibrate the budget on the actual canonical sizes: a limit that fits
+	// the first item but not the item plus the gap marker.
+	probe := NormalizeRequest(string(types.RelayFormatOpenAI), req, NormalizeOptions{
+		CaptureLimit: 1 << 20, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey,
+	})
+	require.Equal(t, ContentStateFull, probe.ContentState)
+	firstBytes := len(mustMarshalForTest(t, probe.Items[0]))
+	limit := int64(firstBytes) + 40 // item fits; item + marker (well over 40 B) does not
+
+	// With the envelope the item is not selected, and the marker always
+	// lands: the capture closes with data, not silent loss.
+	withEnvelope := NormalizeOptions{
+		CaptureLimit:            limit,
+		MaxRequestBytes:         1 << 20,
+		MinCaptureEnvelopeBytes: 256,
+		HMACKey:                 testHMACKey,
+	}
+	res := NormalizeRequest(string(types.RelayFormatOpenAI), req, withEnvelope)
+	assert.Equal(t, ContentStateGap, res.ContentState)
+	require.NotEmpty(t, res.Items, "the gap marker must always be written when truncation happens")
+	last := res.Items[len(res.Items)-1]
+	assert.Equal(t, CanonicalKindGap, last.Kind)
+	assert.True(t, last.Truncated)
+	assert.Greater(t, last.LogicalBytes, int64(0))
+	assert.NotEmpty(t, last.Hmac)
+
+	// Without an envelope, the first item eats the whole budget and the
+	// marker does not fit: a truncation with no marker (silent loss).
+	noEnvelope := NormalizeOptions{
+		CaptureLimit:    limit,
+		MaxRequestBytes: 1 << 20,
+		HMACKey:         testHMACKey,
+	}
+	res2 := NormalizeRequest(string(types.RelayFormatOpenAI), req, noEnvelope)
+	assert.Equal(t, ContentStateGap, res2.ContentState)
+	require.NotEmpty(t, res2.Items, "the first item fits without an envelope")
+	last2 := res2.Items[len(res2.Items)-1]
+	assert.NotEqual(t, CanonicalKindGap, last2.Kind, "without an envelope the marker is not guaranteed")
+}
+
+// mustMarshalForTest marshals a canonical item for size calibration.
+func mustMarshalForTest(t *testing.T, it CanonicalItem) []byte {
+	t.Helper()
+	p, err := common.Marshal(it)
+	require.NoError(t, err)
+	return p
 }
 
 // TestNormalizerWhitelist proves forbidden values never reach canonical
@@ -958,7 +1021,7 @@ func TestNormalizerCanonicalBytesAccounting(t *testing.T) {
 		},
 	}
 	opts := roomyOpts()
-	opts.Reservation = 120
+	opts.CaptureLimit = 120
 	res := NormalizeRequest(string(types.RelayFormatOpenAI), req, opts)
 	assert.Equal(t, ContentStateGap, res.ContentState)
 	var sum int64
@@ -968,7 +1031,7 @@ func TestNormalizerCanonicalBytesAccounting(t *testing.T) {
 		sum += int64(len(p))
 	}
 	assert.Equal(t, sum, res.CanonicalBytes)
-	assert.LessOrEqual(t, res.CanonicalBytes, opts.Reservation)
+	assert.LessOrEqual(t, res.CanonicalBytes, opts.CaptureLimit)
 
 	full := NormalizeRequest(string(types.RelayFormatOpenAI), req, roomyOpts())
 	require.NotEqual(t, len(full.Items), len(res.Items))
