@@ -3,8 +3,10 @@
 最后更新：2026-08-03
 
 > **v0.2.1 工程边界调整**（GPT 复审追加，功能语义不变，只改代码落位）：
-> - **模块边界**：纯核心 `pkg/vision_relay/`（禁止依赖 Gin/RelayInfo/BodyStorage/
->   logger/OptionMap，只允许标准库 + x/image + gjson/sjson）+ `setting/model_setting/
+> - **模块边界**：核心 `pkg/vision_relay/`（无 NewAPI 运行时层依赖，仅依赖
+>   common 基础 JSON wrapper（Marshal/Unmarshal）、x/image、gjson/sjson 与标准库；
+>   禁止依赖 Gin/RelayInfo/BodyStorage/logger/OptionMap/controller/service/model/setting/relay）+
+>   `setting/model_setting/
 >   vision_relay.go` 配置注册 + `service/vision_relay.go` 事务适配 + `controller/relay.go`
 >   单点钩子（唯一修改的上游核心文件，4 行）
 > - **配置**：注册名 `vision_relay`（DB keys `vision_relay.*`），7 字段
