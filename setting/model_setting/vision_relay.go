@@ -23,6 +23,7 @@ type VisionRelaySettings struct {
 	APIKey       string   `json:"api_key"`       // 视觉端点鉴权
 	Prompt       string   `json:"prompt"`        // 识图指令模板（空=默认保真基线）
 	TimeoutSec   int      `json:"timeout_sec"`   // 每请求识图总预算（秒）
+	SidecallToken string  `json:"sidecall_token"` // 递归保护共享 secret（认证 marker HMAC 密钥，审核 P0-2；空=不携带/不信任任何递归头）
 }
 
 // VisionRelaySnapshot 不可变配置快照（值对象，深拷贝 slice；请求全程使用）
@@ -61,6 +62,7 @@ func GetVisionRelaySnapshot() (VisionRelaySnapshot, error) {
 	apiKey := common.OptionMap["vision_relay.api_key"]
 	prompt := common.OptionMap["vision_relay.prompt"]
 	timeoutRaw := common.OptionMap["vision_relay.timeout_sec"]
+	sidecallToken := common.OptionMap["vision_relay.sidecall_token"]
 	common.OptionMapRWMutex.RUnlock()
 
 	snap := defaultVisionRelaySettings
@@ -79,6 +81,7 @@ func GetVisionRelaySnapshot() (VisionRelaySnapshot, error) {
 	}
 	snap.APIKey = strings.TrimSpace(apiKey)
 	snap.Prompt = strings.TrimSpace(prompt)
+	snap.SidecallToken = strings.TrimSpace(sidecallToken)
 	if timeoutRaw != "" {
 		if v, err := strconv.Atoi(timeoutRaw); err == nil && v > 0 {
 			snap.TimeoutSec = v

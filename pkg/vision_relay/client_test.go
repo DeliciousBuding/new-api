@@ -18,11 +18,12 @@ import (
 
 func testConfig(url string) Config {
 	return Config{
-		Enabled:    true,
-		Models:     []string{"vision-model-a", "vision-model-b"},
-		BaseURL:    url,
-		APIKey:     "sk-test",
-		TimeoutSec: 5,
+		Enabled:       true,
+		Models:        []string{"vision-model-a", "vision-model-b"},
+		BaseURL:       url,
+		APIKey:        "sk-test",
+		TimeoutSec:    5,
+		SidecallToken: "test-sidecall-token",
 	}
 }
 
@@ -42,13 +43,14 @@ func testImageData() []byte {
 	return testPatchedImage().Data
 }
 
-// 成功：断言递归保护头 + image_url data URL + 结果解析（验收 13 部分）
+// 成功：断言认证 marker（HMAC 校验通过，P0-2）+ image_url data URL + 结果解析（验收 13 部分）
 func TestDescribeOneSuccess(t *testing.T) {
 	var calls int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
-		if r.Header.Get("X-NewAPI-Vision-Relay") != "1" {
-			t.Error("recursion protection header missing")
+		if h := r.Header.Get("X-NewAPI-Vision-Relay"); h == "" ||
+			!ValidateMarker("test-sidecall-token", h, time.Now()) {
+			t.Error("recursion protection marker missing or invalid")
 		}
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {

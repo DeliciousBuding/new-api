@@ -88,7 +88,18 @@ type VisionClient struct {
 //	401/403 → ErrAuth（终止整条 fallback，防 key 错误打三模型）
 //	413 → ErrSizeLimit（不 fallback）
 //	451 → ErrBlocked（当前图停止）
-func (c *VisionClient) Call(ctx context.Context, model, instruction string, data []byte, mediaType, baseURL, apiKey string, timeout time.Duration, maxTokens int) (string, error) {
+// Call 单次旁路调用。错误矩阵（门槛七 + v0.2.2 语义）：
+//
+//	网络传输错误（transportError）：同模型重试 1 次（预算内）
+//	429 / 5xx / 空 choices / 空 content / 非 JSON：provider 瞬时错误 → 换下一模型（不重试）
+//	400 → ErrUnsupported（停止该图，不遍历其他模型）
+//	401/403 → ErrAuth（请求级熔断；该图不重试不 fallback）
+//	413 → ErrSizeLimit（不 fallback）
+//	451 → ErrBlocked（当前图停止）
+//
+// sidecallToken 非空时携带递归保护认证 marker（审核 P0-2：目标实例只有
+// HMAC 校验通过才允许 bypass，外部伪造不可绕过）。
+func (c *VisionClient) Call(ctx context.Context, model, instruction string, data []byte, mediaType, baseURL, apiKey, sidecallToken string, timeout time.Duration, maxTokens int) (string, error) {
 	maxTokensUint := uint(maxTokens)
 	payload := map[string]any{
 		"model":      model,
@@ -118,7 +129,7 @@ func (c *VisionClient) Call(ctx context.Context, model, instruction string, data
 	}
 	var text string
 	for attempt := 0; attempt <= 1; attempt++ { // 仅传输错误重试 ≤1（预算内）
-		text, err = c.doRequest(ctx, client, model, baseURL, apiKey, body, timeout)
+		text, err = c.doRequest(ctx, client, model, baseURL, apiKey, sidecallToken, body, timeout)
 		var te *transportError
 		if err == nil || !errors.As(err, &te) {
 			break
@@ -127,7 +138,7 @@ func (c *VisionClient) Call(ctx context.Context, model, instruction string, data
 	return text, err
 }
 
-func (c *VisionClient) doRequest(ctx context.Context, client *http.Client, model, baseURL, apiKey string, body []byte, timeout time.Duration) (string, error) {
+func (c *VisionClient) doRequest(ctx context.Context, client *http.Client, model, baseURL, apiKey, sidecallToken string, body []byte, timeout time.Duration) (string, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
@@ -137,8 +148,11 @@ func (c *VisionClient) doRequest(ctx context.Context, client *http.Client, model
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	// 递归保护（审核 §8.2）：旁路请求带标记，service 层检测到即跳过
-	req.Header.Set("X-NewAPI-Vision-Relay", "1")
+	// 递归保护（审核 P0-2）：认证 marker（HMAC），目标实例校验通过才跳过；
+	// token 未配置则不携带（防递归由模型匹配天然保证）
+	if sidecallToken != "" {
+		req.Header.Set("X-NewAPI-Vision-Relay", BuildMarker(sidecallToken, time.Now()))
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		// 网络传输错误（连接失败/超时）——同模型重试 1 次
@@ -239,7 +253,7 @@ func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, data
 			return "", EnumTimeout, ""
 		}
 		text, err := c.Call(ctx, model, instruction, data, mediaType,
-			cfg.BaseURL, cfg.APIKey, remaining, DefaultMaxTokens)
+			cfg.BaseURL, cfg.APIKey, cfg.SidecallToken, remaining, DefaultMaxTokens)
 		if err == nil {
 			return text, "", model
 		}

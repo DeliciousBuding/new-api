@@ -16,6 +16,9 @@ type Config struct {
 	APIKey       string
 	Prompt       string
 	TimeoutSec   int
+	// SidecallToken 递归保护共享 secret（认证 marker HMAC 密钥，审核 P0-2）。
+	// 空 = 不携带 marker、不信任任何递归头（外部伪造不可 bypass）。
+	SidecallToken string
 }
 
 // 安全限制常量（v0.2.1：不进 DB 配置面，先写死；有真实调优需求再升为

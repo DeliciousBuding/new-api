@@ -1,18 +1,20 @@
 package service
 
 import (
-	"io"
 	"bytes"
 	"encoding/base64"
 	"image"
 	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/pkg/vision_relay"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -271,8 +273,7 @@ func TestPrepareVisionRelayRetryConsistency(t *testing.T) {
 // 7. SSRF fetcher：正常路径有限流下载成功（InitHttpClient 初始化 SSRF 客户端）；
 //    SSRF 保护客户端不可用场景由代码审查覆盖（包级只读，无法测试注入 nil——
 //    实现保证 nil → 错误，绝不 fallback 到 http.DefaultClient）
-func TestVisionRelayFetcherNormalPath(t *testing.T) {
-	InitHttpClient() // 测试环境未走 main.go 启动路径，需显式初始化 SSRF 客户端
+func TestVisionRelayFetcherNormalPath(t *testing.T) {	InitHttpClient() // 测试环境未走 main.go 启动路径，需显式初始化 SSRF 客户端
 	img := image.NewRGBA(image.Rect(0, 0, 10, 10))
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
@@ -303,3 +304,61 @@ func TestVisionRelayFetcherNormalPath(t *testing.T) {
 		t.Fatalf("unexpected fetch result: %d bytes %q", len(data), mt)
 	}
 }
+
+// 9. 递归保护（P0-2）：外部伪造 marker（含旧字面 "1"）→ 不绕过，Enhance 照常执行；
+//    合法认证 marker（HMAC 匹配配置的 sidecall_token）→ 真跳过（请求原样）
+func TestPrepareVisionRelayRecursionMarker(t *testing.T) {
+	const token = "test-sidecall-token"
+	ts := visionMockServer(t, nil)
+	defer ts.Close()
+
+	t.Run("forged header does not bypass", func(t *testing.T) {
+		c, relayInfo, _ := setupVisionRelayEnv(t, ts.URL, true)
+		setSidecallToken(token)
+		c.Request.Header.Set("X-NewAPI-Vision-Relay", "1") // 旧版字面值伪造
+		apiErr := PrepareVisionRelayRequest(c, relayInfo)
+		if apiErr != nil {
+			t.Fatalf("unexpected error: %v", apiErr)
+		}
+		body := storageContent(t, c)
+		if strings.Contains(string(body), `"type":"image"`) {
+			t.Fatal("forged header must NOT bypass: image block should be replaced")
+		}
+	})
+
+	t.Run("forged random marker does not bypass", func(t *testing.T) {
+		c, relayInfo, _ := setupVisionRelayEnv(t, ts.URL, true)
+		setSidecallToken(token)
+		c.Request.Header.Set("X-NewAPI-Vision-Relay", "vr:1234567890:deadbeef")
+		apiErr := PrepareVisionRelayRequest(c, relayInfo)
+		if apiErr != nil {
+			t.Fatalf("unexpected error: %v", apiErr)
+		}
+		body := storageContent(t, c)
+		if strings.Contains(string(body), `"type":"image"`) {
+			t.Fatal("forged random marker must NOT bypass")
+		}
+	})
+
+	t.Run("valid marker bypasses", func(t *testing.T) {
+		c, relayInfo, raw := setupVisionRelayEnv(t, ts.URL, true)
+		setSidecallToken(token)
+		marker := vision_relay.BuildMarker(token, time.Now())
+		c.Request.Header.Set("X-NewAPI-Vision-Relay", marker)
+		apiErr := PrepareVisionRelayRequest(c, relayInfo)
+		if apiErr != nil {
+			t.Fatalf("unexpected error: %v", apiErr)
+		}
+		if !bytes.Equal(storageContent(t, c), raw) {
+			t.Fatal("valid marker must bypass: body must remain original")
+		}
+	})
+}
+
+// setSidecallToken setupVisionRelayEnv 会重置 OptionMap，需在其后补设
+func setSidecallToken(token string) {
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap["vision_relay.sidecall_token"] = token
+	common.OptionMapRWMutex.Unlock()
+}
+

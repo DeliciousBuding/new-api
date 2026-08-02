@@ -57,14 +57,16 @@ func (visionRelayFetcher) Fetch(ctx context.Context, url string, maxBytes int64)
 // 请求无图片 / 递归保护头。以下必须 5xx：命中后端点配置非法、内部 JSON 变换失败、
 // 新 BodyStorage 创建失败、增强 DTO 验证失败。
 func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo) *types.NewAPIError {
-	// 1. 递归保护：旁路请求直接跳过
-	if c.GetHeader(relayRequestHeader) == "1" {
-		return nil
-	}
-	// 2. 配置快照（OptionMap 同步读取）
+	// 1. 配置快照（OptionMap 同步读取）——递归 marker 校验需要共享 secret
 	cfg, err := model_setting.GetVisionRelaySnapshot()
 	if err != nil {
 		return visionRelayInfraError(fmt.Errorf("vision relay snapshot: %w", err))
+	}
+	// 2. 递归保护（审核 P0-2）：仅认证 marker（HMAC 校验通过）才允许 bypass；
+	//    外部伪造的任意值（含旧字面 "1"）被忽略，继续正常执行 Vision Relay
+	if h := c.GetHeader(relayRequestHeader); h != "" &&
+		vision_relay.ValidateMarker(cfg.SidecallToken, h, time.Now()) {
+		return nil
 	}
 	// 3. 策略：allowlist 命中才处理（未启用/未命中 → no-op）
 	if !cfg.Enabled {
