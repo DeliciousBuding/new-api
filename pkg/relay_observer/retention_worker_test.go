@@ -45,6 +45,7 @@ type retentionScriptedStore struct {
 
 func (s *retentionScriptedStore) WriteBatch(ctx context.Context, events []Event) error { return nil }
 func (s *retentionScriptedStore) Close(ctx context.Context) error                      { return nil }
+
 // AppendTurns completes the T2.6-extended Store port; retention tests never
 // exercise content appends.
 func (s *retentionScriptedStore) AppendTurns(ctx context.Context, turns []ContentInput) error {

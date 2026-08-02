@@ -157,13 +157,13 @@ type fakeContentTx struct {
 
 func newFakeContentTx() *fakeContentTx {
 	return &fakeContentTx{
-		aliases:     map[string]string{},
-		sessions:    map[string]bool{},
-		heads:       map[string]*fakeHead{},
-		contexts:    map[string]*fakeContext{},
-		objects:     map[string]bool{},
-		objectsData: map[string]contentObjectRow{},
-		counts:      map[string][2]int64{},
+		aliases:      map[string]string{},
+		sessions:     map[string]bool{},
+		heads:        map[string]*fakeHead{},
+		contexts:     map[string]*fakeContext{},
+		objects:      map[string]bool{},
+		objectsData:  map[string]contentObjectRow{},
+		counts:       map[string][2]int64{},
 		turnSessions: map[string]string{},
 	}
 }
