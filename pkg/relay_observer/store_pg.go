@@ -459,6 +459,16 @@ INSERT INTO observer_turns (
 	$32
 ) ON CONFLICT (node_scope, event_id) DO NOTHING`
 
+// turnRowID deterministically derives the observer_turns row id of an event
+// from its idempotency key (node_scope, event_id). WriteBatch and the worker's
+// content append share it, so an observer_contexts row always references the
+// metadata row of the same event on every write and every idempotent replay.
+// Existing rows written with random ids keep them: the UNIQUE key is
+// (node_scope, event_id), so a replay never collides on the id.
+func turnRowID(nodeScope, eventID string) uuid.UUID {
+	return uuid.NewSHA1(uuid.Nil, []byte(nodeScope+"\x00"+eventID))
+}
+
 // WriteBatch persists events in one transaction without retries. Duplicate
 // (node_scope, event_id) rows are skipped by ON CONFLICT DO NOTHING; no
 // table-wide lock is taken. Any error aborts the transaction and is returned
@@ -497,7 +507,7 @@ func (s *pgStore) WriteBatch(ctx context.Context, events []Event) error {
 			return fmt.Errorf("relayobserver: write batch: marshal attempts: %w", err)
 		}
 		args := []any{
-			uuid.New(), ev.NodeScope, ev.EventID, nilOrUUID(ev.SessionID), ev.OccurredAt,
+			turnRowID(ev.NodeScope, ev.EventID), ev.NodeScope, ev.EventID, nilOrUUID(ev.SessionID), ev.OccurredAt,
 			ev.UserID, ev.TokenID, ev.ClientProfile, ev.Model, ev.UpstreamModel, ev.RelayFormat,
 			ev.Success, ev.StatusCode, ev.ErrorType, ev.ErrorCode,
 			ev.LatencyMS, ev.FirstResponseMS, ev.Stream,

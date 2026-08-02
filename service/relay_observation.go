@@ -213,9 +213,31 @@ func buildTurnEvent(c *gin.Context, info *relaycommon.RelayInfo, usage TurnUsage
 		CachedTokens:     usage.CachedTokens,
 		Quota:            usage.Quota,
 		IPTrust:          relayobserver.IPTrustNone,
-		// No content capture exists in this phase, so every turn is
-		// metadata-only; the content capture phases fill "full" instead.
+		// The already parsed request DTO rides along as a zero-copy reference
+		// for worker-side content capture (T2.6). It is attached here — after
+		// settlement and the consume log write, the last writes to the parsed
+		// request — and the worker reads it through the channel-send
+		// happens-before; the request path must not write the request after
+		// the publish below. A nil request (no DTO on this path) keeps the
+		// default metadata-only state.
 		ContentState: relayobserver.ContentStateMetadataOnly,
+	}
+	if info.Request != nil {
+		ev.Request = &info.Request
+	}
+	// Identity material for worker-side session alias resolution: the header
+	// map and the raw body bytes as shared references (zero-copy for memory
+	// storage). The body bytes are snapshotted here, before the publish send:
+	// the request path never writes them again, and the worker reads them
+	// through the channel-send happens-before (same rule as Request). A
+	// missing body storage degrades identity resolution, never the event.
+	if bs, err := common.GetBodyStorage(c); err == nil && bs != nil {
+		if body, err := bs.Bytes(); err == nil {
+			ev.Identity = relayobserver.IdentityInput{
+				Headers: c.Request.Header,
+				Body:    body,
+			}
+		}
 	}
 	if info.HasSendResponse() {
 		ev.FirstResponseMS = info.FirstResponseTime.Sub(info.StartTime).Milliseconds()
@@ -244,7 +266,8 @@ func buildTurnEvent(c *gin.Context, info *relaycommon.RelayInfo, usage TurnUsage
 // body size as the admission reservation (SSOT: the admission reservation
 // uses the existing BodyStorage.Size() value). A missing or failed body
 // storage falls back to a zero reservation; the dispatcher clamps oversized
-// reservations at the per-request cap.
+// reservations at the per-request cap. The event's Identity material was
+// already snapshotted in buildTurnEvent; nothing is copied or marshaled here.
 func publishTurnEvent(c *gin.Context, rt *relayobserver.Runtime, ev relayobserver.Event) {
 	reservation := int64(0)
 	if bs, err := common.GetBodyStorage(c); err == nil && bs != nil {

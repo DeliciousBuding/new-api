@@ -28,6 +28,7 @@ func ptrUUID() *uuid.UUID {
 type fakeStore struct {
 	mu      sync.Mutex
 	batches [][]Event
+	appends [][]ContentInput
 	err     error
 	closed  bool
 }
@@ -44,6 +45,19 @@ func (s *fakeStore) WriteBatch(ctx context.Context, events []Event) error {
 		return s.err
 	}
 	s.batches = append(s.batches, events)
+	return nil
+}
+
+func (s *fakeStore) AppendTurns(ctx context.Context, turns []ContentInput) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return s.err
+	}
+	s.appends = append(s.appends, turns)
 	return nil
 }
 

@@ -3,12 +3,11 @@ package relayobserver
 import (
 	"context"
 	"fmt"
+	"github.com/QuantumNous/new-api/common"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/QuantumNous/new-api/common"
 )
 
 // This file implements the bounded, fail-open runtime core of the observer:
@@ -32,6 +31,13 @@ const (
 // worker runs at most one pass every six hours"). It is deliberately not
 // configurable.
 const retentionInterval = 6 * time.Hour
+
+// maxPendingAppendEvents caps the retained content appends of failed
+// AppendTurns calls: the worker retries them on the next pass, and the cap
+// bounds the retained memory of a persistently failing content store. When
+// the cap is exceeded the oldest appends are dropped and counted as content
+// gaps (fail-open extreme protection; the metadata rows stay written).
+const maxPendingAppendEvents = 4 * MaxBatchSize
 
 // circuitStateVal is the atomic state of the write circuit. The worker
 // transitions open -> half-open when the cooldown expires; the request path
@@ -163,6 +169,13 @@ type Dispatcher struct {
 	// event after a probe recovered the circuit.
 	circuitEpoch atomic.Int64
 
+	// pendingAppends retains the content appends whose AppendTurns failed
+	// after their metadata batch was already written. The worker merges them
+	// into the next flush pass and retries; metadata rows are idempotent
+	// (ON CONFLICT DO NOTHING) and content objects dedup, so a retry never
+	// duplicates anything. Bounded by maxPendingAppendEvents. Worker-only.
+	pendingAppends []ContentInput
+
 	// retention is the T5.1 retention surface of the store, set when the
 	// store implements it. When set, Start launches the retention worker as
 	// an independent goroutine sharing the store and the stop signal; the
@@ -185,8 +198,7 @@ type Dispatcher struct {
 
 // NewDispatcher builds a dispatcher around store. The configuration's
 // QueueSize, QueueBytes, and MaxRequestBytes bound admission; BatchSize,
-// FlushInterval, and WriteTimeout bound worker writes. A store that
-// implements RetentionStore additionally arms the T5.1 retention pass.
+// FlushInterval, and WriteTimeout bound worker writes.
 func NewDispatcher(cfg Config, store Store) *Dispatcher {
 	d := &Dispatcher{
 		cfg:             cfg,
@@ -208,8 +220,7 @@ func NewDispatcher(cfg Config, store Store) *Dispatcher {
 	return d
 }
 
-// Start launches the single worker, plus the retention worker when the store
-// supports retention. It is idempotent.
+// Start launches the single worker. It is idempotent.
 func (d *Dispatcher) Start() {
 	d.startOnce.Do(func() {
 		d.started.Store(true)
@@ -408,7 +419,7 @@ func (d *Dispatcher) run() {
 // loop is one worker pass. It returns true when the worker should exit (stop
 // signal) and false when it was restarted after a recovered panic.
 func (d *Dispatcher) loop() (normalStop bool) {
-	var batch []Event
+	var batch []queuedEvent
 	flushTimer := d.clock.NewTimer(d.cfg.FlushInterval)
 	var circuitTimer timer
 	defer func() {
@@ -457,7 +468,7 @@ func (d *Dispatcher) loop() (normalStop bool) {
 			select {
 			case qe := <-d.probeCh:
 				d.releaseReservation(qe)
-				batch = append(batch, *qe.ev)
+				batch = append(batch, *qe)
 				if err := d.flush(&batch); err != nil {
 					d.openCircuit()
 				} else {
@@ -485,7 +496,7 @@ func (d *Dispatcher) loop() (normalStop bool) {
 					d.droppedTotal.Add(1)
 					continue
 				}
-				batch = append(batch, *qe.ev)
+				batch = append(batch, *qe)
 				if len(batch) >= d.cfg.BatchSize {
 					if err := d.flush(&batch); err != nil {
 						d.openCircuit()
@@ -519,7 +530,7 @@ func (d *Dispatcher) loop() (normalStop bool) {
 // abandoning the wait on the stop context could let a ticket-holding request
 // path send into the queue after the worker exited, stranding the event. The
 // stop context bounds Stop's own wait and Store.Close, not this drain.
-func (d *Dispatcher) drainDrop(batch []Event) {
+func (d *Dispatcher) drainDrop(batch []queuedEvent) {
 	if len(batch) > 0 {
 		d.droppedTotal.Add(int64(len(batch)))
 	}
@@ -538,6 +549,259 @@ func (d *Dispatcher) drainDrop(batch []Event) {
 			return
 		}
 	}
+}
+
+// flush writes one batch in two phases (T2.6): the metadata write first,
+// then the captured content appends. Content planning runs before the
+// metadata write so the content_state column carries the true normalization
+// outcome. A failed metadata write drops the whole batch (never retried,
+// never spooled) and counts it; a failed content append keeps the metadata
+// rows (already written and idempotent) and retains the appends for the next
+// pass. Either failure returns an error and the caller opens the circuit. The
+// batch is always emptied.
+func (d *Dispatcher) flush(batch *[]queuedEvent) error {
+	n := len(*batch)
+	if n == 0 {
+		return nil
+	}
+	start := d.clock.Now()
+	appends := d.planContent(*batch)
+	ctx, cancel := context.WithTimeout(d.stopCtxSnapshot(), d.cfg.WriteTimeout)
+	defer cancel()
+	events := make([]Event, n)
+	for i := range *batch {
+		events[i] = *(*batch)[i].ev
+	}
+	err := d.store.WriteBatch(ctx, events)
+	*batch = (*batch)[:0]
+	if err != nil {
+		// The metadata write failed: the current content plans die with the
+		// batch — no row was written for them — while appends retained from
+		// earlier failures stay queued for the next pass (their metadata rows
+		// were already written, so they still need their content).
+		d.droppedTotal.Add(int64(n))
+		d.pgLatencyMS.Store(int64(d.clock.Now().Sub(start) / time.Millisecond))
+		return err
+	}
+	d.writtenTotal.Add(int64(n))
+	appends = append(d.pendingAppends, appends...)
+	d.pendingAppends = nil
+	if len(appends) > 0 {
+		if err := d.store.AppendTurns(ctx, appends); err != nil {
+			d.retainPendingAppends(appends)
+			d.pgLatencyMS.Store(int64(d.clock.Now().Sub(start) / time.Millisecond))
+			return err
+		}
+	}
+	d.pgLatencyMS.Store(int64(d.clock.Now().Sub(start) / time.Millisecond))
+	return nil
+}
+
+// retainPendingAppends keeps failed content appends for the next pass, bounded
+// by maxPendingAppendEvents: beyond the cap the oldest appends are dropped and
+// counted as content gaps (extreme protection for a persistently failing
+// content store; the metadata rows stay written).
+func (d *Dispatcher) retainPendingAppends(appends []ContentInput) {
+	if len(appends) > maxPendingAppendEvents {
+		d.contentGaps.Add(int64(len(appends) - maxPendingAppendEvents))
+		appends = appends[len(appends)-maxPendingAppendEvents:]
+	}
+	d.pendingAppends = appends
+}
+
+// planContent runs the worker-side content capture pipeline (T2.6) over one
+// batch: every event that carries a parsed request is normalized, its
+// session aliases are resolved in the worker, and the event's ContentState is
+// backfilled so the metadata write carries the true outcome. It returns the
+// content appends to persist after the metadata write succeeds. Strictly
+// fail-open per event: a panicking or unknown request degrades that event to
+// metadata-only (counted as a content gap) and never affects the batch, the
+// store, or the request path.
+func (d *Dispatcher) planContent(batch []queuedEvent) []ContentInput {
+	km := KeyMaterial{
+		CurrentKey:      d.cfg.HMACKey,
+		CurrentVersion:  d.cfg.HMACKeyVersion,
+		PreviousKey:     d.cfg.PreviousHMACKey,
+		PreviousVersion: d.cfg.PreviousHMACKeyVersion,
+	}
+	appends := make([]ContentInput, 0, len(batch))
+	for i := range batch {
+		qe := &batch[i]
+		ev := qe.ev
+		if ev == nil || ev.Request == nil {
+			// No parsed request: the request-path default (metadata-only)
+			// already stands; there is nothing to capture.
+			continue
+		}
+		plan := d.normalizeOne(ev, qe.reservation)
+		ev.ContentState = plan.state
+		if plan.state == ContentStateGap || plan.state == ContentStateMetadataOnly {
+			// ContentGapsTotal counts turns whose capture ended with a gap
+			// marker or metadata-only state (Status contract).
+			d.contentGaps.Add(1)
+		}
+		if plan.state == ContentStateMetadataOnly {
+			continue
+		}
+		if len(plan.items) == 0 {
+			// Full normalization of an empty request: nothing to persist.
+			continue
+		}
+		idRes, err := ResolveIdentity(ev.Identity, km)
+		if err != nil || idRes.Primary.Digest == "" {
+			// No resolvable session identity (unknown profile, missing or
+			// oversized sources, or an unconfigured HMAC key): the content has
+			// no session to hang on — AppendTurns of a turn without aliases is
+			// a no-op by T2.3 design, so no append is planned. The event keeps
+			// its normalized ContentState.
+			continue
+		}
+		aliases := make([]Alias, 0, 1+len(idRes.Auxiliary))
+		aliases = append(aliases, idRes.Primary)
+		aliases = append(aliases, idRes.Auxiliary...)
+		appends = append(appends, ContentInput{
+			NodeScope: ev.NodeScope,
+			UserID:    ev.UserID,
+			Aliases:   aliases,
+			TurnID:    turnRowID(ev.NodeScope, ev.EventID),
+			Items:     plan.items,
+		})
+	}
+	return appends
+}
+
+// contentPlan is one event's normalization outcome inside the worker.
+type contentPlan struct {
+	state string
+	items []CanonicalItem
+}
+
+// normalizeOne normalizes one event's parsed request with the event's own
+// admission reservation as the canonical byte budget. A panic inside the
+// normalizer is absorbed here (the normalizer also recovers internally, so
+// this is the outer fail-open boundary of the worker call site): the event
+// degrades to metadata-only and the worker keeps running.
+func (d *Dispatcher) normalizeOne(ev *Event, reservation int64) (plan contentPlan) {
+	defer func() {
+		if recover() != nil {
+			plan = contentPlan{state: ContentStateMetadataOnly}
+		}
+	}()
+	res := NormalizeRequest(ev.RelayFormat, *ev.Request, NormalizeOptions{
+		Reservation:     reservation,
+		MaxRequestBytes: d.cfg.MaxRequestBytes,
+		HMACKey:         d.cfg.HMACKey,
+	})
+	return contentPlan{state: res.ContentState, items: res.Items}
+}
+
+// openCircuit marks the circuit open and starts the cooldown clock. The
+// cooldown grows exponentially on every failure and caps at maxCooldown; the
+// current deadline is stored so Status and the worker timer share one value.
+// Every failure cycle bumps the circuit epoch so stale admission decisions
+// made before the failure are dropped instead of written. Worker-only.
+func (d *Dispatcher) openCircuit() {
+	d.circuitState.Store(int32(circuitOpen))
+	d.circuitEpoch.Add(1)
+	cd := d.circuitCooldown
+	d.circuitUntilNano.Store(d.clock.Now().Add(cd).UnixNano())
+	d.circuitCooldown = cd * 2
+	if d.circuitCooldown > maxCooldown {
+		d.circuitCooldown = maxCooldown
+	}
+}
+
+// closeCircuit closes the circuit and resets the cooldown to its initial
+// value; the next failure starts over from initialCooldown. Worker-only.
+func (d *Dispatcher) closeCircuit() {
+	d.circuitState.Store(int32(circuitClosed))
+	d.circuitCooldown = initialCooldown
+}
+
+// closeCircuitAfterDrainingBacklog drops every event still queued before the
+// circuit closes: a failed batch opens the circuit, and backlog admitted
+// before that failure must be dropped, never rescued into a post-recovery
+// burst write by a successful probe. The circuit is open or probing while
+// this runs, so TryEnqueue drops new events and the loop terminates. A
+// current-epoch event cannot be queued here (no admission is decided while
+// probing); the epoch check keeps the drop predicate identical to the closed
+// enqueue case. Worker-only.
+func (d *Dispatcher) closeCircuitAfterDrainingBacklog() {
+	for {
+		select {
+		case qe := <-d.enqueue:
+			d.releaseReservation(qe)
+			if qe.epoch != d.circuitEpoch.Load() {
+				d.droppedTotal.Add(1)
+				continue
+			}
+			// Unreachable in practice: no admission is decided while the
+			// circuit is probing, so every queued item predates the failure
+			// cycle. Never write a backlog item; drop defensively.
+			d.droppedTotal.Add(1)
+		default:
+			d.closeCircuit()
+			return
+		}
+	}
+}
+
+// onWorkerPanic treats any worker panic as a failed write: the current batch
+// is dropped and counted, the circuit opens, and the worker is restarted by
+// run. Reservations were already released when each event was received.
+func (d *Dispatcher) onWorkerPanic(r any, batch []queuedEvent) {
+	d.droppedTotal.Add(int64(len(batch)))
+	d.openCircuit()
+}
+
+// releaseReservation releases the count and byte admission of one queued
+// event; called exactly once per accepted event, when the worker receives it.
+func (d *Dispatcher) releaseReservation(qe *queuedEvent) {
+	d.pendingCount.Add(-1)
+	d.pendingBytes.Add(-qe.reservation)
+}
+
+// reserveBytes takes reservation bytes out of the byte budget with a CAS
+// loop; it returns false when the budget would overflow.
+func (d *Dispatcher) reserveBytes(reservation int64) bool {
+	for {
+		cur := d.pendingBytes.Load()
+		if cur > d.cfg.QueueBytes-reservation {
+			return false
+		}
+		if d.pendingBytes.CompareAndSwap(cur, cur+reservation) {
+			return true
+		}
+	}
+}
+
+func (d *Dispatcher) releaseBytes(reservation int64) {
+	d.pendingBytes.Add(-reservation)
+}
+
+func (d *Dispatcher) stopDone() <-chan struct{} {
+	d.stopMu.Lock()
+	defer d.stopMu.Unlock()
+	return d.stopCtx.Done()
+}
+
+func (d *Dispatcher) stopCtxSnapshot() context.Context {
+	d.stopMu.Lock()
+	defer d.stopMu.Unlock()
+	return d.stopCtx
+}
+
+func (d *Dispatcher) stopCtxErr() error {
+	d.stopMu.Lock()
+	defer d.stopMu.Unlock()
+	return d.stopCtx.Err()
+}
+
+func (d *Dispatcher) ipTrustValue() IPTrust {
+	if p := d.ipTrust.Load(); p != nil {
+		return *p
+	}
+	return IPTrustNone
 }
 
 // runRetention owns the retention worker goroutine: one pass every
@@ -665,135 +929,4 @@ func (d *Dispatcher) retentionOrphansSegment(cutoff time.Time) error {
 // retentionDays converts a day count to a duration.
 func retentionDays(days int) time.Duration {
 	return time.Duration(days) * 24 * time.Hour
-}
-
-// flush writes one batch to the store under the configured write timeout. A
-// failed write drops the whole batch (never retried, never spooled) and
-// counts it; the caller opens the circuit. The batch is always emptied.
-func (d *Dispatcher) flush(batch *[]Event) error {
-	n := len(*batch)
-	if n == 0 {
-		return nil
-	}
-	start := d.clock.Now()
-	ctx, cancel := context.WithTimeout(d.stopCtxSnapshot(), d.cfg.WriteTimeout)
-	defer cancel()
-	err := d.store.WriteBatch(ctx, *batch)
-	d.pgLatencyMS.Store(int64(d.clock.Now().Sub(start) / time.Millisecond))
-	*batch = (*batch)[:0]
-	if err != nil {
-		d.droppedTotal.Add(int64(n))
-		return err
-	}
-	d.writtenTotal.Add(int64(n))
-	return nil
-}
-
-// openCircuit marks the circuit open and starts the cooldown clock. The
-// cooldown grows exponentially on every failure and caps at maxCooldown; the
-// current deadline is stored so Status and the worker timer share one value.
-// Every failure cycle bumps the circuit epoch so stale admission decisions
-// made before the failure are dropped instead of written. Worker-only.
-func (d *Dispatcher) openCircuit() {
-	d.circuitState.Store(int32(circuitOpen))
-	d.circuitEpoch.Add(1)
-	cd := d.circuitCooldown
-	d.circuitUntilNano.Store(d.clock.Now().Add(cd).UnixNano())
-	d.circuitCooldown = cd * 2
-	if d.circuitCooldown > maxCooldown {
-		d.circuitCooldown = maxCooldown
-	}
-}
-
-// closeCircuit closes the circuit and resets the cooldown to its initial
-// value; the next failure starts over from initialCooldown. Worker-only.
-func (d *Dispatcher) closeCircuit() {
-	d.circuitState.Store(int32(circuitClosed))
-	d.circuitCooldown = initialCooldown
-}
-
-// closeCircuitAfterDrainingBacklog drops every event still queued before the
-// circuit closes: a failed batch opens the circuit, and backlog admitted
-// before that failure must be dropped, never rescued into a post-recovery
-// burst write by a successful probe. The circuit is open or probing while
-// this runs, so TryEnqueue drops new events and the loop terminates. A
-// current-epoch event cannot be queued here (no admission is decided while
-// probing); the epoch check keeps the drop predicate identical to the closed
-// enqueue case. Worker-only.
-func (d *Dispatcher) closeCircuitAfterDrainingBacklog() {
-	for {
-		select {
-		case qe := <-d.enqueue:
-			d.releaseReservation(qe)
-			if qe.epoch != d.circuitEpoch.Load() {
-				d.droppedTotal.Add(1)
-				continue
-			}
-			// Unreachable in practice: no admission is decided while the
-			// circuit is probing, so every queued item predates the failure
-			// cycle. Never write a backlog item; drop defensively.
-			d.droppedTotal.Add(1)
-		default:
-			d.closeCircuit()
-			return
-		}
-	}
-}
-
-// onWorkerPanic treats any worker panic as a failed write: the current batch
-// is dropped and counted, the circuit opens, and the worker is restarted by
-// run. Reservations were already released when each event was received.
-func (d *Dispatcher) onWorkerPanic(r any, batch []Event) {
-	d.droppedTotal.Add(int64(len(batch)))
-	d.openCircuit()
-}
-
-// releaseReservation releases the count and byte admission of one queued
-// event; called exactly once per accepted event, when the worker receives it.
-func (d *Dispatcher) releaseReservation(qe *queuedEvent) {
-	d.pendingCount.Add(-1)
-	d.pendingBytes.Add(-qe.reservation)
-}
-
-// reserveBytes takes reservation bytes out of the byte budget with a CAS
-// loop; it returns false when the budget would overflow.
-func (d *Dispatcher) reserveBytes(reservation int64) bool {
-	for {
-		cur := d.pendingBytes.Load()
-		if cur > d.cfg.QueueBytes-reservation {
-			return false
-		}
-		if d.pendingBytes.CompareAndSwap(cur, cur+reservation) {
-			return true
-		}
-	}
-}
-
-func (d *Dispatcher) releaseBytes(reservation int64) {
-	d.pendingBytes.Add(-reservation)
-}
-
-func (d *Dispatcher) stopDone() <-chan struct{} {
-	d.stopMu.Lock()
-	defer d.stopMu.Unlock()
-	return d.stopCtx.Done()
-}
-
-func (d *Dispatcher) stopCtxSnapshot() context.Context {
-	d.stopMu.Lock()
-	defer d.stopMu.Unlock()
-	return d.stopCtx
-}
-
-func (d *Dispatcher) stopCtxErr() error {
-	d.stopMu.Lock()
-	defer d.stopMu.Unlock()
-	return d.stopCtx.Err()
-}
-
-func (d *Dispatcher) ipTrustValue() IPTrust {
-	if p := d.ipTrust.Load(); p != nil {
-		return *p
-	}
-	return IPTrustNone
 }

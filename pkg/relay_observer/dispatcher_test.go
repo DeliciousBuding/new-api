@@ -28,12 +28,16 @@ func sampleEventPtr() *Event {
 
 // scriptedStore implements Store with scripted failure, panic, and blocking
 // behavior. Every WriteBatch entry sends a non-blocking writeNotify so tests
-// can synchronize on writes deterministically.
+// can synchronize on writes deterministically; AppendTurns has its own
+// scripted error and appends recording so content failures are scriptable
+// independently of metadata writes.
 type scriptedStore struct {
 	mu           sync.Mutex
 	batches      [][]Event
+	appends      [][]ContentInput
 	writeCount   int
 	err          error
+	appendErr    error
 	panicOnWrite bool
 	blockWrites  chan struct{}
 	writeNotify  chan struct{}
@@ -87,6 +91,22 @@ func (s *scriptedStore) WriteBatch(ctx context.Context, events []Event) error {
 	return nil
 }
 
+func (s *scriptedStore) AppendTurns(ctx context.Context, turns []ContentInput) error {
+	s.mu.Lock()
+	appendErr := s.appendErr
+	s.mu.Unlock()
+	if appendErr != nil {
+		return appendErr
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.appends = append(s.appends, append([]ContentInput(nil), turns...))
+	return nil
+}
+
 func (s *scriptedStore) Close(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -98,6 +118,7 @@ func (s *scriptedStore) Close(ctx context.Context) error {
 }
 
 func (s *scriptedStore) setErr(err error)       { s.mu.Lock(); s.err = err; s.mu.Unlock() }
+func (s *scriptedStore) setAppendErr(err error) { s.mu.Lock(); s.appendErr = err; s.mu.Unlock() }
 func (s *scriptedStore) setPanicOnWrite(v bool) { s.mu.Lock(); s.panicOnWrite = v; s.mu.Unlock() }
 func (s *scriptedStore) setBlockWrites(ch chan struct{}) {
 	s.mu.Lock()

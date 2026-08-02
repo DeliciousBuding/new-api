@@ -5,8 +5,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/pkg/relay_observer"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 
 	"github.com/gin-gonic/gin"
@@ -97,4 +99,51 @@ func TestObserveTurnFlowWhileWiredDisabled(t *testing.T) {
 	st := turnObserverStateFrom(ctx)
 	require.NotNil(t, st)
 	assert.Equal(t, 2, st.acc.Len())
+}
+
+// TestBuildTurnEventAttachesRequestAndIdentity is the T2.6 attach contract:
+// buildTurnEvent rides the already parsed request DTO along as a zero-copy
+// reference and snapshots the session-identity material (header map and body
+// bytes) before the publish send, so the worker can normalize content and
+// resolve aliases without the request path doing any marshaling or copying.
+// A nil request keeps the metadata-only default.
+func TestBuildTurnEventAttachesRequestAndIdentity(t *testing.T) {
+	SetRelayObserverRuntime(relayobserver.NewRuntime())
+	t.Cleanup(func() { SetRelayObserverRuntime(nil) })
+
+	body := []byte(`{"model":"gpt-5","messages":[{"role":"user","content":"hello"}]}`)
+	storage, err := common.CreateBodyStorage(body)
+	require.NoError(t, err)
+	t.Cleanup(func() { storage.Close() })
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Set(common.KeyBodyStorage, storage)
+	ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	ctx.Request.Header.Set("X-Codex-Turn-Metadata", `{"thread_id":"thr-9"}`)
+
+	req := dto.Request(&dto.GeneralOpenAIRequest{
+		Model:    "gpt-5",
+		Messages: []dto.Message{{Role: "user", Content: "hello"}},
+	})
+	info := &relaycommon.RelayInfo{
+		RequestId:   "turn-attach",
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelId: 7},
+		Request:     req,
+	}
+
+	ev := buildTurnEvent(ctx, info, TurnUsage{}, true)
+	require.NotNil(t, ev.Request)
+	assert.Same(t, req, *ev.Request) // the exact parsed reference, zero-copy
+	// Identity carries the raw header map (worker-side alias resolution reads
+	// it) and the body bytes snapshot.
+	assert.Equal(t, `{"thread_id":"thr-9"}`, ev.Identity.Headers.Get("X-Codex-Turn-Metadata"))
+	assert.Equal(t, body, ev.Identity.Body)
+	assert.Equal(t, relayobserver.ContentStateMetadataOnly, ev.ContentState)
+
+	// A requestless turn keeps the nil reference: the worker degrades it to
+	// metadata-only instead of dereferencing.
+	info.Request = nil
+	ev = buildTurnEvent(ctx, info, TurnUsage{}, false)
+	assert.Nil(t, ev.Request)
+	assert.Equal(t, relayobserver.ContentStateMetadataOnly, ev.ContentState)
 }
