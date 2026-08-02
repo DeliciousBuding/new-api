@@ -349,12 +349,16 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	// 原始 UA 字符串随识别结果一并落盘，便于管理员核对识别依据；
 	// 仅管理员可见（admin_info 整体对非管理员剥离）。
 	// UA 是客户端可控输入，截断到 256 字符限制每行存储增量。
-	if ua := ctx.Request.UserAgent(); ua != "" {
-		const maxUaLen = 256
-		if len(ua) > maxUaLen {
-			ua = ua[:maxUaLen]
+	// Request 可能缺失（gin.CreateTestContext 不挂请求对象），
+	// nil 防护保持落盘不因缺失请求而崩溃。
+	if ctx.Request != nil {
+		if ua := ctx.Request.UserAgent(); ua != "" {
+			const maxUaLen = 256
+			if len(ua) > maxUaLen {
+				ua = ua[:maxUaLen]
+			}
+			adminInfo["client_ua"] = ua
 		}
-		adminInfo["client_ua"] = ua
 	}
 	isMultiKey := common.GetContextKeyBool(ctx, constant.ContextKeyChannelIsMultiKey)
 	if isMultiKey {
