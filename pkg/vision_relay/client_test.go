@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -77,9 +78,15 @@ func TestDescribeOneSuccess(t *testing.T) {
 	}))
 	defer ts.Close()
 	client := &VisionClient{HTTPClient: ts.Client()}
-	desc, enum, model := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
-	if enum != "" || desc != "这是图片描述" || model != "vision-model-a" {
-		t.Fatalf("unexpected: desc=%q enum=%q model=%s", desc, enum, model)
+	r := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
+	if r.Enum != "" || r.Desc != "这是图片描述" || r.Model != "vision-model-a" {
+		t.Fatalf("unexpected: desc=%q enum=%q model=%s", r.Desc, r.Enum, r.Model)
+	}
+	if r.Abort {
+		t.Fatal("success must not abort")
+	}
+	if r.HTTPCalls != 1 || r.Fallbacks != 0 {
+		t.Fatalf("expected 1 http call 0 fallbacks, got calls=%d fallbacks=%d", r.HTTPCalls, r.Fallbacks)
 	}
 	if atomic.LoadInt32(&calls) != 1 {
 		t.Fatalf("expected 1 call, got %d", calls)
@@ -112,9 +119,12 @@ func TestDescribeOneErrorMatrix(t *testing.T) {
 			}))
 			defer ts.Close()
 			client := &VisionClient{HTTPClient: ts.Client()}
-			_, enum, _ := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
-			if enum != tc.wantEnum {
-				t.Fatalf("expected enum %s, got %s", tc.wantEnum, enum)
+			r := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
+			if r.Enum != tc.wantEnum {
+				t.Fatalf("expected enum %s, got %s", tc.wantEnum, r.Enum)
+			}
+			if r.HTTPCalls != tc.wantCalls {
+				t.Fatalf("expected %d http calls, got %d", tc.wantCalls, r.HTTPCalls)
 			}
 			if n := atomic.LoadInt32(&calls); int(n) != tc.wantCalls {
 				t.Fatalf("expected %d calls, got %d", tc.wantCalls, n)
@@ -137,11 +147,14 @@ func TestDescribeOneFallback(t *testing.T) {
 	}))
 	defer ts.Close()
 	client := &VisionClient{HTTPClient: ts.Client()}
-	desc, enum, model := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
-	if enum != "" || desc != "fallback 成功" || model != "vision-model-b" {
-		t.Fatalf("unexpected: desc=%q enum=%q model=%s", desc, enum, model)
+	r := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
+	if r.Enum != "" || r.Desc != "fallback 成功" || r.Model != "vision-model-b" {
+		t.Fatalf("unexpected: desc=%q enum=%q model=%s", r.Desc, r.Enum, r.Model)
 	}
-	// 503 不重试：model-a 1 次 + model-b 1 次 = 2 次
+	// 503 不重试：model-a 1 次 + model-b 1 次 = 2 次；fallback 真实切换 1 次
+	if r.HTTPCalls != 2 || r.Fallbacks != 1 {
+		t.Fatalf("expected 2 http calls 1 fallback, got calls=%d fallbacks=%d", r.HTTPCalls, r.Fallbacks)
+	}
 	if atomic.LoadInt32(&calls) != 2 {
 		t.Fatalf("expected 2 calls (no retry, direct fallback), got %d", calls)
 	}
@@ -165,11 +178,14 @@ func TestDescribeOneTransportRetry(t *testing.T) {
 	}))
 	defer ts.Close()
 	client := &VisionClient{HTTPClient: ts.Client()}
-	desc, enum, model := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
-	if enum != "" || desc != "重试成功" || model != "vision-model-a" {
-		t.Fatalf("unexpected: desc=%q enum=%q model=%s", desc, enum, model)
+	r := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
+	if r.Enum != "" || r.Desc != "重试成功" || r.Model != "vision-model-a" {
+		t.Fatalf("unexpected: desc=%q enum=%q model=%s", r.Desc, r.Enum, r.Model)
 	}
-	// 同模型重试 1 次 = 2 次调用
+	// 同模型重试 1 次 = 2 次调用；传输错误不算 fallback
+	if r.HTTPCalls != 2 || r.Fallbacks != 0 {
+		t.Fatalf("expected 2 http calls 0 fallbacks, got calls=%d fallbacks=%d", r.HTTPCalls, r.Fallbacks)
+	}
 	if atomic.LoadInt32(&calls) != 2 {
 		t.Fatalf("expected 2 calls (transport retry), got %d", calls)
 	}
@@ -188,9 +204,13 @@ func TestDescribeOneEmptyResponse(t *testing.T) {
 	}))
 	defer ts.Close()
 	client := &VisionClient{HTTPClient: ts.Client()}
-	desc, enum, _ := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
-	if enum != "" || desc != "第二次成功" {
-		t.Fatalf("unexpected: desc=%q enum=%q", desc, enum)
+	r := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
+	if r.Enum != "" || r.Desc != "第二次成功" {
+		t.Fatalf("unexpected: desc=%q enum=%q", r.Desc, r.Enum)
+	}
+	// 空响应 → 换下一模型：2 次 HTTP、1 次 fallback
+	if r.HTTPCalls != 2 || r.Fallbacks != 1 {
+		t.Fatalf("expected 2 http calls 1 fallback, got calls=%d fallbacks=%d", r.HTTPCalls, r.Fallbacks)
 	}
 }
 
@@ -204,8 +224,8 @@ func TestDescribeOneCancel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, enum, _ := client.DescribeOne(ctx, "指令", testImageData(), "image/png", testConfig(ts.URL))
-	if enum == "" {
+	r := client.DescribeOne(ctx, "指令", testImageData(), "image/png", testConfig(ts.URL))
+	if r.Enum == "" {
 		t.Fatal("cancel should yield failure enum")
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
@@ -311,5 +331,79 @@ func TestEngineEnhanceImageLimitPlaceholder(t *testing.T) {
 	}
 	if !strings.Contains(out, "image_limit") {
 		t.Error("omitted images should have image_limit placeholder")
+	}
+}
+
+// 401/403 → Abort=true（请求级熔断标记），不 retry 不 fallback（P0-2 §3）
+func TestDescribeOneAuthAbort(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(fmt.Sprintf("HTTP%d", status), func(t *testing.T) {
+			var calls int32
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&calls, 1)
+				w.WriteHeader(status)
+				w.Write([]byte(`{"error":{"message":"invalid key"}}`))
+			}))
+			defer ts.Close()
+			client := &VisionClient{HTTPClient: ts.Client()}
+			r := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
+			if !r.Abort {
+				t.Fatal("401/403 must set Abort (request-global auth failure)")
+			}
+			if r.Enum != EnumServiceUnavailable {
+				t.Fatalf("expected service_unavailable enum, got %s", r.Enum)
+			}
+			if r.HTTPCalls != 1 || r.Fallbacks != 0 {
+				t.Fatalf("auth failure must not retry/fallback: calls=%d fallbacks=%d", r.HTTPCalls, r.Fallbacks)
+			}
+			if atomic.LoadInt32(&calls) != 1 {
+				t.Fatalf("expected exactly 1 http call, got %d", calls)
+			}
+		})
+	}
+}
+
+// 请求级熔断（P0-2 §3 必测）：6 张唯一图 + 401 → 首个 401 后停止后续 sidecall，
+// HTTP 总数 <= RequestConcurrency(2)；最终零 image 块（全部稳定占位）
+func TestEngineEnhanceAuthCircuitBreak(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":{"message":"invalid key"}}`))
+	}))
+	defer ts.Close()
+	var blocks []string
+	for i := 0; i < 6; i++ { // 6 张唯一图（不同颜色 → 不同 digest）
+		img := image.NewRGBA(image.Rect(0, 0, 10, 10))
+		img.Set(0, 0, color.RGBA{R: uint8(10 + i*30), G: uint8(i * 5), A: 255})
+		var buf bytes.Buffer
+		_ = png.Encode(&buf, img)
+		b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
+		blocks = append(blocks, `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"`+b64+`"}}`)
+	}
+	raw := `{"messages":[{"role":"user","content":[` + strings.Join(blocks, ",") + `]}]}`
+	engine := &Engine{Client: &VisionClient{HTTPClient: ts.Client()}}
+	stats := &Stats{}
+	enhanced, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, testConfig(ts.URL), stats)
+	if err != nil {
+		t.Fatalf("enhance: %v", err)
+	}
+	n := atomic.LoadInt32(&calls)
+	if n > RequestConcurrency {
+		t.Fatalf("sidecall must be bounded by RequestConcurrency=%d, got %d", RequestConcurrency, n)
+	}
+	if n == 0 {
+		t.Fatal("at least one sidecall must have happened")
+	}
+	out := string(enhanced)
+	if strings.Contains(out, `"type":"image"`) {
+		t.Error("image block remains after auth circuit break")
+	}
+	if stats.Failed != 6 {
+		t.Fatalf("all 6 images must fail (placeholder), got %d", stats.Failed)
+	}
+	if stats.VisionCalls > RequestConcurrency {
+		t.Fatalf("stats.VisionCalls=%d must be <= RequestConcurrency", stats.VisionCalls)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -104,6 +105,8 @@ func (e *Engine) Enhance(ctx context.Context, raw []byte, format Format, cfg Con
 // describeGrouped digest 分组 + 有界并发识图（门槛六 + A8 + v0.2.2 闸门拆分）。
 // 每组在 decode gate 内完成压缩（DecodeConfig/Decode/resize/JPEG——内存大户），
 // 然后在 call gate 内完成 HTTP 调用。
+// 请求级熔断（审核 P0-2 §3）：首个 401/403（Abort）→ 尚未开始的任务全部
+// 停止（不再发起 sidecall），未处理图由 Apply 以稳定占位兜底。
 func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cfg Config, stats *Stats) map[string]string {
 	// 分组：每唯一 digest 一个任务（含 Err 的图不参与识别）
 	groups := make(map[string][]*PatchedImage)
@@ -130,15 +133,27 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 	var mu sync.Mutex
 	sem := make(chan struct{}, RequestConcurrency)
 	var wg sync.WaitGroup
+	var abort atomic.Bool // 请求级熔断：401/403 后停止所有后续 sidecall
 	for digest, group := range groups {
-		if ctx.Err() != nil {
-			continue // 客户端断开 → 剩余图保持无结果 → 占位（验收 15）
+		if ctx.Err() != nil || abort.Load() {
+			// P2-6：ctx 取消/熔断未调度的图计入 Failed（mu 保护——goroutine 并发写）
+			mu.Lock()
+			stats.Failed += len(group)
+			mu.Unlock()
+			continue
 		}
 		sem <- struct{}{}
 		wg.Add(1)
 		go func(d string, g []*PatchedImage) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			mu.Lock()
+			if abort.Load() {
+				stats.Failed += len(g) // 在途队列中已被熔断
+				mu.Unlock()
+				return
+			}
+			mu.Unlock()
 			// ① decode gate（2）：完整解码/降采样/JPEG 编码——内存峰值闸门
 			decodeGateCh, err := globalDecodeGate.acquire(ctx)
 			if err != nil {
@@ -147,22 +162,30 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 			compressed, mediaType, err := CompressForVision(g[0].Data, g[0].Patch.Source.MediaType)
 			globalDecodeGate.release(decodeGateCh)
 			enum := ""
+			desc := ""
+			model := ""
+			calls := 0
+			fallbacks := 0
 			if err != nil {
 				enum = enumFromErr(err)
 			}
 			// ② call gate（8）：HTTP 旁路调用
-			desc := ""
-			model := ""
 			if enum == "" {
 				callGateCh, err := globalCallGate.acquire(ctx)
 				if err == nil {
-					desc, enum, model = client.DescribeOne(ctx, instruction, compressed, mediaType, cfg)
+					r := client.DescribeOne(ctx, instruction, compressed, mediaType, cfg)
 					globalCallGate.release(callGateCh)
+					desc, enum, model = r.Desc, r.Enum, r.Model
+					calls, fallbacks = r.HTTPCalls, r.Fallbacks
+					if r.Abort {
+						abort.Store(true) // 请求级熔断：后续任务不再发起 sidecall
+					}
 				}
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			stats.VisionCalls++
+			stats.VisionCalls += calls // P2-6：实际 HTTP 次数（含 retry/fallback）
+			stats.FallbackCount += fallbacks
 			if enum == "" && desc != "" {
 				results[d] = desc
 				stats.Success += len(g) // 成功替换的图片块
@@ -171,7 +194,6 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 				}
 			} else {
 				stats.Failed += len(g)
-				stats.FallbackCount++
 			}
 		}(digest, group)
 	}

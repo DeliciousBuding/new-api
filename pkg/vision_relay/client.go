@@ -99,7 +99,30 @@ type VisionClient struct {
 //
 // sidecallToken 非空时携带递归保护认证 marker（审核 P0-2：目标实例只有
 // HMAC 校验通过才允许 bypass，外部伪造不可绕过）。
-func (c *VisionClient) Call(ctx context.Context, model, instruction string, data []byte, mediaType, baseURL, apiKey, sidecallToken string, timeout time.Duration, maxTokens int) (string, error) {
+// 返回 (文本, 实际 HTTP 请求次数, 错误)——calls 含 transport retry（P2-6）。
+func (c *VisionClient) Call(ctx context.Context, model, instruction string, data []byte, mediaType, baseURL, apiKey, sidecallToken string, timeout time.Duration, maxTokens int) (string, int, error) {
+	body, err := buildVisionPayload(model, instruction, data, mediaType, maxTokens)
+	if err != nil {
+		return "", 0, err
+	}
+	client := c.HTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	var text string
+	calls := 0
+	for attempt := 0; attempt <= 1; attempt++ { // 仅传输错误重试 ≤1（预算内）
+		text, err = c.doRequest(ctx, client, model, baseURL, apiKey, sidecallToken, body, timeout)
+		calls++
+		var te *transportError
+		if err == nil || !errors.As(err, &te) {
+			break
+		}
+	}
+	return text, calls, err
+}
+
+func buildVisionPayload(model, instruction string, data []byte, mediaType string, maxTokens int) ([]byte, error) {
 	maxTokensUint := uint(maxTokens)
 	payload := map[string]any{
 		"model":      model,
@@ -119,23 +142,7 @@ func (c *VisionClient) Call(ctx context.Context, model, instruction string, data
 			},
 		},
 	}
-	body, err := common.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-	client := c.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
-	var text string
-	for attempt := 0; attempt <= 1; attempt++ { // 仅传输错误重试 ≤1（预算内）
-		text, err = c.doRequest(ctx, client, model, baseURL, apiKey, sidecallToken, body, timeout)
-		var te *transportError
-		if err == nil || !errors.As(err, &te) {
-			break
-		}
-	}
-	return text, err
+	return common.Marshal(payload)
 }
 
 func (c *VisionClient) doRequest(ctx context.Context, client *http.Client, model, baseURL, apiKey, sidecallToken string, body []byte, timeout time.Duration) (string, error) {
@@ -222,11 +229,22 @@ func contentString(content any) string {
 	return ""
 }
 
+// DescribeResult 单图识图结果（结构化，审核 P0-2 §3 / P2-6：保留请求级熔断
+// 标记与真实 HTTP/fallback 计数，不提前压成字符串枚举）
+type DescribeResult struct {
+	Desc   string // 纯描述（成功）
+	Enum   string // 失败枚举（空=成功）
+	Model  string // 使用模型
+	Abort  bool   // 请求级熔断：401/403（鉴权/配置错误）→ 整次 Enhance 停止后续 sidecall
+	HTTPCalls int // 实际 HTTP 请求次数（含 transport retry 与 fallback）
+	Fallbacks int // 真实模型切换次数（换到下一个模型算一次）
+}
+
 // DescribeOne 单图旁路识图（调用方已在 decode gate 内完成压缩、call gate 内
 // 调用本函数——v0.2.2 闸门拆分）。fallback 链最多 MaxFallbackModels 个模型，
 // 总预算继承 ctx deadline（v0.2.2：请求级全局 deadline，非每图独立）。
-// 返回 (纯描述, 枚举, 使用模型)。枚举非空 = 失败（对应占位）。
-func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, data []byte, mediaType string, cfg Config) (string, string, string) {
+// Abort=true 表示鉴权/配置错误——调用方必须停止本请求其余 sidecall（P0-2 §3）。
+func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, data []byte, mediaType string, cfg Config) DescribeResult {
 	models := make([]string, 0, len(cfg.Models))
 	for _, item := range cfg.Models {
 		if item = strings.TrimSpace(item); item != "" {
@@ -237,7 +255,7 @@ func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, data
 		}
 	}
 	if len(models) == 0 {
-		return "", EnumServiceUnavailable, ""
+		return DescribeResult{Enum: EnumServiceUnavailable}
 	}
 	// 总预算：优先 ctx deadline（请求级全局），无 deadline 时退回 cfg.TimeoutSec
 	var totalBudget time.Duration
@@ -247,29 +265,34 @@ func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, data
 		totalBudget = time.Duration(cfg.TimeoutSec) * time.Second
 	}
 	deadline := time.Now().Add(totalBudget)
+	var result DescribeResult
 	for _, model := range models {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return "", EnumTimeout, ""
+			return DescribeResult{Enum: EnumTimeout, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
 		}
-		text, err := c.Call(ctx, model, instruction, data, mediaType,
+		text, calls, err := c.Call(ctx, model, instruction, data, mediaType,
 			cfg.BaseURL, cfg.APIKey, cfg.SidecallToken, remaining, DefaultMaxTokens)
+		result.HTTPCalls += calls
 		if err == nil {
-			return text, "", model
+			result.Desc, result.Model = text, model
+			return result
 		}
 		switch {
 		case errors.Is(err, ErrBlocked):
-			return "", EnumBlocked, model
+			return DescribeResult{Enum: EnumBlocked, Model: model, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
 		case errors.Is(err, ErrAuth):
-			// 401/403：配置错误，终止整条 fallback
-			return "", EnumServiceUnavailable, model
+			// 401/403：配置/鉴权错误 → 请求级熔断（Abort），不 retry 不 fallback
+			return DescribeResult{Enum: EnumServiceUnavailable, Model: model, Abort: true,
+				HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
 		case errors.Is(err, ErrSizeLimit):
-			return "", EnumSizeLimit, model
+			return DescribeResult{Enum: EnumSizeLimit, Model: model, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
 		case errors.Is(err, ErrUnsupported):
-			return "", EnumUnsupportedFormat, model
+			return DescribeResult{Enum: EnumUnsupportedFormat, Model: model, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
 		default:
-			continue // provider 瞬时（429/5xx/空响应）或传输重试后仍失败 → 换下一模型
+			result.Fallbacks++ // provider 瞬时（429/5xx/空响应）或传输重试后仍失败 → 换下一模型
+			continue
 		}
 	}
-	return "", EnumServiceUnavailable, ""
+	return DescribeResult{Enum: EnumServiceUnavailable, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
 }
