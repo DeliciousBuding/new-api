@@ -1215,7 +1215,7 @@ func TestZeroReservationAtByteCapAdmitted(t *testing.T) {
 // reserveGate seam panics exactly in that window; afterwards the budget must
 // be fully usable again and the counters must show the drop.
 func TestTryEnqueuePanicAfterReserveReleasesBudget(t *testing.T) {
-	d, _ := newTestDispatcher(t, &scriptedStore{}, nil)
+	d, _ := newTestDispatcher(t, &scriptedStore{}, func(c *Config) { c.BatchSize = 1 })
 
 	d.reserveGate = func() { panic("scripted panic in the reserved window") }
 	defer func() { d.reserveGate = nil }()
@@ -1226,9 +1226,18 @@ func TestTryEnqueuePanicAfterReserveReleasesBudget(t *testing.T) {
 	assert.Equal(t, int64(1), d.droppedTotal.Load())
 
 	// The budget must be usable after the panic: a normal event is admitted
-	// with its full reservation, proving nothing leaked.
+	// with its full reservation (TryEnqueue returning true proves the byte
+	// reserve succeeded), and the worker drains it to completion — the
+	// pending counters settle at zero instead of leaking the reservation.
+	// The drain is asserted with Eventually: the worker processes the queue
+	// asynchronously, so the instantaneous pending value is not stable.
 	d.reserveGate = nil
 	require.True(t, d.TryEnqueue(sampleEventPtr(), 100))
-	assert.Equal(t, int64(100), d.pendingBytes.Load())
-	assert.Equal(t, int64(1), d.pendingCount.Load())
+	// BatchSize=1 makes the worker flush on arrival, so the write is
+	// deterministic instead of racing the flush timer on the instantaneous
+	// pending value.
+	require.Eventually(t, func() bool { return d.writtenTotal.Load() == 1 }, 2*time.Second, time.Millisecond)
+	require.Eventually(t, func() bool {
+		return d.pendingBytes.Load() == 0 && d.pendingCount.Load() == 0
+	}, 2*time.Second, time.Millisecond)
 }

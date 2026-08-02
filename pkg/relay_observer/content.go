@@ -117,7 +117,15 @@ type ContentInput struct {
 	Aliases []Alias
 	// TurnID is the owning turn row; the idempotency key of a context.
 	TurnID uuid.UUID
-	// Items are the ordered canonical items of the turn (T2.2 output).
+	// ContentState is the turn's normalized content state (full / gap /
+	// metadata-only). It drives the session counters of the decoupled
+	// session-only path: a turn with aliases but no items still binds the
+	// session and advances last_seen / turn_count, and a gap state advances
+	// gap_count even when no content was persisted.
+	ContentState string
+	// Items are the ordered canonical items of the turn (T2.2 output). Empty
+	// with a non-empty Aliases is the session-only append: identity and
+	// counters are persisted, content is not.
 	Items []CanonicalItem
 }
 

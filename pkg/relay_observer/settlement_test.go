@@ -49,6 +49,10 @@ func TestRuntimeTryPublishTurnDeliversCompleteEvent(t *testing.T) {
 	ev.ErrorCode = "timeout"
 	ev.ClientIP = net.ParseIP("203.0.113.9")
 	ev.IPTrust = IPTrustDirect
+	// The requestless event is metadata-only; the worker's normalize step
+	// (which runs for every admitted event, T2 decoupling) re-affirms that
+	// state on the delivered copy.
+	ev.ContentState = ContentStateMetadataOnly
 
 	require.True(t, rt.TryPublishTurn(ev, 0))
 	waitNotify(t, store.writeNotify)

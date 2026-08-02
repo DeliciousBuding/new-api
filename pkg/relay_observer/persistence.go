@@ -258,11 +258,15 @@ func appendTurnsTx(ctx context.Context, tx contentTx, turns []ContentInput) erro
 
 // appendTurnTx persists one turn inside the caller's transaction: session
 // resolution, idempotency check, content dedup, head serialization, context
-// insert, head advance, and session counters.
+// insert, head advance, and session counters. The session contract is
+// decoupled from content (T2 decoupling): a turn with aliases is tracked even
+// when normalization produced no items — the session is resolved, the turn's
+// session_id is backfilled, and last_seen / turn_count / gap_count advance,
+// while no content objects, context rows, or session head are created.
 func appendTurnTx(ctx context.Context, tx contentTx, in *ContentInput) error {
-	if len(in.Aliases) == 0 || len(in.Items) == 0 {
-		// No session alias, or metadata-only content: nothing to persist.
-		// The turn row itself is written by the turn writer (WriteBatch).
+	if len(in.Aliases) == 0 {
+		// No session alias: nothing to bind or persist. The turn row itself
+		// is written by the turn writer (WriteBatch).
 		return nil
 	}
 	sessionID, err := resolveSessionTx(ctx, tx, in)
@@ -277,6 +281,16 @@ func appendTurnTx(ctx context.Context, tx contentTx, in *ContentInput) error {
 	if _, err := tx.Exec(ctx, `UPDATE observer_turns SET session_id = $1 WHERE id = $2 AND session_id IS NULL`,
 		sessionID.String(), in.TurnID.String()); err != nil {
 		return fmt.Errorf("relayobserver: append content: backfill turn session: %w", err)
+	}
+	if len(in.Items) == 0 {
+		// Session-only append: the turn has an identity but capture produced
+		// no items (budget truncation below the minimal envelope, an
+		// unsupported format, or a metadata-only outcome). The session is
+		// still tracked — its counters and last_seen advance — so session
+		// views see the turn even though the context endpoint reports no
+		// canonical content. No content objects, context rows, or head rows
+		// are created by this path.
+		return bumpSessionTx(ctx, tx, in, sessionID, in.ContentState == ContentStateGap)
 	}
 	// Idempotency: a turn whose context row already exists is a no-op. The
 	// content objects and the head were already written by the first append.

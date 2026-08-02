@@ -199,8 +199,10 @@ func TestWorkerNilRequestStaysMetadataOnly(t *testing.T) {
 	defer store.mu.Unlock()
 	require.Len(t, store.batches, 1)
 	assert.Equal(t, ContentStateMetadataOnly, store.batches[0][0].ContentState)
-	assert.Empty(t, store.appends)
-	assert.Equal(t, int64(0), d.contentGaps.Load())
+	assert.Empty(t, store.appends, "a requestless event without identity has no session to bind")
+	// The worker normalizes the requestless event to metadata-only, which the
+	// Status contract counts as a content gap (metadata-only outcome).
+	assert.Equal(t, int64(1), d.contentGaps.Load())
 }
 
 // TestWorkerMixedBatchStates locks the per-event independence inside one
@@ -236,7 +238,9 @@ func TestWorkerMixedBatchStates(t *testing.T) {
 	assert.Equal(t, ContentStateMetadataOnly, store.batches[0][2].ContentState)
 	require.Len(t, store.appends, 1)
 	require.Len(t, store.appends[0], 1)
-	assert.Equal(t, int64(1), d.contentGaps.Load())
+	// The unknown format and the requestless event both end metadata-only and
+	// count as worker-side content gaps under the Status contract.
+	assert.Equal(t, int64(2), d.contentGaps.Load())
 }
 
 // TestWorkerAppendFailureOpensCircuitAndRetries is the two-phase failure

@@ -542,19 +542,25 @@ func TestAppendTurnGroupRotation(t *testing.T) {
 	assert.Equal(t, int64(0), f.tx.heads[sid.String()].ordinal.Int64, "head points at the new full")
 }
 
-// TestAppendTurnNoSessionOrItemsIsNoop locks the fail-open seam: turns
-// without aliases or items produce no rows.
+// TestAppendTurnNoSessionOrItemsIsNoop locks the fail-open seam and the T2
+// decoupling contract: a turn without aliases produces no rows, while a turn
+// with aliases but without items is still tracked as a session-only append —
+// the session and its counters advance, but no content or context rows are
+// created.
 func TestAppendTurnNoSessionOrItemsIsNoop(t *testing.T) {
 	f := newFakeFixture(t, "noop-session")
 
 	noAlias := ContentInput{NodeScope: f.node, UserID: f.user, TurnID: uuid.New(), Items: []CanonicalItem{{Kind: CanonicalKindMessage}}}
 	require.NoError(t, appendTurnTx(context.Background(), f.tx, &noAlias))
 	assert.Empty(t, f.tx.contexts)
-
-	noItems := ContentInput{NodeScope: f.node, UserID: f.user, Aliases: []Alias{f.alias}, TurnID: uuid.New()}
-	require.NoError(t, appendTurnTx(context.Background(), f.tx, &noItems))
-	assert.Empty(t, f.tx.contexts)
 	assert.Empty(t, f.tx.sessions)
+
+	noItems := ContentInput{NodeScope: f.node, UserID: f.user, Aliases: []Alias{f.alias}, TurnID: uuid.New(), ContentState: ContentStateGap}
+	require.NoError(t, appendTurnTx(context.Background(), f.tx, &noItems))
+	assert.Empty(t, f.tx.contexts, "session-only appends must not create context rows")
+	require.Len(t, f.tx.sessions, 1, "session-only appends must still track the session")
+	// The decoupled path advances last_seen / turn_count and marks the gap.
+	assert.True(t, f.tx.turnSessions[noItems.TurnID.String()] != "", "the turn must be bound to the session")
 }
 
 // TestAppendTurnAuxiliaryConflictStaysSeparate locks the v1 conflict rule: an
