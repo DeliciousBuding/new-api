@@ -39,6 +39,13 @@ func TestDetectClientProfile(t *testing.T) {
 			want: "codex_desktop",
 		},
 		{
+			name: "codex desktop originator with space",
+			headers: map[string]string{
+				"Originator": "Codex Desktop",
+			},
+			want: "codex_desktop",
+		},
+		{
 			name: "codex turn state header with cli ua",
 			headers: map[string]string{
 				"X-Codex-Turn-State": "abc",
@@ -89,6 +96,80 @@ func TestDetectClientProfile(t *testing.T) {
 				"X-Stainless-Package-Version": "1.0.0",
 			},
 			want: "openai_sdk",
+		},
+		{
+			name: "anthropic ts sdk ua beats stainless headers",
+			headers: map[string]string{
+				"User-Agent":                  "Anthropic/JS 0.39.0",
+				"X-Stainless-Lang":            "typescript",
+				"X-Stainless-Runtime":         "node",
+				"X-Stainless-Package-Version": "0.39.0",
+			},
+			want: "claude_sdk",
+		},
+		{
+			name: "anthropic python sdk ua beats stainless headers",
+			headers: map[string]string{
+				"User-Agent":          "Anthropic/Python 0.58.0",
+				"X-Stainless-Lang":    "python",
+				"X-Stainless-Runtime": "CPython",
+			},
+			want: "claude_sdk",
+		},
+		{
+			name: "anthropic go sdk ua beats stainless headers",
+			headers: map[string]string{
+				"User-Agent":          "Anthropic/Go 0.1.0",
+				"X-Stainless-Lang":    "go",
+				"X-Stainless-Runtime": "go1.23.4",
+			},
+			want: "claude_sdk",
+		},
+		{
+			name: "anthropic sdk package ua beats stainless headers",
+			headers: map[string]string{
+				"User-Agent":          "anthropic-sdk-typescript/0.39.0",
+				"X-Stainless-Lang":    "typescript",
+				"X-Stainless-Runtime": "node",
+			},
+			want: "claude_sdk",
+		},
+		{
+			name: "anthropic ts sdk ua without stainless headers",
+			headers: map[string]string{
+				"User-Agent": "Anthropic/JS 0.39.0",
+			},
+			want: "claude_sdk",
+		},
+		{
+			name: "openai python ua still openai sdk with stainless headers",
+			headers: map[string]string{
+				"User-Agent":          "OpenAI/Python 1.71.0",
+				"X-Stainless-Lang":    "python",
+				"X-Stainless-Runtime": "CPython",
+			},
+			want: "openai_sdk",
+		},
+		{
+			name: "google genai sdk ua",
+			headers: map[string]string{
+				"User-Agent": "google-genai-sdk/1.68.0 gl-python/3.13.3",
+			},
+			want: "gemini_sdk",
+		},
+		{
+			name: "google generativeai legacy ua",
+			headers: map[string]string{
+				"User-Agent": "genai-py/0.8.7",
+			},
+			want: "gemini_sdk",
+		},
+		{
+			name: "qoder cli ua",
+			headers: map[string]string{
+				"User-Agent": "Qoder-Cli/1.0",
+			},
+			want: "qoder",
 		},
 		{
 			name: "codex tui originator",

@@ -72,13 +72,18 @@ func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other
 // DetectClientProfile 按官方渠道亲和性同源的头清单识别客户端，返回细粒度档位：
 //   - codex_cli / codex_desktop / codex_app / codex_vscode / codex_browser（Originator 前缀 + X-Codex-* 头 + UA 兜底）
 //   - claude_cli / claude_desktop / claude_plugin / claude_app（X-App 值 + claude-cli UA 细分）
-//   - claude_sdk / openai_sdk（Anthropic-Version / X-Stainless-* / SDK UA）
-//   - 品牌客户端（IDE/chat/agent/平台）：cherry_studio、trae、cursor、windsurf、cline、
-//     roo_code、continue、zed、copilot、gemini_cli、perplexity、poe、openrouter、groq、
-//     ollama、kimi、qwen、doubao、zhipu、deepseek、chatgpt、minis、opencode、hermes_agent、
-//     workbuddy、openclaw、rikkahub、sub2api（UA 特异性词，见函数内矩阵）
+//   - claude_sdk / openai_sdk（Anthropic-Version / SDK UA / X-Stainless-* 头）
+//   - gemini_cli / gemini_sdk（Gemini-CLI UA / google-genai-sdk、genai-py UA）
+//   - 品牌客户端（IDE/chat/agent/平台）：cherry_studio、trae、qoder、cursor、windsurf、
+//     cline、roo_code、continue、zed、copilot、gemini_cli、perplexity、poe、openrouter、
+//     groq、ollama、kimi、qwen、doubao、zhipu、deepseek、chatgpt、minis、opencode、
+//     hermes_agent、workbuddy、openclaw、rikkahub、sub2api（UA 特异性词，见函数内矩阵）
 //   - 通用工具：gohttp、cliproxyapi、http_client（curl/requests/urllib/okhttp/axios 等）
 //   - chat（兜底）
+//
+// 识别依据优先序：特征头（Originator / X-App / Anthropic-Version）> 特异性 UA 词 >
+// 通用框架头（X-Stainless-*，可被客户端覆盖，仅作 openai_sdk 兜底）。
+// 每个分支的 UA 字符串均有实证来源（官方源码 / 逆向文档 / nginx 流量），见分支内注释。
 //
 // 结果仅作审计展示 hint，不参与鉴权/计费/路由；调用方可伪造。
 func DetectClientProfile(c *gin.Context) string {
@@ -95,6 +100,10 @@ func DetectClientProfile(c *gin.Context) string {
 			// CLIProxyAPI 的 Codex 上游路径（codex-tui/… 伪装 UA + Originator: codex-tui）
 			return "codex_cli"
 		case strings.HasPrefix(lv, "codex_desktop"):
+			return "codex_desktop"
+		case strings.HasPrefix(lv, "codex desktop"):
+			// OpenAI 官方 desktop app 发送的 Originator 为 "Codex Desktop"（带空格，
+			// openai/codex #31481 实证），与 codex_desktop 下划线变体等价。
 			return "codex_desktop"
 		case strings.HasPrefix(lv, "codex"):
 			return "codex_app"
@@ -131,6 +140,17 @@ func DetectClientProfile(c *gin.Context) string {
 		}
 		// 落入下方 Claude 族 UA 细分
 	}
+	// Anthropic SDK UA 优先于通用 X-Stainless 头：anthropic 官方 SDK
+	// （TS/Python/Go，均为 stainless 生成）同时携带 X-Stainless-* 头，若先判
+	// X-Stainless 会被误归 openai_sdk。UA 特异性词比通用框架头更可信——
+	// X-Stainless-* 可被客户端 default_headers 覆盖/删除（UA 才是稳定信号）。
+	// 已实证格式：Anthropic/JS <ver>（TS）、Anthropic/Python <ver>、
+	// Anthropic/Go <ver>；anthropic-sdk- 前缀兜底其余语言变体。
+	ua := strings.ToLower(c.Request.UserAgent())
+	if strings.Contains(ua, "anthropic/js") || strings.Contains(ua, "anthropic/python") ||
+		strings.Contains(ua, "anthropic/go") || strings.Contains(ua, "anthropic-sdk-") {
+		return "claude_sdk"
+	}
 	if h.Get("X-Stainless-Lang") != "" || h.Get("X-Stainless-Runtime") != "" {
 		return "openai_sdk"
 	}
@@ -138,7 +158,7 @@ func DetectClientProfile(c *gin.Context) string {
 	// 匹配顺序 = 特异性降序：子串越泛化越靠后，避免互相覆盖。
 	// 品牌词都足够特异（正常请求 UA 不会含这些子串），Contains 误伤可控；
 	// 泛化形态（裸浏览器等）不做识别，落 chat 兜底。
-	ua := strings.ToLower(c.Request.UserAgent())
+	ua = strings.ToLower(c.Request.UserAgent())
 	switch {
 	// 通用 HTTP 客户端（Go 默认 UA / 中转代理）
 	case strings.Contains(ua, "go-http-client"):
@@ -208,13 +228,17 @@ func DetectClientProfile(c *gin.Context) string {
 		return "claude_desktop"
 	case strings.Contains(ua, "claude/") && (strings.Contains(ua, "electron") || strings.Contains(ua, "msix")):
 		return "claude_desktop"
-	case strings.Contains(ua, "anthropic/js"):
-		return "claude_sdk"
 	// 官方 SDK / 平台客户端
 	case strings.Contains(ua, "openai/python"), strings.Contains(ua, "openai-python"), strings.Contains(ua, "openai/js"):
 		return "openai_sdk"
 	case strings.Contains(ua, "gemini-cli"), strings.Contains(ua, "gemini cli"):
 		return "gemini_cli"
+	case strings.Contains(ua, "google-genai-sdk"), strings.Contains(ua, "genai-py"):
+		// google-genai（新版）与 google-generativeai（旧版 genai-py）SDK UA 实证
+		return "gemini_sdk"
+	case strings.Contains(ua, "qoder"):
+		// Qoder / Qoder Work（阿里，千问办公前台）。Qoder-Cli UA 为 GitHub issue 实证
+		return "qoder"
 	case strings.Contains(ua, "perplexity"):
 		return "perplexity"
 	case strings.Contains(ua, "poe/"):
@@ -275,6 +299,11 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	adminInfo := make(map[string]interface{})
 	adminInfo["use_channel"] = ctx.GetStringSlice("use_channel")
 	adminInfo["client_profile"] = DetectClientProfile(ctx)
+	// 原始 UA 字符串随识别结果一并落盘，便于管理员核对识别依据；
+	// 仅管理员可见（admin_info 整体对非管理员剥离）。
+	if ua := ctx.Request.UserAgent(); ua != "" {
+		adminInfo["client_ua"] = ua
+	}
 	isMultiKey := common.GetContextKeyBool(ctx, constant.ContextKeyChannelIsMultiKey)
 	if isMultiKey {
 		adminInfo["is_multi_key"] = true
