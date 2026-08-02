@@ -79,14 +79,15 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 	if !visionRelayMatchPatterns(patterns, relayInfo.OriginModelName) {
 		return nil
 	}
-	// 4. 命中模型后校验端点配置（v0.2.2：配置损坏不再 fail-open 发原图）
-	if err := cfg.ValidateEndpoint(); err != nil {
-		return visionRelayInfraError(fmt.Errorf("vision relay endpoint config: %w", err))
-	}
-	// 格式判定（Claude/OpenAI；未知格式不处理）
+	// 4. 格式判定（Claude/OpenAI；未知格式不处理）——先于端点必填校验：
+	//    本来就不处理的协议不得因缺 key 被误报 5xx（审核 P0-2 §4）
 	format, ok := visionRelayFormat(relayInfo.RelayFormat)
 	if !ok {
 		return nil
+	}
+	// 5. 命中模型后校验端点配置（v0.2.2：配置损坏不再 fail-open 发原图）
+	if err := cfg.ValidateEndpoint(); err != nil {
+		return visionRelayInfraError(fmt.Errorf("vision relay endpoint config: %w", err))
 	}
 
 	// 5. 只读原始 body

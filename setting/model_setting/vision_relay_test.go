@@ -3,6 +3,8 @@ package model_setting
 import (
 	"strings"
 	"testing"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 func TestVisionRelayValidate(t *testing.T) {
@@ -114,5 +116,68 @@ func TestGetVisionRelaySnapshotDefaults(t *testing.T) {
 	snap2, _ := GetVisionRelaySnapshot()
 	if snap2.Enabled {
 		t.Fatal("snapshot mutation leaked")
+	}
+}
+
+// 严格解析（审核 P0-2 §4）：key 存在但格式非法 → 明确错误，不静默 no-op
+func TestGetVisionRelaySnapshotStrict(t *testing.T) {
+	base := map[string]string{
+		"vision_relay.enabled":       "true",
+		"vision_relay.target_models": `["deepseek*"]`,
+		"vision_relay.models":        `["gemma-4-31b"]`,
+		"vision_relay.base_url":      "https://api.tokendancelab.com",
+		"vision_relay.api_key":       "sk-test",
+		"vision_relay.timeout_sec":   "15",
+	}
+	cases := []struct {
+		name    string
+		key     string
+		value   string
+		wantErr string
+	}{
+		{"malformed enabled", "vision_relay.enabled", "yes", "enabled"},
+		{"malformed target_models", "vision_relay.target_models", `["unclosed`, "target_models"},
+		{"malformed models", "vision_relay.models", `{not-array`, "models"},
+		{"timeout 非整数", "vision_relay.timeout_sec", "abc", "timeout_sec"},
+		{"timeout 零", "vision_relay.timeout_sec", "0", "timeout_sec"},
+		{"timeout 负", "vision_relay.timeout_sec", "-5", "timeout_sec"},
+		{"base_url 无 scheme", "vision_relay.base_url", "ftp://example.com", "base_url"},
+		{"base_url 无 host", "vision_relay.base_url", "http://", "base_url"},
+		{"base_url 非法", "vision_relay.base_url", "://bad", "base_url"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			common.OptionMapRWMutex.Lock()
+			common.OptionMap = make(map[string]string, len(base)+1)
+			for k, v := range base {
+				common.OptionMap[k] = v
+			}
+			common.OptionMap[tc.key] = tc.value
+			common.OptionMapRWMutex.Unlock()
+			_, err := GetVisionRelaySnapshot()
+			if err == nil {
+				t.Fatalf("expected error for %q=%q", tc.key, tc.value)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got: %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// 缺失 key → 默认值（合法配置不误报）
+func TestGetVisionRelaySnapshotMissingKeysUseDefaults(t *testing.T) {
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap = map[string]string{"vision_relay.enabled": "true"}
+	common.OptionMapRWMutex.Unlock()
+	snap, err := GetVisionRelaySnapshot()
+	if err != nil {
+		t.Fatalf("missing keys must fall back to defaults, got error: %v", err)
+	}
+	if !snap.Enabled {
+		t.Fatal("enabled must be true")
+	}
+	if snap.BaseURL != "https://api.tokendancelab.com" || snap.TimeoutSec != 15 {
+		t.Fatalf("defaults expected, got base_url=%q timeout=%d", snap.BaseURL, snap.TimeoutSec)
 	}
 }

@@ -2,6 +2,7 @@ package model_setting
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -53,6 +54,12 @@ func init() {
 // 而 updateOptionMap 与读取方共用 OptionMapRWMutex——从 OptionMap 读取才是
 // 真正同步的。读取在锁内复制 string，解析在锁外。每个请求开始取一次，
 // 整个 Enhance 流程使用该副本（防热更新读到半套参数）。
+//
+// 严格解析（审核 P0-2 §4）：缺失 key → 默认值；key 存在但格式非法 →
+// 明确配置错误（不静默修正——malformed allowlist 静默 no-op 会重新形成
+// 原图透传风险）。enabled 用 strconv.ParseBool；数组 JSON 解析错误不吞；
+// timeout 非正整数报错；base_url 用 net/url 完整解析（scheme http/https +
+// host 非空）。
 func GetVisionRelaySnapshot() (VisionRelaySnapshot, error) {
 	common.OptionMapRWMutex.RLock()
 	enabledRaw := common.OptionMap["vision_relay.enabled"]
@@ -67,28 +74,39 @@ func GetVisionRelaySnapshot() (VisionRelaySnapshot, error) {
 
 	snap := defaultVisionRelaySettings
 	if enabledRaw != "" {
-		snap.Enabled = enabledRaw == "true"
+		v, err := strconv.ParseBool(enabledRaw)
+		if err != nil {
+			return VisionRelaySnapshot{}, fmt.Errorf("vision_relay.enabled: %w", err)
+		}
+		snap.Enabled = v
 	}
 	if targetsRaw != "" {
-		_ = common.UnmarshalJsonStr(targetsRaw, &snap.TargetModels)
+		if err := common.UnmarshalJsonStr(targetsRaw, &snap.TargetModels); err != nil {
+			return VisionRelaySnapshot{}, fmt.Errorf("vision_relay.target_models: %w", err)
+		}
 	}
 	if modelsRaw != "" {
-		_ = common.UnmarshalJsonStr(modelsRaw, &snap.Models)
+		if err := common.UnmarshalJsonStr(modelsRaw, &snap.Models); err != nil {
+			return VisionRelaySnapshot{}, fmt.Errorf("vision_relay.models: %w", err)
+		}
 	}
 	snap.BaseURL = strings.TrimSpace(baseURL)
 	if snap.BaseURL == "" {
 		snap.BaseURL = defaultVisionRelaySettings.BaseURL
 	}
+	if u, err := url.Parse(snap.BaseURL); err != nil ||
+		(u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return VisionRelaySnapshot{}, fmt.Errorf("vision_relay.base_url: invalid URL %q", snap.BaseURL)
+	}
 	snap.APIKey = strings.TrimSpace(apiKey)
 	snap.Prompt = strings.TrimSpace(prompt)
 	snap.SidecallToken = strings.TrimSpace(sidecallToken)
 	if timeoutRaw != "" {
-		if v, err := strconv.Atoi(timeoutRaw); err == nil && v > 0 {
-			snap.TimeoutSec = v
+		v, err := strconv.Atoi(timeoutRaw)
+		if err != nil || v <= 0 {
+			return VisionRelaySnapshot{}, fmt.Errorf("vision_relay.timeout_sec: must be positive integer, got %q", timeoutRaw)
 		}
-	}
-	if snap.TimeoutSec <= 0 {
-		snap.TimeoutSec = defaultVisionRelaySettings.TimeoutSec
+		snap.TimeoutSec = v
 	}
 	if len(snap.Models) == 0 {
 		snap.Models = append([]string(nil), defaultVisionRelaySettings.Models...)
