@@ -34,6 +34,11 @@ export const STATIC_I18N_KEYS = [
   'Channel health checks',
   'Request retry',
 
+  // Observability workspace (Root-only, features/observability)
+  'Sessions',
+  'Session Detail',
+  'This section will be implemented in an upcoming update.',
+
   // System settings sidebar
   'System Administration',
   'General',

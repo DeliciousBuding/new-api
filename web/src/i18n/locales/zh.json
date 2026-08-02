@@ -5235,6 +5235,10 @@
     "Zoom": "缩放",
     "Record client IP addresses": "记录客户端 IP 地址",
     "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.": "在每条消费与错误日志中记录客户端来源 IP。关闭可减小日志体积。",
-    "Client": "客户端"
+    "Client": "客户端",
+    "Sessions": "会话",
+    "Session Detail": "会话详情",
+    "Page {{current}}": "第 {{current}} 页",
+    "This section will be implemented in an upcoming update.": "该模块将在后续更新中实现。"
   }
 }

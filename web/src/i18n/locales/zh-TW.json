@@ -5235,6 +5235,10 @@
     "Zoom": "縮放",
     "Record client IP addresses": "記錄客戶端 IP 地址",
     "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.": "在每條消費與錯誤日誌中記錄客戶端來源 IP。關閉可縮小日誌體積。",
-    "Client": "客戶端"
+    "Client": "客戶端",
+    "Sessions": "Sessions",
+    "Session Detail": "Session Detail",
+    "Page {{current}}": "Page {{current}}",
+    "This section will be implemented in an upcoming update.": "This section will be implemented in an upcoming update."
   }
 }
