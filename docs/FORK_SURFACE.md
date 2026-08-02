@@ -68,10 +68,14 @@
 - **冲突热点**：6 个 locale 与官方重叠；上游每次整理 locale 都会撞
 - **计划**（外部审核建议）：observer 翻译迁到 `web/src/features/observability/i18n/{en,zh}.json` + `addResourceBundle` 合入；其余语言 fallback 英文。此后自有 key 不再碰原生 locale 文件
 
-### P8 · Vision-relay（另一会话在途）
-- **自有目录**：`relay/vision/**`、`setting/model_setting/vision*.go`（未提交至 main，feat/vision-relay 分支）
-- **上游覆盖**：`constant/context_key.go`（+1）
-- **状态**：设计文档 `docs/plan/vision-relay.md` 已评审（v0.2），代码在途
+### P8 · Vision Relay
+- **自有目录**：`pkg/vision_relay/**`、`setting/model_setting/vision_relay.go`、`service/vision_relay.go`
+- **上游覆盖**：`controller/relay.go`（单点钩子 4 行：预扣费后、retry 循环前调 `service.PrepareVisionRelayRequest`）——**修改预算硬规则：仅此一个上游文件**
+- **依赖方向**：`controller → service/vision_relay.go（Gin/RelayInfo/BodyStorage 事务+错误映射）→ pkg/vision_relay（纯核心，禁止依赖 controller/service/model/setting/relay/Gin；允许 common JSON wrapper + x/image + gjson/sjson）`
+- **禁止修改**（阶段 1）：`relay/**`、`relaykit/**`、`common/body_storage.go`、`constant/context_key.go`、`model/option.go`、`controller/option.go`、`main.go`、`web/**`
+- **配置**：注册名 `vision_relay`（DB keys `vision_relay.*`，JSON 数组字段）；安全限制为包内常量（MaxImages=6/MaxDecodedBytes=15MB/MaxPixels=12M/并发 2/解码闸 2/调用闸 8）
+- **状态**：设计 `docs/plan/vision-relay.md`（v0.2.1，GPT 审核 Approved with Gates）→ v0.2.2 Stabilization 在途（分支 feat/vision-relay-clean）；实现后 sgp2 observer-test 实例部署验证
+- **上游等价**：核心可独立评估（纯核心包无 NewAPI 依赖，未来可上游化）
 
 ## 2. Relay Observability 接缝收缩方案（W0 设计）
 
