@@ -76,9 +76,10 @@ func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other
 //   - gemini_cli / gemini_sdk（Gemini-CLI UA / google-genai-sdk、genai-py UA）
 //   - 品牌客户端（IDE/chat/agent/平台）：cherry_studio、trae、qoder、cursor、windsurf、
 //     cline、roo_code、continue、zed、copilot、gemini_cli、perplexity、poe、openrouter、
-//     groq、ollama、kimi、qwen、doubao、zhipu、deepseek、chatgpt、minis、opencode、
+//     groq、grok、ollama、kimi、qwen、doubao、zhipu、deepseek、chatgpt、minis、opencode、
 //     hermes_agent、workbuddy、openclaw、rikkahub、sub2api（UA 特异性词，见函数内矩阵）
-//   - 通用工具：gohttp、cliproxyapi、http_client（curl/requests/urllib/okhttp/axios 等）
+//   - LLM 框架与自动化：langchain、llama_index、mcp_sdk、automation（n8n/zapier/make.com）
+//   - 通用工具：gohttp、cliproxyapi、http_client（curl/requests/httpx/urllib/okhttp/axios 等）
 //   - chat（兜底）
 //
 // 识别依据优先序：特征头（Originator / X-App / Anthropic-Version）> 特异性 UA 词 >
@@ -261,12 +262,29 @@ func DetectClientProfile(c *gin.Context) string {
 		return "deepseek"
 	case strings.Contains(ua, "chatgpt"):
 		return "chatgpt"
+	// xAI Grok（Grok app/CLI 与 Groq 公司为不同实体；Grok-User/Grok/ 为
+	// agenstry caller-labels 流量实证模式）
+	case strings.Contains(ua, "grok-user"), strings.Contains(ua, "grok/"):
+		return "grok"
 	case strings.Contains(ua, "minis/"):
 		// Minis/<version> 安卓客户端（nginx 流量实证）
 		return "minis"
+	// LLM 框架（agenstry caller-labels 实证：langchain 系列嵌入 UA 不带锚定）
+	case strings.Contains(ua, "langchain"):
+		return "langchain"
+	case strings.Contains(ua, "llama_index"), strings.Contains(ua, "llama-index"):
+		return "llama_index"
+	// MCP SDK（agenstry 实证：mcp-python-sdk / mcp-typescript-sdk / @modelcontextprotocol/sdk）
+	case strings.Contains(ua, "mcp-python-sdk"), strings.Contains(ua, "mcp-typescript-sdk"), strings.Contains(ua, "modelcontextprotocol"):
+		return "mcp_sdk"
+	// 自动化工作流（agenstry 实证：n8n / Zapier / Make.com 作为客户端调用 LLM API）
+	case strings.Contains(ua, "n8n"), strings.Contains(ua, "zapier"), strings.Contains(ua, "make.com"):
+		return "automation"
 	// 裸 HTTP 客户端（curl/wget/requests/urllib/okhttp/axios 等）
 	case strings.Contains(ua, "curl/"), strings.Contains(ua, "wget/"), strings.Contains(ua, "python-requests"),
-		strings.Contains(ua, "urllib"), strings.Contains(ua, "okhttp"), strings.Contains(ua, "axios"):
+		strings.Contains(ua, "python-httpx"), strings.Contains(ua, "urllib"), strings.Contains(ua, "urllib3"),
+		strings.Contains(ua, "node-fetch"), strings.Contains(ua, "reqwest"), strings.Contains(ua, "okhttp"),
+		strings.Contains(ua, "axios"):
 		return "http_client"
 	}
 	return "chat"

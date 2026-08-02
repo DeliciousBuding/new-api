@@ -61,6 +61,11 @@ const FALLBACK_ICONS: Partial<
   zed: Braces,
   codex_browser: Globe,
   qoder: Braces,
+  langchain: Braces,
+  llama_index: Braces,
+  grok: Bot,
+  mcp_sdk: Repeat,
+  automation: Repeat,
   http_client: Braces,
 }
 

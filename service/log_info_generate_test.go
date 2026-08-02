@@ -172,6 +172,62 @@ func TestDetectClientProfile(t *testing.T) {
 			want: "qoder",
 		},
 		{
+			name: "langchain ua",
+			headers: map[string]string{
+				"User-Agent": "langchain/0.3.14",
+			},
+			want: "langchain",
+		},
+		{
+			name: "langchain py ua",
+			headers: map[string]string{
+				"User-Agent": "langchain-py/0.3.14",
+			},
+			want: "langchain",
+		},
+		{
+			name: "llama index ua",
+			headers: map[string]string{
+				"User-Agent": "llama-index/0.12.5",
+			},
+			want: "llama_index",
+		},
+		{
+			name: "xai grok ua",
+			headers: map[string]string{
+				"User-Agent": "Grok-User/1.0",
+			},
+			want: "grok",
+		},
+		{
+			name: "mcp python sdk ua",
+			headers: map[string]string{
+				"User-Agent": "mcp-python-sdk/1.2.0",
+			},
+			want: "mcp_sdk",
+		},
+		{
+			name: "n8n automation ua",
+			headers: map[string]string{
+				"User-Agent": "n8n/1.80.0",
+			},
+			want: "automation",
+		},
+		{
+			name: "python httpx ua",
+			headers: map[string]string{
+				"User-Agent": "python-httpx/0.28.1",
+			},
+			want: "http_client",
+		},
+		{
+			name: "node fetch ua",
+			headers: map[string]string{
+				"User-Agent": "node-fetch/3.3.2",
+			},
+			want: "http_client",
+		},
+		{
 			name: "codex tui originator",
 			headers: map[string]string{
 				"Originator": "codex-tui",
