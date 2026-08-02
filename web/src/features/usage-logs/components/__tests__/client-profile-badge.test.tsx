@@ -93,6 +93,20 @@ describe('ClientProfileBadge', () => {
     'trae',
     'perplexity',
     'http_client',
+    'codex_vscode',
+    'codex_browser',
+    'gemini_cli',
+    'gemini_sdk',
+    'qoder',
+    'langchain',
+    'llama_index',
+    'grok',
+    'mcp_sdk',
+    'automation',
+    'mistral_sdk',
+    'litellm',
+    'cohere_sdk',
+    'ai_sdk',
   ]) {
     test(`renders ${profile} without crashing`, () => {
       const { host, root } = renderBadge(profile)
