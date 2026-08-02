@@ -181,3 +181,23 @@ func TestGetVisionRelaySnapshotMissingKeysUseDefaults(t *testing.T) {
 		t.Fatalf("defaults expected, got base_url=%q timeout=%d", snap.BaseURL, snap.TimeoutSec)
 	}
 }
+
+// disabled + 残留 malformed 配置 → 零行为优先，不 5xx（enabled=true 才严格解析）
+func TestGetVisionRelaySnapshotDisabledToleratesMalformed(t *testing.T) {
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap = map[string]string{
+		"vision_relay.enabled":       "false",
+		"vision_relay.target_models": `["unclosed`,
+		"vision_relay.models":        `{not-array`,
+		"vision_relay.base_url":      "http://",
+		"vision_relay.timeout_sec":   "abc",
+	}
+	common.OptionMapRWMutex.Unlock()
+	snap, err := GetVisionRelaySnapshot()
+	if err != nil {
+		t.Fatalf("disabled must tolerate malformed fields, got: %v", err)
+	}
+	if snap.Enabled {
+		t.Fatal("must stay disabled")
+	}
+}

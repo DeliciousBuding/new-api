@@ -73,12 +73,18 @@ func GetVisionRelaySnapshot() (VisionRelaySnapshot, error) {
 	common.OptionMapRWMutex.RUnlock()
 
 	snap := defaultVisionRelaySettings
+	// enabled 是权威开关：格式非法必须显式报错（无论其他字段）
 	if enabledRaw != "" {
 		v, err := strconv.ParseBool(enabledRaw)
 		if err != nil {
 			return VisionRelaySnapshot{}, fmt.Errorf("vision_relay.enabled: %w", err)
 		}
 		snap.Enabled = v
+	}
+	// 未启用 → 零行为优先：其余字段即使 malformed 也不阻断请求
+	// （enabled=true 时才严格解析，防止残留坏配置把已关闭的功能打成 5xx）
+	if !snap.Enabled {
+		return snap, nil
 	}
 	if targetsRaw != "" {
 		if err := common.UnmarshalJsonStr(targetsRaw, &snap.TargetModels); err != nil {
