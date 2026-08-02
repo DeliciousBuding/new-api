@@ -55,6 +55,18 @@ type Config struct {
 	QueueBytes      int64
 	MaxRequestBytes int64
 
+	// MaxCaptureBytesPerTurn bounds the canonical content a worker may
+	// produce for one turn — the capture budget, decoupled from the queue
+	// admission estimate (P0-B). A request body below this cap captures
+	// fully; canonical JSON is larger than the raw body (per-item HMAC +
+	// structure overhead), so the capture cap is an upper bound on the
+	// persisted content, not a raw-body proxy.
+	MaxCaptureBytesPerTurn int64
+	// MinCaptureEnvelopeBytes reserves the worst-case gap marker inside the
+	// capture budget: a truncated capture always closes with an explicit
+	// marker instead of degrading to empty items.
+	MinCaptureEnvelopeBytes int64
+
 	// BatchSize and FlushInterval bound the worker write batch; WriteTimeout
 	// bounds a single batch write; QueryTimeout bounds Root database queries.
 	BatchSize     int
@@ -111,6 +123,16 @@ const (
 	MaxQueueBytes          = 64 * 1024 * 1024 // 64 MiB
 	DefaultMaxRequestBytes = 8 * 1024 * 1024  // 8 MiB one request content
 	MaxMaxRequestBytes     = 16 * 1024 * 1024 // 16 MiB
+	// DefaultMaxCaptureBytesPerTurn equals the request cap: the capture
+	// budget decouples from the queue admission, so ordinary requests
+	// capture fully (canonical overhead included) and only the request cap
+	// limits oversized bodies.
+	DefaultMaxCaptureBytesPerTurn = 8 * 1024 * 1024  // 8 MiB canonical per turn
+	MaxMaxCaptureBytesPerTurn     = 16 * 1024 * 1024 // 16 MiB
+	// DefaultMinCaptureEnvelopeBytes covers the worst-case gap marker
+	// payload (kind + logical_bytes + truncated + hmac, well under 1 KiB).
+	DefaultMinCaptureEnvelopeBytes = 1024
+	MaxMinCaptureEnvelopeBytes     = 1024 * 1024 // 1 MiB
 
 	DefaultBatchSize = 32
 	MaxBatchSize     = 128
@@ -135,6 +157,8 @@ func DefaultConfig() Config {
 		QueueSize:            DefaultQueueSize,
 		QueueBytes:           DefaultQueueBytes,
 		MaxRequestBytes:      DefaultMaxRequestBytes,
+		MaxCaptureBytesPerTurn: DefaultMaxCaptureBytesPerTurn,
+		MinCaptureEnvelopeBytes: DefaultMinCaptureEnvelopeBytes,
 		BatchSize:            DefaultBatchSize,
 		FlushInterval:        DefaultFlushInterval,
 		WriteTimeout:         DefaultWriteTimeout,
@@ -183,6 +207,12 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.MaxRequestBytes, err = envInt64("RELAY_OBSERVER_MAX_REQUEST_BYTES", cfg.MaxRequestBytes, 1, MaxMaxRequestBytes); err != nil {
+		return Config{}, err
+	}
+	if cfg.MaxCaptureBytesPerTurn, err = envInt64("RELAY_OBSERVER_MAX_CAPTURE_BYTES_PER_TURN", cfg.MaxCaptureBytesPerTurn, 1, MaxMaxCaptureBytesPerTurn); err != nil {
+		return Config{}, err
+	}
+	if cfg.MinCaptureEnvelopeBytes, err = envInt64("RELAY_OBSERVER_MIN_CAPTURE_ENVELOPE_BYTES", cfg.MinCaptureEnvelopeBytes, 0, MaxMinCaptureEnvelopeBytes); err != nil {
 		return Config{}, err
 	}
 	if cfg.BatchSize, err = envInt("RELAY_OBSERVER_BATCH_SIZE", cfg.BatchSize, 1, MaxBatchSize); err != nil {

@@ -93,10 +93,11 @@ func TestWorkerCaptureBackfillsContentStateAndAppends(t *testing.T) {
 	assert.Equal(t, int64(0), d.contentGaps.Load())
 }
 
-// TestWorkerTruncationBackfillsGapAndAppendsMarker is the gap contract: an
-// admission reservation below the canonical byte total truncates the tail and
-// the backfilled ContentState is gap; the append carries the truncated items
-// closed by an explicit gap marker (data, not silent loss).
+// TestWorkerTruncationBackfillsGapAndAppendsMarker is the gap contract: a
+// capture budget below the canonical byte total truncates the tail and the
+// backfilled ContentState is gap; the append carries the truncated items
+// closed by an explicit gap marker (data, not silent loss). The budget is
+// the per-turn capture cap (P0-B), no longer the admission reservation.
 func TestWorkerTruncationBackfillsGapAndAppendsMarker(t *testing.T) {
 	req := &dto.GeneralOpenAIRequest{
 		Model: "gpt-5",
@@ -106,7 +107,7 @@ func TestWorkerTruncationBackfillsGapAndAppendsMarker(t *testing.T) {
 		},
 	}
 	full := NormalizeRequest(string(types.RelayFormatOpenAI), req, NormalizeOptions{
-		Reservation: 1 << 20, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey,
+		CaptureLimit: 1 << 20, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey,
 	})
 	require.Equal(t, ContentStateFull, full.ContentState)
 	var total int64
@@ -117,7 +118,12 @@ func TestWorkerTruncationBackfillsGapAndAppendsMarker(t *testing.T) {
 	}
 
 	store := contentStore()
-	d, _ := newTestDispatcher(t, store, contentCfg(func(c *Config) { c.BatchSize = 1 }))
+	d, _ := newTestDispatcher(t, store, contentCfg(func(c *Config) {
+		c.BatchSize = 1
+		// The capture cap drives truncation (P0-B); one canonical byte short
+		// of the full total.
+		c.MaxCaptureBytesPerTurn = total - 1
+	}))
 
 	ev := sampleEventPtr()
 	ev.RelayFormat = string(types.RelayFormatOpenAI)
@@ -126,7 +132,7 @@ func TestWorkerTruncationBackfillsGapAndAppendsMarker(t *testing.T) {
 	ev.Identity = IdentityInput{
 		Headers: http.Header{"X-Codex-Turn-Metadata": {`{"thread_id":"thr-2"}`}},
 	}
-	require.True(t, d.TryEnqueue(ev, total-1)) // one canonical byte short of the full total
+	require.True(t, d.TryEnqueue(ev, total-1)) // admission stays the body estimate
 	waitNotify(t, store.writeNotify)
 	require.Eventually(t, func() bool { return d.writtenTotal.Load() == 1 }, 2*time.Second, time.Millisecond)
 

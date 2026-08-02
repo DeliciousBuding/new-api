@@ -33,6 +33,8 @@ func clearObserverEnv(t *testing.T) {
 		"RELAY_OBSERVER_QUERY_TIMEOUT_MS",
 		"RELAY_OBSERVER_RETENTION_TURN_DAYS",
 		"RELAY_OBSERVER_RETENTION_CONTENT_DAYS",
+		"RELAY_OBSERVER_MAX_CAPTURE_BYTES_PER_TURN",
+		"RELAY_OBSERVER_MIN_CAPTURE_ENVELOPE_BYTES",
 	} {
 		t.Setenv(e, "")
 	}
@@ -88,6 +90,8 @@ func TestConfigFromEnvValues(t *testing.T) {
 	t.Setenv("RELAY_OBSERVER_QUEUE_SIZE", "100")
 	t.Setenv("RELAY_OBSERVER_QUEUE_BYTES", "1048576")
 	t.Setenv("RELAY_OBSERVER_MAX_REQUEST_BYTES", "524288")
+	t.Setenv("RELAY_OBSERVER_MAX_CAPTURE_BYTES_PER_TURN", "262144")
+	t.Setenv("RELAY_OBSERVER_MIN_CAPTURE_ENVELOPE_BYTES", "4096")
 	t.Setenv("RELAY_OBSERVER_BATCH_SIZE", "16")
 	t.Setenv("RELAY_OBSERVER_FLUSH_MS", "250")
 	t.Setenv("RELAY_OBSERVER_WRITE_TIMEOUT_MS", "1000")
@@ -109,6 +113,8 @@ func TestConfigFromEnvValues(t *testing.T) {
 	assert.Equal(t, 100, cfg.QueueSize)
 	assert.Equal(t, int64(1048576), cfg.QueueBytes)
 	assert.Equal(t, int64(524288), cfg.MaxRequestBytes)
+	assert.Equal(t, int64(262144), cfg.MaxCaptureBytesPerTurn)
+	assert.Equal(t, int64(4096), cfg.MinCaptureEnvelopeBytes)
 	assert.Equal(t, 16, cfg.BatchSize)
 	assert.Equal(t, 250*time.Millisecond, cfg.FlushInterval)
 	assert.Equal(t, time.Second, cfg.WriteTimeout)

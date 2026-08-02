@@ -24,7 +24,7 @@ import (
 const largeRequestItems = 200
 
 // benchmarkOpts is the shared per-event budget of the benchmark corpus.
-var benchmarkOpts = NormalizeOptions{Reservation: 1 << 20, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey}
+var benchmarkOpts = NormalizeOptions{CaptureLimit: 1 << 20, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey}
 
 // BenchmarkNormalizer covers the worker-side normalization over the golden
 // fixture corpus: three relay formats (OpenAI Responses, OpenAI Chat, Claude)

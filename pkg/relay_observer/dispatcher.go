@@ -721,9 +721,10 @@ func (d *Dispatcher) normalizeOne(ev *Event, reservation int64) (plan contentPla
 		}
 	}()
 	res := NormalizeRequest(ev.RelayFormat, *ev.Request, NormalizeOptions{
-		Reservation:     reservation,
-		MaxRequestBytes: d.cfg.MaxRequestBytes,
-		HMACKey:         d.cfg.HMACKey,
+		CaptureLimit:           d.cfg.MaxCaptureBytesPerTurn,
+		MaxRequestBytes:        d.cfg.MaxRequestBytes,
+		MinCaptureEnvelopeBytes: d.cfg.MinCaptureEnvelopeBytes,
+		HMACKey:                d.cfg.HMACKey,
 	})
 	return contentPlan{state: res.ContentState, items: res.Items}
 }
