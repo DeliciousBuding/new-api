@@ -1136,7 +1136,7 @@ func TestLookupAliasRejectsCorruptBinding(t *testing.T) {
 	require.NoError(t, err)
 	fx.aliases[aliasKey("n", 7, 1, raw, "codex_cli")] = "not-a-uuid"
 	alias := Alias{Version: 1, Digest: strings.Repeat("e", 64), Scope: ScopeCodexCLI}
-	_, err = lookupAliasSessionTx(context.Background(), fx, "n", 7, alias)
+	_, err = lookupAliasSessionTx(context.Background(), fx, "n", 7, alias, false)
 	require.Error(t, err)
 	_, ok := ContentErrorOf(err)
 	assert.False(t, ok, "a corrupt binding is a data error, not a content classification")
