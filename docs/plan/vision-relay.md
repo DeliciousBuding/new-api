@@ -420,3 +420,19 @@ fallback_count/cache_hits + 旁路 token usage（响应有 usage 则记录）。
 → 8. `controller/relay.go` 插入点（+ retry 一致性/PassThrough 测试）
 → 9. 全量回归 `go build ./...` + `make test` → 10. sgp2 部署验证（§13.2）
 → 11. 文档定稿 + STATE/log 记录
+
+## 18. 部署验证记录（2026-08-03，sgp2 observer-test 实例）
+
+**环境**：`newapi-test.vectorcontrol.tech` → sgp2 `/opt/observer-test`（127.0.0.1:3100），复用 observer PG。镜像 `ghcr.io/tokendancelab/observer-test:vision-relay-05193e37`（worktree `D:\Code\TokenDance\.worktrees\vision-relay-sgp2` 构建，detached HEAD = 05193e37，含 v0.2.2 全部修复 + 并行会话 relay_observer T2 提交）；compose 备份 `compose.yml.bak-20260803`（回滚=恢复该文件 + `docker compose up -d api`）。
+
+**配置**（options 表，直接 SQL + 重启 api 加载）：`vision_relay.enabled=true`、`target_models=["deepseek*"]`、`models=["gemma-4-31b"]`、`base_url=https://api.tokendancelab.com`、`api_key=<vision-bridge key>`、`timeout_sec=15`。渠道 `HK3 NewAPI Test`（sk-1s5ab…）的 key 被上游限制仅 deepseek-v4-flash（gemma 调用 Invalid token），故旁路 key 用 vision-bridge secrets 同款（对 gemma 有效）。
+
+**验证结果**（token `sgp2-observer-e2e`，remain_quota 提至 50000000 + 清 Redis token 缓存）：
+| 场景 | 结果 |
+|---|---|
+| Claude /v1/messages 带 1×1 PNG | ✅ 200；gemma-4-31b 描述注入，deepseek 回答"纯红色正方形"；日志 `images_total=1 success=1 vision_calls=1 models_used=gemma-4-31b` |
+| OpenAI /v1/chat/completions 带 image_url | ✅ 200；reasoning 引用"视觉转写：纯红色正方形" |
+| 无图请求 | ✅ no-op（无 vision 日志，内容原样） |
+| 失败降级（key 无 gemma 权限期间） | ✅ 请求仍 200，模型收到 `[Image 1/1 unavailable: …]` 占位文本（日志 `images_failed=1 description_bytes=75`） |
+
+**遗留**：retry 一致性/PassThrough 由单测覆盖（运行实例未触发）；sgp2 08-15 拆除时随实例一并回收。
