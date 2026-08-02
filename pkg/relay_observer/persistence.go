@@ -264,6 +264,15 @@ func appendTurnTx(ctx context.Context, tx contentTx, in *ContentInput) error {
 	if err != nil {
 		return err
 	}
+	// Backfill the turn's session binding: the turn row is written
+	// metadata-only by WriteBatch with a NULL session_id, but session-scoped
+	// queries (sessions/:id/turns and the session EXISTS filters) join on it.
+	// The idempotency guard keeps the first binding; concurrent or repeated
+	// appends of the same turn never rebind it.
+	if _, err := tx.Exec(ctx, `UPDATE observer_turns SET session_id = $1 WHERE id = $2 AND session_id IS NULL`,
+		sessionID.String(), in.TurnID.String()); err != nil {
+		return fmt.Errorf("relayobserver: append content: backfill turn session: %w", err)
+	}
 	// Idempotency: a turn whose context row already exists is a no-op. The
 	// content objects and the head were already written by the first append.
 	var existingID int64

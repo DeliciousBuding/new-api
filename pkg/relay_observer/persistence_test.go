@@ -144,14 +144,15 @@ func (r *fakeRows) Err() error { return nil }
 // fakeContentTx implements contentTx and contentQuerier over in-memory maps.
 // It routes by the operation the SQL expresses, not by parsing SQL.
 type fakeContentTx struct {
-	aliases     map[string]string // "node|user|ver|digesthex|scope" -> session id
-	sessions    map[string]bool
-	heads       map[string]*fakeHead
-	contexts    map[string]*fakeContext // by turn id
-	objects     map[string]bool         // "session|digesthex"
-	objectsData map[string]contentObjectRow
-	counts      map[string][2]int64 // session -> {turns, gaps}
-	nextID      int64
+	aliases      map[string]string // "node|user|ver|digesthex|scope" -> session id
+	sessions     map[string]bool
+	heads        map[string]*fakeHead
+	contexts     map[string]*fakeContext // by turn id
+	objects      map[string]bool         // "session|digesthex"
+	objectsData  map[string]contentObjectRow
+	counts       map[string][2]int64 // session -> {turns, gaps}
+	turnSessions map[string]string   // turn id -> session id (backfill)
+	nextID       int64
 }
 
 func newFakeContentTx() *fakeContentTx {
@@ -163,6 +164,7 @@ func newFakeContentTx() *fakeContentTx {
 		objects:     map[string]bool{},
 		objectsData: map[string]contentObjectRow{},
 		counts:      map[string][2]int64{},
+		turnSessions: map[string]string{},
 	}
 }
 
@@ -325,6 +327,12 @@ func (f *fakeContentTx) Exec(ctx context.Context, query string, args ...any) (sq
 		h.contextID = sql.NullInt64{Int64: args[0].(int64), Valid: true}
 		h.checkpoint = sql.NullInt64{Int64: args[1].(int64), Valid: true}
 		h.ordinal = sql.NullInt64{Int64: int64(args[2].(int)), Valid: true}
+		return fakeResult{n: 1}, nil
+	case strings.Contains(query, "UPDATE observer_turns SET session_id"):
+		// Backfill of the turn's session binding: record it so tests can
+		// assert the turn is queryable by session.
+		sid := args[0].(string)
+		f.turnSessions[args[1].(string)] = sid
 		return fakeResult{n: 1}, nil
 	}
 	return nil, fmt.Errorf("fake: unhandled exec %q", query)

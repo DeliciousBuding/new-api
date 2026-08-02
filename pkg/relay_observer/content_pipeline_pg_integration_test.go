@@ -159,6 +159,14 @@ func TestIntegrationContentPipelineCapturesAndReconstructs(t *testing.T) {
 	require.NoError(t, db.QueryRow(`SELECT content_state FROM observer_turns WHERE node_scope = $1 AND event_id = $2`, "t26-node", "t26-req-1").Scan(&state))
 	assert.Equal(t, ContentStateFull, state)
 
+	// The turn row is bound to the resolved session: session-scoped queries
+	// (sessions/:id/turns, the session EXISTS filters) join on turn.session_id,
+	// so the content resolution must backfill it.
+	var turnSession sql.NullString
+	require.NoError(t, db.QueryRow(`SELECT session_id::text FROM observer_turns WHERE node_scope = $1 AND event_id = $2`, "t26-node", "t26-req-1").Scan(&turnSession))
+	require.True(t, turnSession.Valid, "content resolution must backfill the turn's session_id")
+	assert.Equal(t, sid.String(), turnSession.String)
+
 	// Reconstruction matches the committed golden fixture byte for byte.
 	cp, ok := store.(ContentPersistence)
 	require.True(t, ok, "the PG store must implement the content persistence port")
