@@ -1,6 +1,28 @@
-# Vision Relay — 网关层原生图片识图替换 设计文档（v0.2）
+# Vision Relay — 网关层原生图片识图替换 设计文档（v0.2.1）
 
 最后更新：2026-08-03
+
+> **v0.2.1 工程边界调整**（GPT 复审追加，功能语义不变，只改代码落位）：
+> - **模块边界**：纯核心 `pkg/vision_relay/`（禁止依赖 Gin/RelayInfo/BodyStorage/
+>   logger/OptionMap，只允许标准库 + x/image + gjson/sjson）+ `setting/model_setting/
+>   vision_relay.go` 配置注册 + `service/vision_relay.go` 事务适配 + `controller/relay.go`
+>   单点钩子（唯一修改的上游核心文件，4 行）
+> - **配置**：注册名 `vision_relay`（DB keys `vision_relay.*`），7 字段
+>   （enabled/target_models/models/base_url/api_key/prompt/timeout_sec），TargetModels/
+>   Models 用 **JSON 数组**；安全限制（图片数/像素/字节/并发）为**包内常量**
+>   （MaxImages=6、MaxDecodedBytes=15MB、MaxPixels=12M、MaxDimension=4096、
+>   MaxDescriptionBytes=8000、MaxTotalBytes=24000、并发 2、解码闸 2、调用闸 8），
+>   不进 DB 配置面；api_key 自动被 GetOptions 敏感字段过滤
+> - **JSON 变换**：不用自定义 parser——**gjson/sjson 协议路径 patch**
+>   （Discover 路径发现 → 识图 → Apply sjson.SetRawBytes 局部替换；未知字段
+>   保留、cache_control 平移；测试目标=JSON 语义无损）
+> - **下载**：不侵入 file_service.go——`ImageFetcher` 接口（纯核心依赖接口），
+>   NewAPI 适配实现（SSRF 保护客户端 + LimitedFetch 有限流）在 service 层
+> - **修改预算**：只改 controller/relay.go；relaykit/DTO/handler/body_storage/
+>   option/main/web 零改动（见 docs/FORK_DELTA.md）
+> - **提交栈**：settings → engine → service → controller → docs（模块化提交，
+>   冲突集中在 controller 单点）
+> - **实现状态**：v0.2.1 已实现于 `feat/vision-relay` 分支，待 sgp2 部署验证
 
 > **v0.2 变更**：全面采纳 GPT 审核意见（v0.1 Request Changes 六项 P0 + 资源安全四项 +
 > Q1-Q8 决策）。核心变更：① 幂等从"布尔标记"改为"EnhanceOnce 生成增强产物，retry
