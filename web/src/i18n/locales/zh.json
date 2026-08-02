@@ -5307,6 +5307,9 @@
     "Totals": "总计",
     "Window Aggregation": "窗口聚合",
     "Window Start": "窗口开始",
-    "Written Total": "已写入总数"
+    "Written Total": "已写入总数",
+    "No sessions have been recorded yet. Sessions will appear here once the observer captures traffic.": "尚未记录任何会话。观察器捕获流量后会显示在这里。",
+    "Turn volume per {{window_seconds}}s window over the last {{windows}} windows.": "最近 {{windows}} 个窗口（每个 {{window_seconds}} 秒）的轮次量。",
+    "Since process start": "自进程启动以来"
   }
 }

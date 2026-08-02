@@ -143,7 +143,7 @@ function StatusCard(props: { status: ObserverStatus }) {
           />
         </StatusSection>
 
-        <StatusSection title={t('Counters')}>
+        <StatusSection title={`${t('Counters')} (${t('Since process start')})`}>
           <StatusField
             label={t('Accepted Total')}
             value={status.AcceptedTotal.toLocaleString()}
@@ -187,7 +187,13 @@ function StatusCard(props: { status: ObserverStatus }) {
         <StatusSection title={t('Retention')}>
           <StatusField
             label={t('Last Retention Pass')}
-            value={formatDateTimeStr(new Date(status.LastRetentionPass))}
+            value={
+              // The wire value is Go's zero time.Time when the pass never
+              // ran; rendering "0001-01-01" would look like a data error.
+              new Date(status.LastRetentionPass).getFullYear() < 1000
+                ? t('Never')
+                : formatDateTimeStr(new Date(status.LastRetentionPass))
+            }
           />
           <StatusField
             label={t('Retention Turns Deleted')}

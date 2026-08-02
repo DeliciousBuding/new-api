@@ -5307,6 +5307,9 @@
     "Totals": "Totals",
     "Window Aggregation": "Window Aggregation",
     "Window Start": "Window Start",
-    "Written Total": "Written Total"
+    "Written Total": "Written Total",
+    "No sessions have been recorded yet. Sessions will appear here once the observer captures traffic.": "No sessions have been recorded yet. Sessions will appear here once the observer captures traffic.",
+    "Turn volume per {{window_seconds}}s window over the last {{windows}} windows.": "Turn volume per {{window_seconds}}s window over the last {{windows}} windows.",
+    "Since process start": "Since process start"
   }
 }
