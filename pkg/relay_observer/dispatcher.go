@@ -2,10 +2,13 @@ package relayobserver
 
 import (
 	"context"
+	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 // This file implements the bounded, fail-open runtime core of the observer:
@@ -24,6 +27,11 @@ const (
 	initialCooldown = 5 * time.Second
 	maxCooldown     = 5 * time.Minute
 )
+
+// retentionInterval is the fixed cadence of the retention pass (SSOT: "The
+// worker runs at most one pass every six hours"). It is deliberately not
+// configurable.
+const retentionInterval = 6 * time.Hour
 
 // circuitStateVal is the atomic state of the write circuit. The worker
 // transitions open -> half-open when the cooldown expires; the request path
@@ -155,12 +163,30 @@ type Dispatcher struct {
 	// event after a probe recovered the circuit.
 	circuitEpoch atomic.Int64
 
+	// retention is the T5.1 retention surface of the store, set when the
+	// store implements it. When set, Start launches the retention worker as
+	// an independent goroutine sharing the store and the stop signal; the
+	// retention pass never enqueues, probes, or touches the circuit.
+	retention RetentionStore
+
+	retentionDone chan struct{}
+
+	// Retention counters, all totals since process start. lastRetentionPass
+	// holds the last pass completion in unix nanoseconds; zero means no pass
+	// has completed yet.
+	lastRetentionPass        atomic.Int64
+	retentionTurnsDeleted    atomic.Int64
+	retentionSessionsDeleted atomic.Int64
+	retentionObjectsDeleted  atomic.Int64
+	retentionFailures        atomic.Int64
+
 	ipTrust atomic.Pointer[IPTrust]
 }
 
 // NewDispatcher builds a dispatcher around store. The configuration's
 // QueueSize, QueueBytes, and MaxRequestBytes bound admission; BatchSize,
-// FlushInterval, and WriteTimeout bound worker writes.
+// FlushInterval, and WriteTimeout bound worker writes. A store that
+// implements RetentionStore additionally arms the T5.1 retention pass.
 func NewDispatcher(cfg Config, store Store) *Dispatcher {
 	d := &Dispatcher{
 		cfg:             cfg,
@@ -173,16 +199,24 @@ func NewDispatcher(cfg Config, store Store) *Dispatcher {
 		stopCtx:         context.Background(),
 		circuitCooldown: initialCooldown,
 	}
+	if rs, ok := store.(RetentionStore); ok {
+		d.retention = rs
+		d.retentionDone = make(chan struct{})
+	}
 	// Status contract: PGLatencyMS is -1 until the first write completes.
 	d.pgLatencyMS.Store(-1)
 	return d
 }
 
-// Start launches the single worker. It is idempotent.
+// Start launches the single worker, plus the retention worker when the store
+// supports retention. It is idempotent.
 func (d *Dispatcher) Start() {
 	d.startOnce.Do(func() {
 		d.started.Store(true)
 		go d.run()
+		if d.retention != nil {
+			go d.runRetention()
+		}
 	})
 }
 
@@ -310,6 +344,15 @@ func (d *Dispatcher) Stop(ctx context.Context) {
 	case <-d.workerDone:
 	case <-ctx.Done():
 	}
+	if d.retention != nil {
+		// The retention pass aborts on the stop context or its segment
+		// timeout, whichever comes first; wait for the goroutine to exit
+		// within the remaining shutdown budget.
+		select {
+		case <-d.retentionDone:
+		case <-ctx.Done():
+		}
+	}
 	d.store.Close(ctx)
 }
 
@@ -329,6 +372,14 @@ func (d *Dispatcher) Status() Status {
 		PGLatencyMS:      d.pgLatencyMS.Load(),
 		ContentGapsTotal: d.contentGaps.Load(),
 		RecentVolume:     d.recentVolume.Load(),
+
+		RetentionTurnsDeleted:    d.retentionTurnsDeleted.Load(),
+		RetentionSessionsDeleted: d.retentionSessionsDeleted.Load(),
+		RetentionObjectsDeleted:  d.retentionObjectsDeleted.Load(),
+		RetentionFailures:        d.retentionFailures.Load(),
+	}
+	if nano := d.lastRetentionPass.Load(); nano != 0 {
+		st.LastRetentionPass = time.Unix(0, nano)
 	}
 	if circuitStateVal(d.circuitState.Load()) != circuitClosed {
 		st.CircuitOpen = true
@@ -487,6 +538,133 @@ func (d *Dispatcher) drainDrop(batch []Event) {
 			return
 		}
 	}
+}
+
+// runRetention owns the retention worker goroutine: one pass every
+// retentionInterval, stopped by the dispatcher stop signal. It shares the
+// store, the stop context, and the clock with the write worker but is fully
+// isolated from the write circuit.
+func (d *Dispatcher) runRetention() {
+	defer close(d.retentionDone)
+	timer := d.clock.NewTimer(retentionInterval)
+	defer timer.Stop()
+	for {
+		select {
+		case <-timer.C():
+			d.retentionPass()
+			timer.Reset(retentionInterval)
+		case <-d.stopNotify:
+			return
+		case <-d.stopDone():
+			return
+		}
+	}
+}
+
+// retentionPass runs one bounded retention pass: expired turns, then expired
+// sessions, then orphan content, each under its own short timeout and limit,
+// with a yield between segments. Any segment failure counts and aborts the
+// pass; the next scheduled pass retries (never a tight loop). LastRetentionPass
+// records the completion time whether the pass succeeded or failed.
+func (d *Dispatcher) retentionPass() {
+	start := d.clock.Now()
+	turnCutoff := start.Add(-retentionDays(d.cfg.RetentionTurnDays))
+	contentCutoff := start.Add(-retentionDays(d.cfg.RetentionContentDays))
+
+	// Segment 1/3: expired turns, bounded by the SSOT limit.
+	if err := d.retentionTurnsSegment(turnCutoff); err != nil {
+		d.failRetentionPass(err)
+		d.lastRetentionPass.Store(start.UnixNano())
+		return
+	}
+	runtime.Gosched() // yield between segments: never hold the pool back-to-back
+	// Segment 2/3: expired sessions.
+	if err := d.retentionSessionsSegment(turnCutoff); err != nil {
+		d.failRetentionPass(err)
+		d.lastRetentionPass.Store(start.UnixNano())
+		return
+	}
+	runtime.Gosched()
+	// Segment 3/3: orphan content past its grace period.
+	if err := d.retentionOrphansSegment(contentCutoff); err != nil {
+		d.failRetentionPass(err)
+	}
+	d.lastRetentionPass.Store(start.UnixNano())
+}
+
+// failRetentionPass counts and logs one aborted retention pass. The error
+// comes from the retention store methods, which carry only redacted
+// classifications, never DSNs or secrets.
+func (d *Dispatcher) failRetentionPass(err error) {
+	d.retentionFailures.Add(1)
+	common.SysError(fmt.Sprintf("relayobserver: retention pass failed: %v", err))
+}
+
+// retentionSegmentCtx bounds one segment by the configuration query timeout,
+// inherited from the stop context so shutdown aborts the segment.
+func (d *Dispatcher) retentionSegmentCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(d.stopCtxSnapshot(), d.cfg.QueryTimeout)
+}
+
+// retentionTurnsSegment deletes expired turns within one segment budget: the
+// listing and every deletion share the segment context, so a segment timeout
+// stops mid-pass and the next scheduled pass picks up the rest.
+func (d *Dispatcher) retentionTurnsSegment(cutoff time.Time) error {
+	ctx, cancel := d.retentionSegmentCtx()
+	defer cancel()
+	refs, err := d.retention.ListExpiredTurns(ctx, cutoff, retentionMaxTurnsPerPass)
+	if err != nil {
+		return err
+	}
+	for _, ref := range refs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := d.retention.DeleteTurnRetention(ctx, ref.TurnID); err != nil {
+			return err
+		}
+		d.retentionTurnsDeleted.Add(1)
+	}
+	return nil
+}
+
+// retentionSessionsSegment deletes expired sessions within one segment
+// budget, mirroring the turns segment.
+func (d *Dispatcher) retentionSessionsSegment(cutoff time.Time) error {
+	ctx, cancel := d.retentionSegmentCtx()
+	defer cancel()
+	ids, err := d.retention.ListExpiredSessions(ctx, cutoff, retentionMaxSessionsPerPass)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := d.retention.DeleteSessionRetention(ctx, id); err != nil {
+			return err
+		}
+		d.retentionSessionsDeleted.Add(1)
+	}
+	return nil
+}
+
+// retentionOrphansSegment deletes orphan content past its grace period within
+// one segment budget.
+func (d *Dispatcher) retentionOrphansSegment(cutoff time.Time) error {
+	ctx, cancel := d.retentionSegmentCtx()
+	defer cancel()
+	n, err := d.retention.DeleteOrphanContent(ctx, cutoff, retentionMaxOrphansPerPass)
+	if err != nil {
+		return err
+	}
+	d.retentionObjectsDeleted.Add(int64(n))
+	return nil
+}
+
+// retentionDays converts a day count to a duration.
+func retentionDays(days int) time.Duration {
+	return time.Duration(days) * 24 * time.Hour
 }
 
 // flush writes one batch to the store under the configured write timeout. A

@@ -50,6 +50,17 @@ func (r *fakeRow) Scan(dest ...any) error {
 // scanInto assigns one fake value into a scan destination.
 func scanInto(dest any, val any) error {
 	switch d := dest.(type) {
+	case *sql.NullString:
+		switch v := val.(type) {
+		case sql.NullString:
+			*d = v
+		case string:
+			d.String, d.Valid = v, true
+		case nil:
+			d.Valid = false
+		default:
+			return fmt.Errorf("fake scan: want string, got %T", val)
+		}
 	case *sql.NullInt64:
 		switch v := val.(type) {
 		case sql.NullInt64:
@@ -63,6 +74,12 @@ func scanInto(dest any, val any) error {
 			return fmt.Errorf("fake scan: want string, got %T", val)
 		}
 		*d = s
+	case *bool:
+		v, ok := val.(bool)
+		if !ok {
+			return fmt.Errorf("fake scan: want bool, got %T", val)
+		}
+		*d = v
 	case *int64:
 		v, ok := val.(int64)
 		if !ok {

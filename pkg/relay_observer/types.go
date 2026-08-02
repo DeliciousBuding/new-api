@@ -171,6 +171,18 @@ type Status struct {
 	// RecentVolume counts events accepted in the most recent fixed window
 	// (one second); it is maintained by the runtime and reset per window.
 	RecentVolume int64
+
+	// LastRetentionPass is the completion time of the most recent retention
+	// pass (successful or failed); the zero value means no pass has run yet.
+	LastRetentionPass time.Time
+	// RetentionTurnsDeleted / RetentionSessionsDeleted / RetentionObjectsDeleted
+	// count rows deleted by retention passes since process start.
+	RetentionTurnsDeleted    int64
+	RetentionSessionsDeleted int64
+	RetentionObjectsDeleted  int64
+	// RetentionFailures counts retention passes aborted by an error; the
+	// next scheduled pass retries.
+	RetentionFailures int64
 }
 
 // Store is the writer-facing persistence port of the observer. Only the

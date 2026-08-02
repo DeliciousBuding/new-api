@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -165,4 +166,262 @@ func mustOpenTestDB(t *testing.T) *sql.DB {
 	require.NoError(t, err)
 	t.Cleanup(func() { db.Close() })
 	return db
+}
+
+// TestVersionListPredicates locks the schema version predicates: exactly [1]
+// is the complete v1 state awaiting upgrade, exactly [1,2] is current, and
+// every other list (empty, single foreign version, out-of-order, extra
+// versions) matches neither.
+func TestVersionListPredicates(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		versions []int
+		v1       bool
+		current  bool
+	}{
+		{name: "empty", versions: nil, v1: false, current: false},
+		{name: "v1 only", versions: []int{1}, v1: true, current: false},
+		{name: "v2 only", versions: []int{2}, v1: false, current: false},
+		{name: "v1 and v2", versions: []int{1, 2}, v1: false, current: true},
+		{name: "three versions", versions: []int{1, 2, 3}, v1: false, current: false},
+		{name: "unknown version", versions: []int{99}, v1: false, current: false},
+		{name: "out of order", versions: []int{2, 1}, v1: false, current: false},
+		{name: "duplicate", versions: []int{1, 1}, v1: false, current: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.v1, isVersionListV1(tt.versions))
+			assert.Equal(t, tt.current, isVersionListCurrent(tt.versions))
+		})
+	}
+}
+
+// fakeDbtx implements dbtx over scripted rows for the verify/bootstrap
+// decision tests: it records every statement and routes by the table the SQL
+// touches, so every branch of the schema checks is exercised without a
+// database.
+type fakeDbtx struct {
+	versions []*fakeRow // rows for "SELECT version FROM observer_schema_versions"
+	tables   []*fakeRow // rows for the information_schema.tables listing
+	hasV2Col bool       // result of the v2 column EXISTS check
+	queryErr error
+	execErr  error
+	execs    []string
+}
+
+func (f *fakeDbtx) QueryContext(ctx context.Context, query string, args ...any) (rowIter, error) {
+	if f.queryErr != nil {
+		return nil, f.queryErr
+	}
+	switch {
+	case strings.Contains(query, "SELECT version FROM observer_schema_versions"):
+		return &fakeRows{rows: f.versions}, nil
+	case strings.Contains(query, "information_schema.tables"):
+		return &fakeRows{rows: f.tables}, nil
+	case strings.Contains(query, "information_schema.columns"):
+		return &fakeRows{rows: []*fakeRow{{values: []any{f.hasV2Col}}}}, nil
+	}
+	return nil, fmt.Errorf("fake: unhandled query %q", query)
+}
+
+func (f *fakeDbtx) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	f.execs = append(f.execs, query)
+	if f.execErr != nil {
+		return nil, f.execErr
+	}
+	return fakeResult{n: 1}, nil
+}
+
+// allTables returns the complete required observer table listing.
+func allTables() []*fakeRow {
+	var rows []*fakeRow
+	for _, name := range requiredObserverTables {
+		rows = append(rows, &fakeRow{values: []any{name}})
+	}
+	return rows
+}
+
+func versionRows(versions ...int) []*fakeRow {
+	var rows []*fakeRow
+	for _, v := range versions {
+		rows = append(rows, &fakeRow{values: []any{v}})
+	}
+	return rows
+}
+
+// TestVerifySchemaBranches locks every verifySchema branch: complete v1 and
+// current v2 pass, foreign/empty/extra version lists are rejected, a missing
+// table is rejected, and a current schema without the v2 column is rejected.
+func TestVerifySchemaBranches(t *testing.T) {
+	ctx := context.Background()
+	t.Run("complete v1 passes", func(t *testing.T) {
+		fx := &fakeDbtx{versions: versionRows(1), tables: allTables()}
+		require.NoError(t, verifySchema(ctx, fx))
+	})
+	t.Run("current v2 passes", func(t *testing.T) {
+		fx := &fakeDbtx{versions: versionRows(1, 2), tables: allTables(), hasV2Col: true}
+		require.NoError(t, verifySchema(ctx, fx))
+	})
+	t.Run("version mismatch rejected", func(t *testing.T) {
+		for _, versions := range [][]int{nil, {2}, {99}, {1, 2, 3}, {2, 1}} {
+			fx := &fakeDbtx{versions: versionRows(versions...), tables: allTables()}
+			err := verifySchema(ctx, fx)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "version mismatch", "versions %v", versions)
+		}
+	})
+	t.Run("missing table rejected", func(t *testing.T) {
+		fx := &fakeDbtx{versions: versionRows(1), tables: allTables()[:5]}
+		err := verifySchema(ctx, fx)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "missing required tables")
+		assert.Contains(t, err.Error(), requiredObserverTables[5])
+	})
+	t.Run("missing v2 column rejected", func(t *testing.T) {
+		fx := &fakeDbtx{versions: versionRows(1, 2), tables: allTables(), hasV2Col: false}
+		err := verifySchema(ctx, fx)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "v2 column observer_content_objects.created_at is missing")
+	})
+	t.Run("query failure propagated", func(t *testing.T) {
+		fx := &fakeDbtx{queryErr: errors.New("pg unavailable")}
+		err := verifySchema(ctx, fx)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "schema verify")
+	})
+}
+
+// TestObserverV2ColumnExists locks the v2 column probe: it reads exactly one
+// EXISTS row and surfaces the boolean.
+func TestObserverV2ColumnExists(t *testing.T) {
+	ctx := context.Background()
+	for _, want := range []bool{true, false} {
+		fx := &fakeDbtx{hasV2Col: want}
+		got, err := observerV2ColumnExists(ctx, fx)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	}
+	fx := &fakeDbtx{queryErr: errors.New("pg unavailable")}
+	_, err := observerV2ColumnExists(ctx, fx)
+	require.Error(t, err)
+}
+
+// TestBootstrapSchemaTxBranches locks every bootstrapSchemaTx branch: an
+// empty schema applies every migration in order, a complete v1 schema applies
+// only the v2 upgrade, a current schema is an idempotent no-op, and a
+// partial/unknown schema is rejected and never patched.
+func TestBootstrapSchemaTxBranches(t *testing.T) {
+	ctx := context.Background()
+	t.Run("empty schema applies all migrations in order", func(t *testing.T) {
+		fx := &fakeDbtx{}
+		require.NoError(t, bootstrapSchemaTx(ctx, fx, map[string]bool{}, nil))
+		require.Len(t, fx.execs, len(observerMigrations))
+		for i, file := range observerMigrations {
+			want, err := migrationsFS.ReadFile(file)
+			require.NoError(t, err)
+			assert.Equal(t, string(want), fx.execs[i], "migration %s", file)
+		}
+	})
+	t.Run("complete v1 applies only the v2 upgrade", func(t *testing.T) {
+		fx := &fakeDbtx{}
+		tables := map[string]bool{}
+		for _, name := range requiredObserverTables {
+			tables[name] = true
+		}
+		require.NoError(t, bootstrapSchemaTx(ctx, fx, tables, []int{1}))
+		require.Len(t, fx.execs, 1)
+		want, err := migrationsFS.ReadFile(observerMigrations[len(observerMigrations)-1])
+		require.NoError(t, err)
+		assert.Equal(t, string(want), fx.execs[0], "only the v2 migration runs on a v1 schema")
+	})
+	t.Run("current schema is an idempotent no-op", func(t *testing.T) {
+		fx := &fakeDbtx{versions: versionRows(1, 2), tables: allTables(), hasV2Col: true}
+		tables := map[string]bool{}
+		for _, name := range requiredObserverTables {
+			tables[name] = true
+		}
+		require.NoError(t, bootstrapSchemaTx(ctx, fx, tables, []int{1, 2}))
+		assert.Empty(t, fx.execs, "a current schema runs no migration")
+	})
+	t.Run("partial schema rejected, never patched", func(t *testing.T) {
+		fx := &fakeDbtx{versions: versionRows(1)}
+		tables := map[string]bool{"observer_sessions": true}
+		err := bootstrapSchemaTx(ctx, fx, tables, []int{1})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "existing schema is not complete v1 or v2")
+		assert.Empty(t, fx.execs, "a partial schema must never be patched")
+	})
+	t.Run("unknown version rejected", func(t *testing.T) {
+		fx := &fakeDbtx{versions: versionRows(99)}
+		tables := map[string]bool{}
+		for _, name := range requiredObserverTables {
+			tables[name] = true
+		}
+		err := bootstrapSchemaTx(ctx, fx, tables, []int{99})
+		require.Error(t, err)
+		assert.Empty(t, fx.execs, "an unknown version must never be patched")
+	})
+	t.Run("migration exec failure propagated", func(t *testing.T) {
+		fx := &fakeDbtx{execErr: errors.New("ddl failed")}
+		err := bootstrapSchemaTx(ctx, fx, map[string]bool{}, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "apply")
+	})
+}
+
+// TestReadSchemaVersions locks the version listing: rows come back in version
+// order and scan errors propagate.
+func TestReadSchemaVersions(t *testing.T) {
+	ctx := context.Background()
+	fx := &fakeDbtx{versions: versionRows(1, 2)}
+	versions, err := readSchemaVersions(ctx, fx)
+	require.NoError(t, err)
+	assert.Equal(t, []int{1, 2}, versions)
+
+	fx2 := &fakeDbtx{queryErr: errors.New("pg unavailable")}
+	_, err = readSchemaVersions(ctx, fx2)
+	require.Error(t, err)
+}
+
+// TestMissingObserverTables locks the table listing: observer_* tables are
+// discovered from information_schema and the missing set names exactly the
+// absent required tables.
+func TestMissingObserverTables(t *testing.T) {
+	ctx := context.Background()
+	fx := &fakeDbtx{tables: allTables()}
+	missing, err := missingObserverTables(ctx, fx)
+	require.NoError(t, err)
+	assert.Empty(t, missing)
+
+	fx2 := &fakeDbtx{tables: allTables()[:3]}
+	missing, err = missingObserverTables(ctx, fx2)
+	require.NoError(t, err)
+	assert.Equal(t, requiredObserverTables[3:], missing)
+}
+
+// TestMigrationsEmbedded locks the embedded migration set: both files exist,
+// 001 creates the v1 version row and 002 is the idempotent v2 upgrade (the
+// created_at column plus its own version row). The observer schema is never
+// complete without both version rows.
+func TestMigrationsEmbedded(t *testing.T) {
+	require.Len(t, observerMigrations, 2)
+	for _, file := range observerMigrations {
+		data, err := migrationsFS.ReadFile(file)
+		require.NoError(t, err, "migration %s must be embedded", file)
+		require.NotEmpty(t, data)
+	}
+	v1, err := migrationsFS.ReadFile(observerMigrations[0])
+	require.NoError(t, err)
+	v1Body := strings.ReplaceAll(string(v1), "\r\n", "\n")
+	assert.Contains(t, v1Body, "INSERT INTO observer_schema_versions (version, applied_at)\nVALUES (1, now())\nON CONFLICT (version) DO NOTHING")
+
+	v2, err := migrationsFS.ReadFile(observerMigrations[1])
+	require.NoError(t, err)
+	body := strings.ReplaceAll(string(v2), "\r\n", "\n")
+	assert.Contains(t, body, "ALTER TABLE observer_content_objects ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()")
+	assert.Contains(t, body, "ON CONFLICT (version) DO NOTHING")
+	assert.Contains(t, body, "VALUES (2, now())")
+	// The retention pass relies on both indexes; their absence would force
+	// sequential scans, which the SSOT forbids.
+	assert.Contains(t, body, "idx_observer_content_objects_created_at")
+	assert.Contains(t, body, "idx_observer_contexts_item_digests")
 }

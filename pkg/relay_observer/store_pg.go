@@ -39,6 +39,7 @@ const (
 // Schema and bootstrap constants.
 const (
 	observerSchemaV1 = 1
+	observerSchemaV2 = 2
 
 	// observerSchemaLockKey is the fixed advisory-lock key serializing
 	// concurrent bootstrap attempts against the same database.
@@ -49,10 +50,14 @@ const (
 	// timeout, and statement timeout").
 	bootstrapLockTimeout      = 2 * time.Second
 	bootstrapStatementTimeout = 15 * time.Second
-
-	// v1MigrationFile is the single versioned SQL file embedded below.
-	v1MigrationFile = "migrations/001_v1.sql"
 )
+
+// observerMigrations is the ordered migration file list. An empty schema
+// applies every file in order; a complete v1 schema applies only the v2
+// upgrade. Each file is idempotent and runs inside the bootstrap transaction.
+// The list is frozen by convention: future migrations append a new file and a
+// new schema version constant, never mutate this list.
+var observerMigrations = []string{"migrations/001_v1.sql", "migrations/002_v2.sql"}
 
 // ErrUnsupportedDSN classifies a SQL DSN the observer cannot use: it is empty,
 // a SQLite/MySQL DSN, or not parseable by pgx as a PostgreSQL URI or keyword
@@ -141,7 +146,7 @@ func OpenPGStore(ctx context.Context, dsn string, mode SchemaMode) (Store, error
 	}
 	switch mode {
 	case SchemaModeVerify:
-		err = verifySchema(ctx, db)
+		err = verifySchema(ctx, dbtxAdapter{row: db})
 	case SchemaModeBootstrap:
 		err = bootstrapSchema(ctx, db)
 	default:
@@ -154,35 +159,50 @@ func OpenPGStore(ctx context.Context, dsn string, mode SchemaMode) (Store, error
 	return store, nil
 }
 
-// dbtx is the query surface verify and bootstrap need; *sql.DB and *sql.Tx
-// both satisfy it.
-type dbtx interface {
+// dbtxRow is the concrete database/sql surface verify and bootstrap need;
+// *sql.DB and *sql.Tx both satisfy it.
+type dbtxRow interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// dbtx is the query surface verify and bootstrap consume; rows come back as
+// rowIter so tests can exercise the decision logic against a fake data layer,
+// exactly like the other seams.
+type dbtx interface {
+	QueryContext(ctx context.Context, query string, args ...any) (rowIter, error)
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// dbtxAdapter adapts dbtxRow to dbtx.
+type dbtxAdapter struct{ row dbtxRow }
+
+func (a dbtxAdapter) QueryContext(ctx context.Context, query string, args ...any) (rowIter, error) {
+	rows, err := a.row.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (a dbtxAdapter) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return a.row.ExecContext(ctx, query, args...)
 }
 
 // verifySchema performs the bounded startup schema check: the version table
-// must hold exactly version 1 and every required observer table must exist.
-// It never runs DDL, scans data tables, or executes VACUUM.
+// must hold exactly [1] (complete v1, upgrade pending at bootstrap) or
+// [1, 2] (current), and every required observer table must exist. On the
+// current version it also checks the v2 column so a schema whose version row
+// lies about its structure is rejected. It never runs DDL, scans data
+// tables, or executes VACUUM.
 func verifySchema(ctx context.Context, db dbtx) error {
-	rows, err := db.QueryContext(ctx, "SELECT version FROM observer_schema_versions ORDER BY version")
+	versions, err := readSchemaVersions(ctx, db)
 	if err != nil {
-		return fmt.Errorf("relayobserver: schema verify: read observer_schema_versions: %w", err)
+		return fmt.Errorf("relayobserver: schema verify: %w", err)
 	}
-	defer rows.Close()
-	versions := []int{}
-	for rows.Next() {
-		var v int
-		if err := rows.Scan(&v); err != nil {
-			return fmt.Errorf("relayobserver: schema verify: scan version: %w", err)
-		}
-		versions = append(versions, v)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("relayobserver: schema verify: read versions: %w", err)
-	}
-	if len(versions) != 1 || versions[0] != observerSchemaV1 {
-		return fmt.Errorf("relayobserver: schema verify: version mismatch: have %v, want [%d]", versions, observerSchemaV1)
+	current := isVersionListCurrent(versions)
+	if !current && !isVersionListV1(versions) {
+		return fmt.Errorf("relayobserver: schema verify: version mismatch: have %v, want [%d] or [%d, %d]", versions, observerSchemaV1, observerSchemaV1, observerSchemaV2)
 	}
 	missing, err := missingObserverTables(ctx, db)
 	if err != nil {
@@ -191,7 +211,77 @@ func verifySchema(ctx context.Context, db dbtx) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("relayobserver: schema verify: missing required tables %v", missing)
 	}
+	if current {
+		// The version row claims v2; the v2 column must actually exist, so a
+		// dropped column is caught here instead of failing the retention pass.
+		has, err := observerV2ColumnExists(ctx, db)
+		if err != nil {
+			return err
+		}
+		if !has {
+			return fmt.Errorf("relayobserver: schema verify: v2 column observer_content_objects.created_at is missing")
+		}
+	}
 	return nil
+}
+
+// readSchemaVersions returns the observer_schema_versions rows in version
+// order. Callers wrap the error with their own prefix.
+func readSchemaVersions(ctx context.Context, db dbtx) ([]int, error) {
+	rows, err := db.QueryContext(ctx, "SELECT version FROM observer_schema_versions ORDER BY version")
+	if err != nil {
+		return nil, fmt.Errorf("read observer_schema_versions: %w", err)
+	}
+	defer closeRows(rows)
+	versions := []int{}
+	for rows.Next() {
+		var v int
+		if err := rows.Scan(&v); err != nil {
+			return nil, fmt.Errorf("scan version: %w", err)
+		}
+		versions = append(versions, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read versions: %w", err)
+	}
+	return versions, nil
+}
+
+// isVersionListV1 reports whether versions is exactly the complete v1 state
+// [1], the schema that still awaits the v2 upgrade at bootstrap.
+func isVersionListV1(versions []int) bool {
+	return len(versions) == 1 && versions[0] == observerSchemaV1
+}
+
+// isVersionListCurrent reports whether versions is exactly the current state
+// [1, 2].
+func isVersionListCurrent(versions []int) bool {
+	return len(versions) == 2 && versions[0] == observerSchemaV1 && versions[1] == observerSchemaV2
+}
+
+// observerV2ColumnExists reports whether the v2 created_at column exists on
+// observer_content_objects.
+func observerV2ColumnExists(ctx context.Context, db dbtx) (bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'observer_content_objects'
+		  AND column_name = 'created_at')`)
+	if err != nil {
+		return false, fmt.Errorf("relayobserver: schema verify: check v2 column: %w", err)
+	}
+	defer closeRows(rows)
+	if !rows.Next() {
+		return false, fmt.Errorf("relayobserver: schema verify: check v2 column: no result row")
+	}
+	var exists bool
+	if err := rows.Scan(&exists); err != nil {
+		return false, fmt.Errorf("relayobserver: schema verify: check v2 column: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("relayobserver: schema verify: check v2 column: %w", err)
+	}
+	return exists, nil
 }
 
 // requiredObserverTables is the v1 table set besides observer_schema_versions.
@@ -210,7 +300,7 @@ func observerTablesIn(ctx context.Context, db dbtx) (map[string]bool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("relayobserver: list observer tables: %w", err)
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 	found := make(map[string]bool)
 	for rows.Next() {
 		var name string
@@ -241,11 +331,14 @@ func missingObserverTables(ctx context.Context, db dbtx) ([]string, error) {
 	return missing, nil
 }
 
-// bootstrapSchema creates the empty v1 observer schema, or confirms an
-// already-complete v1 schema, all inside one transaction guarded by a short
-// advisory lock, lock timeout, and statement timeout. A partial or mismatched
-// existing schema fails with an error and is left untouched; a lock that
-// cannot be acquired fails fast without queuing.
+// bootstrapSchema creates the empty v1 observer schema (then upgrades it to
+// the current version), upgrades a complete v1 schema to the current version,
+// or confirms an already-current schema, all inside one transaction guarded
+// by a short advisory lock, lock timeout, and statement timeout. An empty
+// schema applies every migration in order; a complete v1 schema applies only
+// the v2 upgrade. A partial or mismatched existing schema fails with an
+// error and is left untouched; a lock that cannot be acquired fails fast
+// without queuing.
 func bootstrapSchema(ctx context.Context, db *sql.DB) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -270,25 +363,77 @@ func bootstrapSchema(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("relayobserver: schema bootstrap: advisory lock busy (another bootstrap is running)")
 	}
 
-	tables, err := observerTablesIn(ctx, tx)
+	tables, err := observerTablesIn(ctx, dbtxAdapter{row: tx})
 	if err != nil {
 		return fmt.Errorf("relayobserver: schema bootstrap: %w", err)
 	}
-	if len(tables) == 0 {
-		// The observer schema is empty: apply the versioned v1 migration.
-		sqlText, err := migrationsFS.ReadFile(v1MigrationFile)
+	var versions []int
+	if len(tables) > 0 {
+		// An empty observer schema has no version table yet; reading it only
+		// when tables exist keeps the bootstrap path usable on a fresh
+		// database.
+		versions, err = readSchemaVersions(ctx, dbtxAdapter{row: tx})
+		if err != nil {
+			return fmt.Errorf("relayobserver: schema bootstrap: %w", err)
+		}
+	}
+	if err := bootstrapSchemaTx(ctx, dbtxAdapter{row: tx}, tables, versions); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// bootstrapSchemaTx applies the schema upgrades the current state needs,
+// inside the caller's transaction: an empty schema applies every migration in
+// order, a complete v1 schema applies only the v2 upgrade, and a complete
+// current schema is an idempotent no-op. A partial or mismatched schema fails
+// with an error and is left untouched.
+func bootstrapSchemaTx(ctx context.Context, tx dbtx, tables map[string]bool, versions []int) error {
+	switch {
+	case len(tables) == 0 && len(versions) == 0:
+		// The observer schema is empty: apply every migration in order.
+		for _, file := range observerMigrations {
+			sqlText, err := migrationsFS.ReadFile(file)
+			if err != nil {
+				return fmt.Errorf("relayobserver: schema bootstrap: read migration: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, string(sqlText)); err != nil {
+				return fmt.Errorf("relayobserver: schema bootstrap: apply %s: %w", file, err)
+			}
+		}
+	case isVersionListV1(versions) && allRequiredTablesPresent(tables):
+		// Complete v1 awaiting the upgrade: apply only the v2 migration. The
+		// migration is idempotent, so a repeated bootstrap is a no-op. A
+		// partial schema never reaches this branch — it must never be
+		// patched.
+		file := observerMigrations[len(observerMigrations)-1]
+		sqlText, err := migrationsFS.ReadFile(file)
 		if err != nil {
 			return fmt.Errorf("relayobserver: schema bootstrap: read migration: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, string(sqlText)); err != nil {
-			return fmt.Errorf("relayobserver: schema bootstrap: apply %s: %w", v1MigrationFile, err)
+			return fmt.Errorf("relayobserver: schema bootstrap: apply %s: %w", file, err)
 		}
-	} else if err := verifySchema(ctx, tx); err != nil {
+	default:
 		// Existing observer tables that are not the complete v1 schema are
-		// never patched; the error disables the observer.
-		return fmt.Errorf("relayobserver: schema bootstrap: existing schema is not complete v1: %w", err)
+		// never patched; the error disables the observer. A complete current
+		// schema passes verify and the bootstrap is an idempotent no-op.
+		if err := verifySchema(ctx, tx); err != nil {
+			return fmt.Errorf("relayobserver: schema bootstrap: existing schema is not complete v1 or v2: %w", err)
+		}
 	}
-	return tx.Commit()
+	return nil
+}
+
+// allRequiredTablesPresent reports whether every required observer table is
+// present in the observed table set.
+func allRequiredTablesPresent(tables map[string]bool) bool {
+	for _, name := range requiredObserverTables {
+		if !tables[name] {
+			return false
+		}
+	}
+	return true
 }
 
 // insertTurnSQL inserts one turn row with a store-generated row UUID and
@@ -334,6 +479,16 @@ func (s *pgStore) WriteBatch(ctx context.Context, events []Event) error {
 		return fmt.Errorf("relayobserver: write batch: prepare: %w", err)
 	}
 	defer stmt.Close()
+	// Session recency statement: every turn bound to a session — including
+	// metadata-only turns that persist no content — must keep last_seen at
+	// least as fresh as the turn's occurred_at, so the session retention
+	// invariant (an expired session never carries a not-yet-expired turn)
+	// holds for all turns, not only the content-bearing ones.
+	bumpStmt, err := tx.PrepareContext(ctx, `UPDATE observer_sessions SET last_seen = GREATEST(last_seen, $1) WHERE id = $2`)
+	if err != nil {
+		return fmt.Errorf("relayobserver: write batch: prepare session bump: %w", err)
+	}
+	defer bumpStmt.Close()
 
 	for i := range events {
 		ev := &events[i]
@@ -354,6 +509,11 @@ func (s *pgStore) WriteBatch(ctx context.Context, events []Event) error {
 		}
 		if _, err := stmt.ExecContext(ctx, args...); err != nil {
 			return fmt.Errorf("relayobserver: write batch: insert: %w", err)
+		}
+		if ev.SessionID != nil {
+			if _, err := bumpStmt.ExecContext(ctx, ev.OccurredAt, ev.SessionID.String()); err != nil {
+				return fmt.Errorf("relayobserver: write batch: bump session last_seen: %w", err)
+			}
 		}
 	}
 	return tx.Commit()
@@ -413,4 +573,212 @@ func (s *pgStore) Close(ctx context.Context) error {
 		s.closeErr = s.db.Close()
 	})
 	return s.closeErr
+}
+
+// Retention bounds per the SSOT: at most one pass every six hours, at most
+// 1000 expired turns, 100 expired sessions, and 1000 orphan objects per pass.
+const (
+	retentionMaxTurnsPerPass    = 1000
+	retentionMaxSessionsPerPass = 100
+	retentionMaxOrphansPerPass  = 1000
+)
+
+// ListExpiredTurns implements ContentPersistence. See the interface comment
+// for the full contract. The limit bounds the pass; the predicate is the
+// indexed occurred_at column.
+func (s *pgStore) ListExpiredTurns(ctx context.Context, cutoff time.Time, limit int) ([]TurnRetentionRef, error) {
+	return listExpiredTurnsQ(ctx, sqlDBAdapter{db: s.db}, cutoff, limit)
+}
+
+// listExpiredTurnsQ lists expired turns through the query seam. It selects
+// only the retention columns (id, session_id) — never attempts, geo, or
+// content payload columns.
+func listExpiredTurnsQ(ctx context.Context, q contentQuerier, cutoff time.Time, limit int) ([]TurnRetentionRef, error) {
+	if limit < 1 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `SELECT id::text, session_id::text FROM observer_turns WHERE occurred_at < $1 ORDER BY occurred_at LIMIT $2`, cutoff, limit)
+	if err != nil {
+		return nil, fmt.Errorf("relayobserver: list expired turns: %w", err)
+	}
+	defer closeRows(rows)
+	var refs []TurnRetentionRef
+	for rows.Next() {
+		var idText string
+		var sidText sql.NullString
+		if err := rows.Scan(&idText, &sidText); err != nil {
+			return nil, fmt.Errorf("relayobserver: list expired turns: scan: %w", err)
+		}
+		turnID, err := uuid.Parse(idText)
+		if err != nil {
+			return nil, fmt.Errorf("relayobserver: list expired turns: invalid turn id %q: %w", idText, err)
+		}
+		ref := TurnRetentionRef{TurnID: turnID}
+		if sidText.Valid {
+			sid, err := uuid.Parse(sidText.String)
+			if err != nil {
+				return nil, fmt.Errorf("relayobserver: list expired turns: invalid session id %q: %w", sidText.String, err)
+			}
+			ref.SessionID = &sid
+		}
+		refs = append(refs, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("relayobserver: list expired turns: %w", err)
+	}
+	return refs, nil
+}
+
+// ListExpiredSessions implements ContentPersistence. See the interface
+// comment for the full contract.
+func (s *pgStore) ListExpiredSessions(ctx context.Context, cutoff time.Time, limit int) ([]uuid.UUID, error) {
+	return listExpiredSessionsQ(ctx, sqlDBAdapter{db: s.db}, cutoff, limit)
+}
+
+// listExpiredSessionsQ lists expired session ids through the query seam.
+func listExpiredSessionsQ(ctx context.Context, q contentQuerier, cutoff time.Time, limit int) ([]uuid.UUID, error) {
+	if limit < 1 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `SELECT id::text FROM observer_sessions WHERE last_seen < $1 ORDER BY last_seen LIMIT $2`, cutoff, limit)
+	if err != nil {
+		return nil, fmt.Errorf("relayobserver: list expired sessions: %w", err)
+	}
+	defer closeRows(rows)
+	var ids []uuid.UUID
+	for rows.Next() {
+		var idText string
+		if err := rows.Scan(&idText); err != nil {
+			return nil, fmt.Errorf("relayobserver: list expired sessions: scan: %w", err)
+		}
+		id, err := uuid.Parse(idText)
+		if err != nil {
+			return nil, fmt.Errorf("relayobserver: list expired sessions: invalid session id %q: %w", idText, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("relayobserver: list expired sessions: %w", err)
+	}
+	return ids, nil
+}
+
+// DeleteTurnRetention implements ContentPersistence. See the interface
+// comment for the full contract.
+func (s *pgStore) DeleteTurnRetention(ctx context.Context, turnID uuid.UUID) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("relayobserver: delete turn retention: begin: %w", err)
+	}
+	defer tx.Rollback() // no-op after a successful Commit
+	if err := deleteTurnRetentionTx(ctx, sqlTxAdapter{tx: tx}, turnID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// deleteTurnRetentionTx deletes one expired turn, its context row, and a
+// session head that points at that context, inside the caller's transaction.
+// A context row that is still a group's full checkpoint is skipped (the turn
+// is kept for the next pass): a retained delta of the same session references
+// it as its base, and deleting it would leave the delta dangling with its own
+// (not yet expired) turn unreconstructable.
+func deleteTurnRetentionTx(ctx context.Context, tx contentTx, turnID uuid.UUID) error {
+	var referenced bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM observer_contexts d WHERE d.checkpoint_id IN (SELECT id FROM observer_contexts WHERE turn_id = $1))`, turnID.String()).Scan(&referenced); err != nil {
+		return fmt.Errorf("relayobserver: delete turn retention: check checkpoint references: %w", err)
+	}
+	if referenced {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `UPDATE observer_session_heads SET context_id = NULL, checkpoint_id = NULL, group_ordinal = NULL WHERE context_id IN (SELECT id FROM observer_contexts WHERE turn_id = $1)`, turnID.String()); err != nil {
+		return fmt.Errorf("relayobserver: delete turn retention: clear head: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM observer_contexts WHERE turn_id = $1`, turnID.String()); err != nil {
+		return fmt.Errorf("relayobserver: delete turn retention: delete context: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM observer_turns WHERE id = $1`, turnID.String()); err != nil {
+		return fmt.Errorf("relayobserver: delete turn retention: delete turn: %w", err)
+	}
+	return nil
+}
+
+// DeleteSessionRetention implements ContentPersistence. See the interface
+// comment for the full contract.
+func (s *pgStore) DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("relayobserver: delete session retention: begin: %w", err)
+	}
+	defer tx.Rollback() // no-op after a successful Commit
+	if err := deleteSessionRetentionTx(ctx, sqlTxAdapter{tx: tx}, sessionID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// deleteSessionRetentionTx deletes one expired session and everything that
+// references it, inside the caller's transaction. Content objects go first
+// (they are unreferenced once the contexts go), then contexts, the head, the
+// alias bindings, the session's turns (all expired by definition: last_seen
+// is never older than any of its turns' occurred_at), and the session row
+// itself. After it returns, no row references the session.
+func deleteSessionRetentionTx(ctx context.Context, tx contentTx, sessionID uuid.UUID) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM observer_content_objects WHERE session_id = $1`, sessionID.String()); err != nil {
+		return fmt.Errorf("relayobserver: delete session retention: delete content: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM observer_contexts WHERE session_id = $1`, sessionID.String()); err != nil {
+		return fmt.Errorf("relayobserver: delete session retention: delete contexts: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM observer_session_heads WHERE session_id = $1`, sessionID.String()); err != nil {
+		return fmt.Errorf("relayobserver: delete session retention: delete head: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM observer_session_aliases WHERE session_id = $1`, sessionID.String()); err != nil {
+		return fmt.Errorf("relayobserver: delete session retention: delete aliases: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM observer_turns WHERE session_id = $1`, sessionID.String()); err != nil {
+		return fmt.Errorf("relayobserver: delete session retention: delete turns: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM observer_sessions WHERE id = $1`, sessionID.String()); err != nil {
+		return fmt.Errorf("relayobserver: delete session retention: delete session: %w", err)
+	}
+	return nil
+}
+
+// DeleteOrphanContent implements ContentPersistence. See the interface
+// comment for the full contract. The delete is bounded by a LIMIT on the
+// candidate subquery; the candidate predicate (created_at < cutoff) is
+// indexed and the reference check (JSONB containment against the session's
+// context digest lists) probes the GIN index, so the pass never reads the
+// content payload.
+func (s *pgStore) DeleteOrphanContent(ctx context.Context, cutoff time.Time, limit int) (int, error) {
+	return deleteOrphanContentQ(ctx, sqlDBAdapter{db: s.db}, cutoff, limit)
+}
+
+// deleteOrphanContentQ deletes bounded orphan objects through the query
+// seam. It returns the number of rows deleted.
+func deleteOrphanContentQ(ctx context.Context, q contentQuerier, cutoff time.Time, limit int) (int, error) {
+	if limit < 1 {
+		return 0, nil
+	}
+	res, err := q.Exec(ctx, `DELETE FROM observer_content_objects o
+WHERE o.id IN (
+    SELECT o2.id FROM observer_content_objects o2
+    WHERE o2.created_at < $1
+      AND NOT EXISTS (
+        SELECT 1 FROM observer_contexts c
+        WHERE c.session_id = o2.session_id
+          AND c.item_digests @> to_jsonb(encode(o2.item_digest, 'hex'))
+      )
+    ORDER BY o2.id
+    LIMIT $2
+)`, cutoff, limit)
+	if err != nil {
+		return 0, fmt.Errorf("relayobserver: delete orphan content: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("relayobserver: delete orphan content: rows affected: %w", err)
+	}
+	return int(n), nil
 }
