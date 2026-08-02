@@ -3,9 +3,13 @@ package service
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 )
 
 func ginCtxWithHeaders(headers map[string]string) *gin.Context {
@@ -170,6 +174,156 @@ func TestDetectClientProfile(t *testing.T) {
 				"User-Agent": "Qoder-Cli/1.0",
 			},
 			want: "qoder",
+		},
+		{
+			name: "codex cli originator with space",
+			headers: map[string]string{
+				"Originator": "Codex CLI",
+			},
+			want: "codex_cli",
+		},
+		{
+			name: "mistral sdk ua",
+			headers: map[string]string{
+				"User-Agent": "mistral-client-python/1.2.0",
+			},
+			want: "mistral_sdk",
+		},
+		{
+			name: "mistral sdk ua beats stainless headers",
+			headers: map[string]string{
+				"User-Agent":          "mistralai/1.2.0",
+				"X-Stainless-Lang":    "python",
+				"X-Stainless-Runtime": "CPython",
+			},
+			want: "mistral_sdk",
+		},
+		{
+			name: "groq sdk ua beats stainless headers",
+			headers: map[string]string{
+				"User-Agent":          "Groq/Python 0.15.0",
+				"X-Stainless-Lang":    "python",
+				"X-Stainless-Runtime": "CPython",
+			},
+			want: "groq",
+		},
+		{
+			name: "cohere sdk ua",
+			headers: map[string]string{
+				"User-Agent": "cohere-python/5.9.0",
+			},
+			want: "cohere_sdk",
+		},
+		{
+			name: "vercel ai sdk ua",
+			headers: map[string]string{
+				"User-Agent": "@ai-sdk/openai/1.0.0 runtime/node.js/22",
+			},
+			want: "ai_sdk",
+		},
+		{
+			name: "vertex ai platform ua",
+			headers: map[string]string{
+				"User-Agent": "google-cloud-aiplatform/1.80.0",
+			},
+			want: "gemini_sdk",
+		},
+		{
+			name: "litellm ua",
+			headers: map[string]string{
+				"User-Agent": "litellm/1.60.0",
+			},
+			want: "litellm",
+		},
+		{
+			name: "litellm header only",
+			headers: map[string]string{
+				"User-Agent":      "python-httpx/0.28.1",
+				"X-LiteLLM-Key":   "sk-123",
+				"X-LiteLLM-Model": "gpt-4o",
+			},
+			want: "litellm",
+		},
+		{
+			name: "grok slash ua",
+			headers: map[string]string{
+				"User-Agent": "Grok/2.0 (Android)",
+			},
+			want: "grok",
+		},
+		{
+			name: "llama index underscore ua",
+			headers: map[string]string{
+				"User-Agent": "llama_index/0.12.5",
+			},
+			want: "llama_index",
+		},
+		{
+			name: "mcp typescript sdk ua",
+			headers: map[string]string{
+				"User-Agent": "mcp-typescript-sdk/1.0.0",
+			},
+			want: "mcp_sdk",
+		},
+		{
+			name: "zapier automation ua",
+			headers: map[string]string{
+				"User-Agent": "Zapier/1.0",
+			},
+			want: "automation",
+		},
+		{
+			name: "make.com automation ua",
+			headers: map[string]string{
+				"User-Agent": "make.com/1.0",
+			},
+			want: "automation",
+		},
+		{
+			name: "bare make is not automation",
+			headers: map[string]string{
+				"User-Agent": "make/1.0",
+			},
+			want: "chat",
+		},
+		{
+			name: "bare grok is not grok",
+			headers: map[string]string{
+				"User-Agent": "grok foo",
+			},
+			want: "chat",
+		},
+		{
+			name: "n8n via claude protocol stays automation",
+			headers: map[string]string{
+				"User-Agent":        "n8n/1.80.0",
+				"Anthropic-Version": "2023-06-01",
+			},
+			want: "automation",
+		},
+		{
+			name: "langchain via claude protocol stays langchain",
+			headers: map[string]string{
+				"User-Agent":        "langchain/0.3.14",
+				"Anthropic-Version": "2023-06-01",
+			},
+			want: "langchain",
+		},
+		{
+			name: "unknown ua with anthropic-version header falls back to claude sdk",
+			headers: map[string]string{
+				"User-Agent":        "CustomApp/1.0",
+				"Anthropic-Version": "2023-06-01",
+			},
+			want: "claude_sdk",
+		},
+		{
+			name: "unknown ua with stainless headers falls back to openai sdk",
+			headers: map[string]string{
+				"X-Stainless-Lang":    "python",
+				"X-Stainless-Runtime": "CPython",
+			},
+			want: "openai_sdk",
 		},
 		{
 			name: "langchain ua",
@@ -524,15 +678,51 @@ func TestDetectClientProfile(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := DetectClientProfile(ginCtxWithHeaders(tc.headers))
-			if got != tc.want {
-				t.Fatalf("DetectClientProfile(%v) = %q, want %q", tc.headers, got, tc.want)
-			}
+			require.Equal(t, tc.want, got, "DetectClientProfile(%v)", tc.headers)
 		})
 	}
 }
 
 func TestDetectClientProfileNilCtx(t *testing.T) {
-	if got := DetectClientProfile(nil); got != "" {
-		t.Fatalf("DetectClientProfile(nil) = %q, want empty", got)
+	require.Empty(t, DetectClientProfile(nil))
+}
+
+func TestGenerateTextOtherInfoClientUA(t *testing.T) {
+	cases := []struct {
+		name        string
+		ua          string
+		wantPresent bool
+	}{
+		{name: "ua present", ua: "curl/8.7.1", wantPresent: true},
+		{name: "ua absent", ua: "", wantPresent: false},
+		{name: "ua over 256 chars is truncated", ua: "X/" + strings.Repeat("a", 300), wantPresent: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			if tc.ua != "" {
+				req.Header.Set("User-Agent", tc.ua)
+			}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = req
+			// IsModelMapped 等字段经嵌入 *ChannelMeta 提升，零值 RelayInfo 需显式
+			// 初始化嵌入指针（生产路径由 InitChannelMeta 设置）。
+			other := GenerateTextOtherInfo(c, &relaycommon.RelayInfo{
+				ChannelMeta: &relaycommon.ChannelMeta{},
+			}, 1, 1, 1, 0, 0, 0, 1)
+			adminInfo, ok := other["admin_info"].(map[string]interface{})
+			require.True(t, ok, "admin_info should be present")
+			uaVal, hasUA := adminInfo["client_ua"]
+			if !tc.wantPresent {
+				require.False(t, hasUA, "client_ua should be absent without UA")
+				return
+			}
+			require.True(t, hasUA, "client_ua should be present")
+			if tc.ua == "X/"+strings.Repeat("a", 300) {
+				require.Len(t, uaVal, 256, "client_ua should be truncated to 256 chars")
+				return
+			}
+			require.Equal(t, tc.ua, uaVal)
+		})
 	}
 }
