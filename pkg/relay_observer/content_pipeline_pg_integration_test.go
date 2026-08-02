@@ -136,13 +136,18 @@ func waitContextRow(t *testing.T, db *sql.DB, turnID uuid.UUID) uuid.UUID {
 // — no duplicate turn, context, or content rows.
 func TestIntegrationContentPipelineCapturesAndReconstructs(t *testing.T) {
 	dsn := integrationDSN(t)
-	ensureV1(t, dsn)
+	resetObserverSchema(t, dsn)
 	store := openVerifyStore(t, dsn)
 	t.Cleanup(func() { require.NoError(t, store.Close(context.Background())) })
 
 	disp := newPipelineDispatcher(t, store, func(c *Config) { c.BatchSize = 2 })
 	ev := attachGoldenEvent(t, "t26-node", "t26-req-1")
-	require.True(t, disp.TryEnqueue(&ev, int64(len(goldenResponsesInput))))
+	// The admission reservation bounds canonical bytes at min(reservation,
+	// MaxRequestBytes); a full-capture fixture needs a reservation above the
+	// normalized total, not the raw body size (the body size would truncate
+	// the canonical tail to a gap marker, which is the expected budget
+	// behavior, not this test's contract).
+	require.True(t, disp.TryEnqueue(&ev, 1<<20))
 
 	db := openFixturePool(t, dsn)
 	turnID := turnRowID("t26-node", "t26-req-1")
@@ -188,7 +193,7 @@ func TestIntegrationContentPipelineCapturesAndReconstructs(t *testing.T) {
 // metadata_only and no content or context rows exist for it.
 func TestIntegrationContentPipelineUnknownFormatLeavesNoContent(t *testing.T) {
 	dsn := integrationDSN(t)
-	ensureV1(t, dsn)
+	resetObserverSchema(t, dsn)
 	store := openVerifyStore(t, dsn)
 	t.Cleanup(func() { require.NoError(t, store.Close(context.Background())) })
 
@@ -221,7 +226,7 @@ func TestIntegrationContentPipelineUnknownFormatLeavesNoContent(t *testing.T) {
 // reconstruction closes with the marker (data, not silent loss).
 func TestIntegrationContentPipelineTruncationWritesGapMarker(t *testing.T) {
 	dsn := integrationDSN(t)
-	ensureV1(t, dsn)
+	resetObserverSchema(t, dsn)
 	store := openVerifyStore(t, dsn)
 	t.Cleanup(func() { require.NoError(t, store.Close(context.Background())) })
 
