@@ -1,0 +1,3 @@
+{"kind":"message","role":"user","content":[{"type":"text","text":"alpha alpha alpha alpha"}],"logical_bytes":51,"hmac":"59bd8ebaa8f2b1e31954e3338540937da19dac963caf803c9e4bc94259cf22c3"}
+{"kind":"message","role":"user","content":[{"type":"text","text":"bravo bravo bravo bravo"}],"logical_bytes":51,"hmac":"211a1f2ec006397e60c14f84202f6132e3c83b763c0f34b8f62d0d22af4ac164"}
+{"kind":"gap","logical_bytes":59,"hmac":"a67d9beaa9dc79f6382ed240623e7f505c2858cded7bdedbad36ce31a2a53726","truncated":true}
