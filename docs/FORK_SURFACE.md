@@ -74,7 +74,7 @@
 - **依赖方向**：`controller → service/vision_relay.go（Gin/RelayInfo/BodyStorage 事务+错误映射）→ pkg/vision_relay（核心包无 NewAPI 运行时层依赖，仅依赖 common 基础 JSON wrapper、x/image、gjson/sjson；禁止依赖 controller/service/model/setting/relay/Gin/RelayInfo）`
 - **禁止修改**（阶段 1）：`relay/**`、`relaykit/**`、`common/body_storage.go`、`constant/context_key.go`、`model/option.go`、`controller/option.go`、`main.go`、`web/**`
 - **配置**：注册名 `vision_relay`（DB keys `vision_relay.*`，JSON 数组字段）；安全限制为包内常量（MaxImages=6/MaxDecodedBytes=15MB/MaxPixels=12M/并发 2/解码闸 2/调用闸 8）
-- **状态**：v0.2.1 设计（GPT Approved with Gates）→ v0.2.2 Stabilization 完成（W0 分支重建/W1 运行时阻塞/W2 预算一致性/W3 集成测试全绿）→ **sgp2 observer-test 实例部署验证通过（2026-08-03）**：Claude+OpenAI 带图替换、无图 no-op、失败降级占位均验证；镜像 `ghcr.io/tokendancelab/observer-test:vision-relay-05193e37`，回滚=`compose.yml.bak-20260803`
+- **状态**：v0.2.1 设计（GPT Approved with Gates）→ v0.2.2 Stabilization → **issue #11 合并前收口完成（2026-08-03）**：P0-1 分支净化（merge-candidate `feat/vision-relay-merge`，diff 仅 17 个允许文件）、P0-2 HMAC 认证 marker、P1-3 请求级熔断、P1-4 严格解析、P2-6 Stats、P2-7 文档；PR #12 CI（Backend+Frontend）全绿；sgp2 observer-test 8 项最小复验通过（最终镜像 `ghcr.io/tokendancelab/observer-test:vision-relay-pr12-1386162` digest `d2330eda…`，回滚=`compose.yml.bak-20260803-pr12`）
 - **上游等价**：核心可独立评估（核心包无 NewAPI 运行时层依赖——仅 common JSON wrapper，未来可上游化）
 
 ## 2. Relay Observability 接缝收缩方案（W0 设计）

@@ -438,3 +438,26 @@ fallback_count/cache_hits + 旁路 token usage（响应有 usage 则记录）。
 | 失败降级（key 无 gemma 权限期间） | ✅ 请求仍 200，模型收到 `[Image 1/1 unavailable: …]` 占位文本（日志 `images_failed=1 description_bytes=75`） |
 
 **遗留**：retry 一致性/PassThrough 由单测覆盖（运行实例未触发）；sgp2 08-15 拆除时随实例一并回收。
+
+## 19. issue #11 合并前收口 + 最终复验（2026-08-03，PR #12）
+
+**收口项**（分支 `feat/vision-relay-merge`，从 public/main 5a47fadb5 重建，17 文件 diff 全在允许清单）：
+- **P0-2 递归保护**：`X-NewAPI-Vision-Relay` 改 HMAC 认证 marker（`vr:<ts>:<hmac>`，`vision_relay.sidecall_token` 共享 secret，±5min 窗口）；外部伪造不可 bypass
+- **P1-3 请求级熔断**：首个 401/403 → Abort，后续 sidecall 停止（≤ RequestConcurrency=2），未处理图稳定占位
+- **P1-4 严格解析**：enabled ParseBool / 数组 JSON 错误不吞 / timeout 非法报错 / base_url net/url 完整校验；**disabled 时零行为优先**（残留 malformed 不 5xx）
+- **P2-6 Stats**：VisionCalls=实际 HTTP、FallbackCount=真实切换、ctx 取消未调度计 Failed
+- **P2-7 文档**：依赖声明修正
+
+**PR #12 CI**：Backend + Frontend（sgp2 self-hosted）全绿（SHA 138616297）。
+
+**sgp2 8 项最小复验**（镜像 `ghcr.io/tokendancelab/observer-test:vision-relay-pr12-1386162`，digest `d2330eda…`，回滚=`compose.yml.bak-20260803-pr12`）：
+1. Claude 带图 → ✅ 描述注入（"纯红色的图片"）
+2. OpenAI 带图 → ✅ 描述注入（"纯红色的正方形"）
+3. 无图 → ✅ 真 no-op
+4. 伪造递归头（字面 "1"）→ ✅ 不绕过（增强正常执行）
+5. 6 图 + 401 → ✅ sidecall=2 ≤ RequestConcurrency，6 图全占位
+6. malformed target_models → ✅ HTTP 500 明确错误，不透传
+7. disabled + 残留 malformed → ✅ 零行为（原样透传，无 vision 日志）
+8. 重复请求 → ✅ 两次各 vision_calls=1，同一产物（description_bytes=199）
+
+**部署配置**（observer-test options）：enabled=true、target_models=`["deepseek*"]`、models=`["gemma-4-31b"]`、base_url=https://api.tokendancelab.com、api_key=vision-bridge 同款、timeout_sec=15、sidecall_token=随机 48 hex。
