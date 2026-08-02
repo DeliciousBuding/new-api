@@ -1,9 +1,4 @@
 {
   "Filter the cache efficiency view by time range.": "Filter the cache efficiency view by time range.",
-  "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.": "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.",
-  "Failed to load overview": "Failed to load overview",
-  "Failed to load sessions": "Failed to load sessions",
-  "Live snapshot of the relay observer pipeline.": "Live snapshot of the relay observer pipeline.",
-  "The observer store is degraded. Please try again later.": "The observer store is degraded. Please try again later.",
-  "To (RFC3339)": "To (RFC3339)"
+  "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.": "Store the client source IP with each consume and error log entry. Disable to reduce log footprint."
 }
