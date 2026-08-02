@@ -19,7 +19,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE_NAME: ghcr.io/tokendancelab/new-api
+  IMAGE_NAME: ghcr.io/deliciousbuding/new-api
 
 jobs:
   build-and-push:
