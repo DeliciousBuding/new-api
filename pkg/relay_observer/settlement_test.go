@@ -152,6 +152,17 @@ func TestTryPublishTurnGateHoldsUntilSend(t *testing.T) {
 	require.Equal(t, 1, store.writeCountSnapshot())
 }
 
+// TestRuntimeTryPublishTurnRecoversPanic locks the entry-point recover
+// contract (SSOT: all observer entry points recover panics): a nil receiver
+// panics the method body, the recover absorbs it, the publish reports false,
+// and the panic never reaches the request path.
+func TestRuntimeTryPublishTurnRecoversPanic(t *testing.T) {
+	var rt *Runtime
+	ok := true
+	require.NotPanics(t, func() { ok = rt.TryPublishTurn(sampleEvent(), 0) })
+	assert.False(t, ok)
+}
+
 // TestCaptureClientIPPolicy locks the dual-opt-in capture mapping: a "none"
 // trust tier (either opt-in off) yields no IP at all; "proxy"/"direct" yield
 // the parsed peer and their tier; an unparseable peer yields a nil IP without

@@ -25,12 +25,26 @@ import "net"
 // rejected. Returns false when the event was dropped (dispatcher stopped,
 // circuit open, queue or byte budget full).
 func (r *Runtime) TryPublishTurn(ev Event, reservation int64) (ok bool) {
+	var disp *Dispatcher
+	defer func() {
+		if recover() != nil {
+			// Defensive, mirroring Dispatcher.TryEnqueue: the request path
+			// must stay fail-open even if a bug panics here. Once the
+			// dispatcher snapshot is taken, count the drop on its admission
+			// counters; a panic before that snapshot never entered any
+			// admission budget.
+			ok = false
+			if disp != nil {
+				disp.droppedTotal.Add(1)
+			}
+		}
+	}()
 	r.mu.Lock()
 	if r.state != stateEnabled || r.disp == nil {
 		r.mu.Unlock()
 		return false
 	}
-	disp := r.disp
+	disp = r.disp
 	r.mu.Unlock()
 	if reservation < 0 {
 		return false

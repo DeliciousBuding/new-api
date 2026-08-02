@@ -80,6 +80,15 @@ type TurnUsage struct {
 // and lazily creates the request-local attempt accumulator on the first
 // attempt of the turn. No-op while the observer is unwired.
 func ObserveTurnAttemptBegin(c *gin.Context) {
+	defer func() {
+		if recover() != nil {
+			// Defensive (SSOT: all observer entry points recover panics): a
+			// panic in the hook must never propagate to the request path. The
+			// turn state is request-local, so losing it fails this turn's
+			// observation only.
+			common.SysError("relay observer: ObserveTurnAttemptBegin recovered from panic")
+		}
+	}()
 	if relayObserverSnapshot() == nil {
 		return
 	}
@@ -103,6 +112,14 @@ func ObserveTurnAttemptBegin(c *gin.Context) {
 // attempt once, before its own snapshot. No-op while the observer is unwired
 // or when no turn state exists.
 func ObserveTurnAttemptEnd(c *gin.Context, info *relaycommon.RelayInfo, channelID int, attemptErr *types.NewAPIError) {
+	defer func() {
+		if recover() != nil {
+			// Defensive (SSOT: all observer entry points recover panics): a
+			// panic in the hook must never propagate to the request path. The
+			// missed attempt fails this turn's observation only.
+			common.SysError("relay observer: ObserveTurnAttemptEnd recovered from panic")
+		}
+	}()
 	st := turnObserverStateFrom(c)
 	if st == nil {
 		return
@@ -131,6 +148,14 @@ func ObserveTurnAttemptEnd(c *gin.Context, info *relaycommon.RelayInfo, channelI
 // (SSOT: "retain first 7 + final attempt"); AttemptEnd skips the successful
 // round. No-op while the observer is unwired.
 func ObserveTurnSettlement(c *gin.Context, info *relaycommon.RelayInfo, usage TurnUsage) {
+	defer func() {
+		if recover() != nil {
+			// Defensive (SSOT: all observer entry points recover panics): a
+			// panic in the hook must never propagate to the request path or
+			// change the settlement outcome. The turn event is dropped.
+			common.SysError("relay observer: ObserveTurnSettlement recovered from panic")
+		}
+	}()
 	if relayObserverSnapshot() == nil {
 		return
 	}
@@ -150,6 +175,14 @@ func ObserveTurnSettlement(c *gin.Context, info *relaycommon.RelayInfo, usage Tu
 // ObserveTurnSettlement, so a turn is published exactly once. No-op while
 // the observer is unwired.
 func ObserveTurnFailure(c *gin.Context, info *relaycommon.RelayInfo) {
+	defer func() {
+		if recover() != nil {
+			// Defensive (SSOT: all observer entry points recover panics): a
+			// panic in the hook must never propagate to the request path or
+			// change the failure outcome. The turn event is dropped.
+			common.SysError("relay observer: ObserveTurnFailure recovered from panic")
+		}
+	}()
 	if relayObserverSnapshot() == nil {
 		return
 	}

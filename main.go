@@ -72,6 +72,7 @@ func main() {
 	// starts normally regardless of observer health.
 	observerRuntime.Init()
 	controller.SetRelayObserverRuntime(observerRuntime)
+	service.SetRelayObserverRuntime(observerRuntime)
 
 	common.SysLog("New API " + common.Version + " started")
 	if os.Getenv("GIN_MODE") != "debug" {
