@@ -721,13 +721,16 @@ func (s *pgStore) DeleteTurnRetention(ctx context.Context, turnID uuid.UUID) err
 
 // deleteTurnRetentionTx deletes one expired turn, its context row, and a
 // session head that points at that context, inside the caller's transaction.
-// A context row that is still a group's full checkpoint is skipped (the turn
-// is kept for the next pass): a retained delta of the same session references
-// it as its base, and deleting it would leave the delta dangling with its own
-// (not yet expired) turn unreconstructable.
+// A context row that is still another retained context's full checkpoint is
+// skipped (the turn is kept for the next pass): a retained delta of the same
+// session references it as its base, and deleting it would leave the delta
+// dangling with its own (not yet expired) turn unreconstructable. The check
+// excludes the row's own checkpoint self-reference (SSOT: a full row stores
+// checkpoint_id = id), so a full checkpoint that no retained delta references
+// is deletable instead of blocking its own turn forever.
 func deleteTurnRetentionTx(ctx context.Context, tx contentTx, turnID uuid.UUID) error {
 	var referenced bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM observer_contexts d WHERE d.checkpoint_id IN (SELECT id FROM observer_contexts WHERE turn_id = $1))`, turnID.String()).Scan(&referenced); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM observer_contexts d WHERE d.checkpoint_id IN (SELECT id FROM observer_contexts WHERE turn_id = $1) AND d.id <> d.checkpoint_id)`, turnID.String()).Scan(&referenced); err != nil {
 		return fmt.Errorf("relayobserver: delete turn retention: check checkpoint references: %w", err)
 	}
 	if referenced {
@@ -747,25 +750,39 @@ func deleteTurnRetentionTx(ctx context.Context, tx contentTx, turnID uuid.UUID) 
 
 // DeleteSessionRetention implements ContentPersistence. See the interface
 // comment for the full contract.
-func (s *pgStore) DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID) error {
+func (s *pgStore) DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID, cutoff time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("relayobserver: delete session retention: begin: %w", err)
 	}
 	defer tx.Rollback() // no-op after a successful Commit
-	if err := deleteSessionRetentionTx(ctx, sqlTxAdapter{tx: tx}, sessionID); err != nil {
+	if err := deleteSessionRetentionTx(ctx, sqlTxAdapter{tx: tx}, sessionID, cutoff); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
 // deleteSessionRetentionTx deletes one expired session and everything that
-// references it, inside the caller's transaction. Content objects go first
-// (they are unreferenced once the contexts go), then contexts, the head, the
-// alias bindings, the session's turns (all expired by definition: last_seen
-// is never older than any of its turns' occurred_at), and the session row
-// itself. After it returns, no row references the session.
-func deleteSessionRetentionTx(ctx context.Context, tx contentTx, sessionID uuid.UUID) error {
+// references it, inside the caller's transaction. The session row is locked
+// and its last_seen re-checked against the cutoff before anything is deleted:
+// the retention pass lists expired sessions and then deletes them one by one,
+// and a session that received a new turn between the list query and this
+// transaction must survive (its last_seen moved past the cutoff, so the
+// delete is a no-op). Content objects go first (they are unreferenced once
+// the contexts go), then contexts, the head, the alias bindings, the
+// session's turns (every turn of a still-expired session is itself expired,
+// because last_seen is never older than any of its turns' occurred_at), and
+// the session row itself. After it returns, no row references the session.
+func deleteSessionRetentionTx(ctx context.Context, tx contentTx, sessionID uuid.UUID, cutoff time.Time) error {
+	var lastSeen time.Time
+	if err := tx.QueryRow(ctx, `SELECT last_seen FROM observer_sessions WHERE id = $1 FOR UPDATE`, sessionID.String()).Scan(&lastSeen); err != nil {
+		return fmt.Errorf("relayobserver: delete session retention: lock session: %w", err)
+	}
+	if !lastSeen.Before(cutoff) {
+		// The session became active again after the retention list query; the
+		// delete is a no-op. The locked row is released by the commit/rollback.
+		return nil
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM observer_content_objects WHERE session_id = $1`, sessionID.String()); err != nil {
 		return fmt.Errorf("relayobserver: delete session retention: delete content: %w", err)
 	}

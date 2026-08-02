@@ -85,12 +85,15 @@ type ContentPersistence interface {
 	// retention never leaves a retained delta dangling. Content objects are
 	// not deleted here: orphan-safe cleanup is DeleteOrphanContent's job.
 	DeleteTurnRetention(ctx context.Context, turnID uuid.UUID) error
-	// DeleteSessionRetention atomically deletes one expired session: its
-	// content objects, context rows, head, alias bindings, and turns (every
-	// turn of an expired session is itself expired, because last_seen is
-	// never older than any of its turns' occurred_at). After commit nothing
-	// references the deleted session.
-	DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID) error
+	// DeleteSessionRetention atomically deletes one session that was still
+	// expired at the cutoff: its content objects, context rows, head, alias
+	// bindings, and turns (every turn of an expired session is itself
+	// expired, because last_seen is never older than any of its turns'
+	// occurred_at). The session row is locked and last_seen re-checked
+	// against the cutoff inside the transaction, so a session that received a
+	// new turn after the retention list query is left intact (TOCTOU guard).
+	// After commit nothing references the deleted session.
+	DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID, cutoff time.Time) error
 	// DeleteOrphanContent deletes at most limit content objects whose
 	// created_at is older than cutoff and that no retained context of their
 	// session references (reference safety is the hard condition, the grace
@@ -124,9 +127,11 @@ type RetentionStore interface {
 	// DeleteTurnRetention atomically deletes one expired turn together with
 	// its context row and clears a pointing head.
 	DeleteTurnRetention(ctx context.Context, turnID uuid.UUID) error
-	// DeleteSessionRetention atomically deletes one expired session and
-	// everything that references it.
-	DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID) error
+	// DeleteSessionRetention atomically deletes one session that was still
+	// expired at the cutoff and everything that references it; the last_seen
+	// re-check against the cutoff inside the transaction guards the TOCTOU
+	// window between the list query and the delete.
+	DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID, cutoff time.Time) error
 	// DeleteOrphanContent deletes at most limit unreferenced, past-grace
 	// content objects and returns the deleted row count.
 	DeleteOrphanContent(ctx context.Context, cutoff time.Time, limit int) (int, error)

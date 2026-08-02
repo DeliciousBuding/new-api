@@ -943,7 +943,7 @@ func (d *Dispatcher) retentionSessionsSegment(cutoff time.Time) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := d.retention.DeleteSessionRetention(ctx, id); err != nil {
+		if err := d.retention.DeleteSessionRetention(ctx, id, cutoff); err != nil {
 			return err
 		}
 		d.retentionSessionsDeleted.Add(1)

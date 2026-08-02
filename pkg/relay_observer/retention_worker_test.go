@@ -93,7 +93,7 @@ func (s *retentionScriptedStore) DeleteTurnRetention(ctx context.Context, turnID
 	return nil
 }
 
-func (s *retentionScriptedStore) DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID) error {
+func (s *retentionScriptedStore) DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID, cutoff time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.record("deleteSession", ctx, time.Time{}, 0)
