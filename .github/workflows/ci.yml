@@ -18,6 +18,9 @@ concurrency:
 jobs:
   backend:
     name: Backend vet, build, and test
+    # self-hosted runner 信任边界：只跑 push 与同仓库分支 PR；
+    # fork PR 直接跳过（github-runner 不接受外部代码）。
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, sgp2]
     timeout-minutes: 15
     env:
@@ -59,6 +62,8 @@ jobs:
 
   frontend:
     name: Frontend typecheck, test, and build
+    # 同 backend：fork PR 不跑 self-hosted runner。
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, sgp2]
     timeout-minutes: 10
     defaults:
