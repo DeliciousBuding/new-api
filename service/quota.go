@@ -382,6 +382,12 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	gopool.Go(func() {
 		perfmetrics.RecordRelaySample(relayInfo, true, int64(usage.CompletionTokens))
 	})
+	ObserveTurnSettlement(ctx, relayInfo, TurnUsage{
+		PromptTokens:     int64(usage.PromptTokens),
+		CompletionTokens: int64(usage.CompletionTokens),
+		CachedTokens:     int64(usage.PromptTokensDetails.CachedTokens),
+		Quota:            int64(quota),
+	})
 }
 
 func PreConsumeTokenQuota(relayInfo *relaycommon.RelayInfo, quota int) error {

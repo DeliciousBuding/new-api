@@ -540,4 +540,10 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	gopool.Go(func() {
 		perfmetrics.RecordRelaySample(relayInfo, true, int64(summary.CompletionTokens))
 	})
+	ObserveTurnSettlement(ctx, relayInfo, TurnUsage{
+		PromptTokens:     int64(summary.PromptTokens),
+		CompletionTokens: int64(summary.CompletionTokens),
+		CachedTokens:     int64(summary.CacheTokens),
+		Quota:            int64(summary.Quota),
+	})
 }
