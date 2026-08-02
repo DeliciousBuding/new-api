@@ -319,7 +319,7 @@ func TestIntegrationRetentionSessionDeletion(t *testing.T) {
 	require.Len(t, ids, 1)
 	assert.Equal(t, sid, ids[0].String())
 
-	require.NoError(t, store.DeleteSessionRetention(ctx, uuid.MustParse(sid)))
+	require.NoError(t, store.DeleteSessionRetention(ctx, uuid.MustParse(sid), cutoff))
 
 	for _, q := range []string{
 		"SELECT count(*) FROM observer_sessions WHERE id = $1",
@@ -461,13 +461,13 @@ func TestIntegrationRetentionBoundsAndIdempotence(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, ids, retentionMaxSessionsPerPass, "the session list must cap at the per-pass limit")
 	for _, id := range ids {
-		require.NoError(t, store.DeleteSessionRetention(ctx, id))
+		require.NoError(t, store.DeleteSessionRetention(ctx, id, cutoff))
 	}
 	ids, err = store.ListExpiredSessions(ctx, cutoff, retentionMaxSessionsPerPass)
 	require.NoError(t, err)
 	assert.Len(t, ids, 5, "the remaining expired sessions are picked up by the next pass")
 	for _, id := range ids {
-		require.NoError(t, store.DeleteSessionRetention(ctx, id))
+		require.NoError(t, store.DeleteSessionRetention(ctx, id, cutoff))
 	}
 
 	// Idempotence: a repeated pass over the cleaned data deletes nothing.

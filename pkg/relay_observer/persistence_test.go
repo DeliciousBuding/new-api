@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -96,6 +97,12 @@ func scanInto(dest any, val any) error {
 		v, ok := val.([]byte)
 		if !ok {
 			return fmt.Errorf("fake scan: want []byte, got %T", val)
+		}
+		*d = v
+	case *time.Time:
+		v, ok := val.(time.Time)
+		if !ok {
+			return fmt.Errorf("fake scan: want time.Time, got %T", val)
 		}
 		*d = v
 	default:

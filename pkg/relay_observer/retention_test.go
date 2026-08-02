@@ -25,14 +25,15 @@ import (
 // retentionFakeTx records every statement and routes by the table the SQL
 // touches, mirroring how the other phases test their seams.
 type retentionFakeTx struct {
-	sqls           []string
-	args           [][]any
-	turnRows       []*fakeRow // rows for "FROM observer_turns" queries
-	sessionRow     []*fakeRow // rows for "FROM observer_sessions" queries
-	checkpointRefs bool       // EXISTS result of the checkpoint-reference check
-	execErr        error
-	queryErr       error
-	orphans        int64 // rows affected by the orphan delete
+	sqls             []string
+	args             [][]any
+	turnRows         []*fakeRow // rows for "FROM observer_turns" queries
+	sessionRow       []*fakeRow // rows for "FROM observer_sessions" queries
+	sessionLastSeen  time.Time  // value of the session retention lock query
+	checkpointRefs   bool       // EXISTS result of the checkpoint-reference check
+	execErr          error
+	queryErr         error
+	orphans          int64 // rows affected by the orphan delete
 }
 
 func (f *retentionFakeTx) Query(ctx context.Context, query string, args ...any) (rowIter, error) {
@@ -51,9 +52,13 @@ func (f *retentionFakeTx) Query(ctx context.Context, query string, args ...any) 
 }
 
 func (f *retentionFakeTx) QueryRow(ctx context.Context, query string, args ...any) rowScanner {
+	f.sqls = append(f.sqls, query)
+	f.args = append(f.args, args)
 	switch {
 	case strings.Contains(query, "checkpoint_id IN"):
 		return &fakeRow{values: []any{f.checkpointRefs}}
+	case strings.Contains(query, "last_seen FROM observer_sessions"):
+		return &fakeRow{values: []any{f.sessionLastSeen}}
 	}
 	return &fakeRow{err: fmt.Errorf("fake: retention seam never uses QueryRow: %q", query)}
 }
@@ -160,24 +165,27 @@ func TestRetentionListRejectsNonPositiveLimit(t *testing.T) {
 }
 
 // TestDeleteTurnRetentionShapeAndOrder locks the turn retention deletion: one
-// transaction-shaped sequence that checks the checkpoint is unreferenced,
-// clears a pointing head, deletes the turn's context row, then the turn row
-// itself, all parameterized by $1 and never reading payload columns.
+// transaction-shaped sequence that checks the checkpoint is unreferenced
+// (excluding the row's own self-reference), clears a pointing head, deletes
+// the turn's context row, then the turn row itself, all parameterized by $1
+// and never reading payload columns.
 func TestDeleteTurnRetentionShapeAndOrder(t *testing.T) {
 	fx := &retentionFakeTx{}
 	require.NoError(t, deleteTurnRetentionTx(context.Background(), fx, turnA))
 
-	require.Len(t, fx.sqls, 3)
-	head := fx.sqls[0]
+	require.Len(t, fx.sqls, 4)
+	assert.Contains(t, fx.sqls[0], "SELECT EXISTS (SELECT 1 FROM observer_contexts d")
+	assert.Contains(t, fx.sqls[0], "d.id <> d.checkpoint_id", "self-referencing full checkpoints must not block their own turn")
+	head := fx.sqls[1]
 	assert.Contains(t, head, "UPDATE observer_session_heads SET context_id = NULL, checkpoint_id = NULL, group_ordinal = NULL")
 	assert.Contains(t, head, "context_id IN (SELECT id FROM observer_contexts WHERE turn_id = $1)")
-	assert.Contains(t, fx.sqls[1], "DELETE FROM observer_contexts WHERE turn_id = $1")
-	assert.Contains(t, fx.sqls[2], "DELETE FROM observer_turns WHERE id = $1")
+	assert.Contains(t, fx.sqls[2], "DELETE FROM observer_contexts WHERE turn_id = $1")
+	assert.Contains(t, fx.sqls[3], "DELETE FROM observer_turns WHERE id = $1")
 	for _, sqlText := range fx.sqls {
 		assert.NotContains(t, sqlText, "payload")
 		assert.NotContains(t, sqlText, turnA.String(), "turn id must travel as a bound parameter, never inline")
 	}
-	require.Len(t, fx.args, 3)
+	require.Len(t, fx.args, 4)
 	for _, args := range fx.args {
 		require.Len(t, args, 1)
 		assert.Equal(t, turnA.String(), args[0])
@@ -190,18 +198,27 @@ func TestDeleteTurnRetentionShapeAndOrder(t *testing.T) {
 func TestDeleteTurnRetentionSkipsReferencedCheckpoint(t *testing.T) {
 	fx := &retentionFakeTx{checkpointRefs: true}
 	require.NoError(t, deleteTurnRetentionTx(context.Background(), fx, turnA))
-	assert.Empty(t, fx.sqls, "a referenced full checkpoint must never be deleted")
-	assert.Empty(t, fx.args)
+	require.Len(t, fx.sqls, 1, "only the reference check may run")
+	assert.Contains(t, fx.sqls[0], "SELECT EXISTS")
+	require.Len(t, fx.args, 1)
+	require.Len(t, fx.args[0], 1)
+	assert.Equal(t, turnA.String(), fx.args[0][0])
 }
 
 // TestDeleteSessionRetentionShapeAndOrder locks the session retention
-// deletion: content objects, contexts, head, aliases, turns, and the session
-// row itself, each parameterized by $1. Deletion never reads payload
-// columns.
+// deletion: the last_seen lock+re-check first, then content objects,
+// contexts, head, aliases, turns, and the session row itself, each
+// parameterized by $1. Deletion never reads payload columns.
 func TestDeleteSessionRetentionShapeAndOrder(t *testing.T) {
-	fx := &retentionFakeTx{}
-	require.NoError(t, deleteSessionRetentionTx(context.Background(), fx, sidB))
+	fx := &retentionFakeTx{sessionLastSeen: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)}
+	cutoff := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, deleteSessionRetentionTx(context.Background(), fx, sidB, cutoff))
 
+	// The lock query is the first statement; the session id travels as a
+	// bound parameter and the cutoff as the second.
+	require.Len(t, fx.sqls, 7)
+	assert.Contains(t, fx.sqls[0], "SELECT last_seen FROM observer_sessions")
+	assert.Contains(t, fx.sqls[0], "FOR UPDATE")
 	want := []string{
 		"DELETE FROM observer_content_objects WHERE session_id = $1",
 		"DELETE FROM observer_contexts WHERE session_id = $1",
@@ -210,16 +227,34 @@ func TestDeleteSessionRetentionShapeAndOrder(t *testing.T) {
 		"DELETE FROM observer_turns WHERE session_id = $1",
 		"DELETE FROM observer_sessions WHERE id = $1",
 	}
-	require.Len(t, fx.sqls, len(want))
-	for i, sqlText := range fx.sqls {
-		assert.Contains(t, sqlText, want[i], "statement %d", i)
+	for i, sqlText := range fx.sqls[1:] {
+		assert.Contains(t, sqlText, want[i], "statement %d", i+1)
 		assert.NotContains(t, sqlText, "payload")
 		assert.NotContains(t, sqlText, sidB.String(), "session id must travel as a bound parameter, never inline")
 	}
-	for _, args := range fx.args {
+	require.Len(t, fx.args, 7)
+	// The lock query binds only the session id; the cutoff is compared in Go
+	// after the row is locked, never inlined into SQL.
+	require.Len(t, fx.args[0], 1)
+	assert.Equal(t, sidB.String(), fx.args[0][0])
+	for _, args := range fx.args[1:] {
 		require.Len(t, args, 1)
 		assert.Equal(t, sidB.String(), args[0])
 	}
+}
+
+// TestDeleteSessionRetentionSkipsReactivated locks the TOCTOU guard: a
+// session whose last_seen moved past the cutoff between the retention list
+// query and the delete is left intact — the transaction locks the row,
+// re-checks, and issues no delete at all.
+func TestDeleteSessionRetentionSkipsReactivated(t *testing.T) {
+	fx := &retentionFakeTx{sessionLastSeen: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)}
+	cutoff := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, deleteSessionRetentionTx(context.Background(), fx, sidB, cutoff))
+
+	// Only the lock+re-check statement ran; no delete was issued.
+	require.Len(t, fx.sqls, 1)
+	assert.Contains(t, fx.sqls[0], "FOR UPDATE")
 }
 
 // TestDeleteOrphanContentShapeAndCount locks the orphan deletion: bounded by
@@ -268,9 +303,9 @@ func TestRetentionErrorsPropagate(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, sentinel)
 
-	fx2 := &retentionFakeTx{execErr: sentinel}
+	fx2 := &retentionFakeTx{execErr: sentinel, sessionLastSeen: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)}
 	require.ErrorIs(t, deleteTurnRetentionTx(context.Background(), fx2, turnA), sentinel)
-	require.ErrorIs(t, deleteSessionRetentionTx(context.Background(), fx2, sidA), sentinel)
+	require.ErrorIs(t, deleteSessionRetentionTx(context.Background(), fx2, sidA, time.Now()), sentinel)
 	_, err = deleteOrphanContentQ(context.Background(), fx2, time.Now(), 10)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, sentinel)

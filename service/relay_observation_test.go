@@ -72,18 +72,16 @@ func TestObserveHookEntryPointsRecoverPanics(t *testing.T) {
 }
 
 // TestObserveTurnFlowWhileWiredDisabled is the wired-but-disabled contract:
-// the full hook flow on a valid context runs without panicking, records the
-// failed attempt in the request-local accumulator, and publishes nothing (the
-// disabled runtime drops the turn). This is the "wiring does not regress the
-// disabled path" check.
+// the full hook flow on a valid context runs without panicking and allocates
+// nothing — the disabled runtime short-circuits before any request-local
+// state, accumulator, event construction, or body read is touched (the
+// lock-free CanPublish fast path). This is the "wiring does not regress the
+// disabled path" check: zero state, zero publish.
 func TestObserveTurnFlowWhileWiredDisabled(t *testing.T) {
 	SetRelayObserverRuntime(relayobserver.NewRuntime())
 	t.Cleanup(func() { SetRelayObserverRuntime(nil) })
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
-	// ChannelMeta must be initialized: ChannelId is a promoted field of the
-	// embedded ChannelMeta pointer, so a nil embed dereferences inside the
-	// settlement hook.
 	info := &relaycommon.RelayInfo{
 		RequestId:   "turn-wired-disabled",
 		UsingGroup:  "default",
@@ -94,11 +92,10 @@ func TestObserveTurnFlowWhileWiredDisabled(t *testing.T) {
 		ObserveTurnAttemptEnd(ctx, info, 7, types.NewError(errors.New("upstream rate limited"), types.ErrorCodePreConsumeTokenQuotaFailed))
 		ObserveTurnSettlement(ctx, info, TurnUsage{PromptTokens: 10, CompletionTokens: 5})
 	})
-	// The failed attempt and the settlement-time successful attempt are both
-	// retained in the request-local accumulator; only the publish is dropped.
+	// The disabled path leaves no request-local state behind: no accumulator
+	// was created, nothing was recorded, nothing was published.
 	st := turnObserverStateFrom(ctx)
-	require.NotNil(t, st)
-	assert.Equal(t, 2, st.acc.Len())
+	assert.Nil(t, st, "disabled path must not create request-local observer state")
 }
 
 // TestBuildTurnEventAttachesRequestAndIdentity is the T2.6 attach contract:

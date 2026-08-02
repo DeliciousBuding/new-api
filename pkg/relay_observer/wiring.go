@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -63,6 +64,13 @@ type Runtime struct {
 	reason ReasonCode
 	disp   *Dispatcher
 	store  Store
+
+	// publishable is the lock-free fast path of the enabled state: true only
+	// while the runtime is stateEnabled with a started dispatcher. The
+	// request-path hooks read it via CanPublish before allocating any
+	// request-local observer state, so the fail-open disabled path stays
+	// zero-allocation. Written under r.mu by Init / disableLocked / Close.
+	publishable atomic.Bool
 
 	openStore storeOpener
 
@@ -157,6 +165,7 @@ func (r *Runtime) Init() {
 	r.queryTimeout = cfg.QueryTimeout
 	r.hmacKey = cfg.HMACKey
 	r.state = stateEnabled
+	r.publishable.Store(true)
 }
 
 // Close stops the worker and releases the store inside the caller's budget
@@ -174,6 +183,7 @@ func (r *Runtime) Close(ctx context.Context) {
 	disp := r.disp
 	r.state = stateClosed
 	r.reason = ReasonDisabled
+	r.publishable.Store(false)
 	r.mu.Unlock()
 	// Dispatcher.Stop owns the store release: it passes the remaining budget
 	// to Store.Close (the adapter's Close is idempotent). A panic from either
@@ -256,6 +266,16 @@ func (r *Runtime) HMACKey() string {
 func (r *Runtime) disableLocked(reason ReasonCode) {
 	r.state = stateDisabled
 	r.reason = reason
+	r.publishable.Store(false)
+}
+
+// CanPublish reports whether the request-path hooks may allocate observer
+// state and publish turn events. It is the lock-free fast path of the
+// fail-open contract: nil-runtime checks stay in the hooks, and this check
+// keeps the disabled/closed paths from constructing request-local state,
+// events, or body reads. Safe to call concurrently with any other method.
+func (r *Runtime) CanPublish() bool {
+	return r.publishable.Load()
 }
 
 // storeInitReason classifies a store open failure into a safe ReasonCode.

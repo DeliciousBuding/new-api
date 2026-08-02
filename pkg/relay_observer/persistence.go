@@ -85,12 +85,15 @@ type ContentPersistence interface {
 	// retention never leaves a retained delta dangling. Content objects are
 	// not deleted here: orphan-safe cleanup is DeleteOrphanContent's job.
 	DeleteTurnRetention(ctx context.Context, turnID uuid.UUID) error
-	// DeleteSessionRetention atomically deletes one expired session: its
-	// content objects, context rows, head, alias bindings, and turns (every
-	// turn of an expired session is itself expired, because last_seen is
-	// never older than any of its turns' occurred_at). After commit nothing
-	// references the deleted session.
-	DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID) error
+	// DeleteSessionRetention atomically deletes one session that was still
+	// expired at the cutoff: its content objects, context rows, head, alias
+	// bindings, and turns (every turn of an expired session is itself
+	// expired, because last_seen is never older than any of its turns'
+	// occurred_at). The session row is locked and last_seen re-checked
+	// against the cutoff inside the transaction, so a session that received a
+	// new turn after the retention list query is left intact (TOCTOU guard).
+	// After commit nothing references the deleted session.
+	DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID, cutoff time.Time) error
 	// DeleteOrphanContent deletes at most limit content objects whose
 	// created_at is older than cutoff and that no retained context of their
 	// session references (reference safety is the hard condition, the grace
@@ -124,9 +127,11 @@ type RetentionStore interface {
 	// DeleteTurnRetention atomically deletes one expired turn together with
 	// its context row and clears a pointing head.
 	DeleteTurnRetention(ctx context.Context, turnID uuid.UUID) error
-	// DeleteSessionRetention atomically deletes one expired session and
-	// everything that references it.
-	DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID) error
+	// DeleteSessionRetention atomically deletes one session that was still
+	// expired at the cutoff and everything that references it; the last_seen
+	// re-check against the cutoff inside the transaction guards the TOCTOU
+	// window between the list query and the delete.
+	DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID, cutoff time.Time) error
 	// DeleteOrphanContent deletes at most limit unreferenced, past-grace
 	// content objects and returns the deleted row count.
 	DeleteOrphanContent(ctx context.Context, cutoff time.Time, limit int) (int, error)
@@ -296,6 +301,18 @@ func appendTurnTx(ctx context.Context, tx contentTx, in *ContentInput) error {
 	if err != nil {
 		return err
 	}
+	// Re-check idempotency under the head lock: a concurrent append of the
+	// same turn may have committed between the first check above and the lock
+	// acquisition, and the context UNIQUE (turn_id) constraint would turn that
+	// race into a spurious database error instead of a no-op. The head lock
+	// serializes same-session appends, so this second check is race-free.
+	err = tx.QueryRow(ctx, `SELECT id FROM observer_contexts WHERE turn_id = $1`, in.TurnID.String()).Scan(&existingID)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("relayobserver: append content: recheck turn context: %w", err)
+	}
 	plan := planGroup(head, headFull, meta.digests)
 
 	contextID, err := insertContextTx(ctx, tx, sessionID, in.TurnID, plan, meta)
@@ -349,6 +366,18 @@ func resolveSessionTx(ctx context.Context, tx contentTx, in *ContentInput) (uuid
 		// the new session unbound (remain separate in v1).
 		existing, err := lookupAliasSessionTx(ctx, tx, in.NodeScope, in.UserID, primary)
 		if err == nil {
+			if existing != sid {
+				// The just-created session lost the race and carries nothing
+				// (its binding failed, and no other transaction can bind it:
+				// sessions are only reachable through alias lookups, and the
+				// loser has none). Delete it so the race never leaves a ghost
+				// session with zero turns. The guard columns make the delete
+				// conservative: a session that somehow already accumulated
+				// turns or bindings survives for the retention pass.
+				if _, err := tx.Exec(ctx, `DELETE FROM observer_sessions WHERE id = $1 AND turn_count = 0 AND NOT EXISTS (SELECT 1 FROM observer_session_aliases a WHERE a.session_id = $1)`, sid.String()); err != nil {
+					return uuid.Nil, fmt.Errorf("relayobserver: append content: delete losing session: %w", err)
+				}
+			}
 			sid = existing
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return uuid.Nil, err

@@ -173,6 +173,40 @@ func TestRuntimeEnabledStatus(t *testing.T) {
 	assert.Equal(t, writesBefore, store.writeCountSnapshot())
 }
 
+// TestRuntimeCanPublishTracksEnabledState locks the lock-free fast path of
+// the request-path hooks: only an enabled runtime with a started dispatcher
+// reports publishable, and disabling or closing the runtime flips it off, so
+// the fail-open disabled path allocates nothing in the hooks.
+func TestRuntimeCanPublishTracksEnabledState(t *testing.T) {
+	clearObserverEnv(t)
+	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	store := &scriptedStore{}
+	rec := &openerRecorder{store: store}
+	rt := NewRuntime()
+	rt.openStore = rec.open
+
+	assert.False(t, rt.CanPublish(), "uninitialized runtime must not publish")
+	rt.Init()
+	assert.True(t, rt.CanPublish(), "enabled runtime must publish")
+	require.True(t, rt.Status().Enabled)
+
+	rt.Close(context.Background())
+	assert.False(t, rt.CanPublish(), "closed runtime must not publish")
+}
+
+// TestRuntimeCanPublishDisabledConfig proves a disabled configuration never
+// opens a store and never becomes publishable: the hooks stay zero-cost.
+func TestRuntimeCanPublishDisabledConfig(t *testing.T) {
+	clearObserverEnv(t)
+	t.Setenv("RELAY_OBSERVER_ENABLED", "false")
+	rec := &openerRecorder{store: &scriptedStore{}}
+	rt := NewRuntime()
+	rt.openStore = rec.open
+	rt.Init()
+	assert.Equal(t, 0, rec.callCount())
+	assert.False(t, rt.CanPublish())
+}
+
 // TestRuntimeEnabledStoreFailureFailsOpen proves a store that fails after a
 // successful init only degrades the observer (circuit open) — the runtime
 // stays alive and readable, never panicking or disabling the process.
