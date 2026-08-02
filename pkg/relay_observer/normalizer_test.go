@@ -977,6 +977,49 @@ func TestNormalizerCanonicalBytesAccounting(t *testing.T) {
 	require.NotEqual(t, len(full.Items), len(res.Items))
 }
 
+// TestNormalizerItemsCap proves the Runtime Limits per-request item cap (2048
+// normalized items, hard 4096) is enforced on every protocol: an over-limit
+// request truncates the tail into one explicit gap marker instead of building
+// an unbounded item list.
+func TestNormalizerItemsCap(t *testing.T) {
+	// SSOT Runtime Limits: normalized items/request, default 2048.
+	const maxItems = 2048
+	messages := make([]dto.Message, 0, maxItems+2)
+	for i := 0; i < maxItems+2; i++ {
+		messages = append(messages, dto.Message{Role: "user", Content: "x"})
+	}
+	claudeMessages := make([]dto.ClaudeMessage, 0, maxItems+2)
+	for i := 0; i < maxItems+2; i++ {
+		claudeMessages = append(claudeMessages, dto.ClaudeMessage{Role: "user", Content: "x"})
+	}
+	responsesItems := `[{"role":"user","content":[{"type":"input_text","text":"x"}]},`
+	responsesItems += strings.Repeat(`{"role":"user","content":[{"type":"input_text","text":"x"}]},`, maxItems)
+	responsesItems = responsesItems[:len(responsesItems)-1] + "]"
+
+	cases := []struct {
+		name   string
+		format string
+		req    dto.Request
+	}{
+		{"chat", string(types.RelayFormatOpenAI), &dto.GeneralOpenAIRequest{Model: "gpt-5", Messages: messages}},
+		{"claude", string(types.RelayFormatClaude), &dto.ClaudeRequest{Model: "claude-opus-4", Messages: claudeMessages}},
+		{"responses", string(types.RelayFormatOpenAIResponses), &dto.OpenAIResponsesRequest{Model: "gpt-5", Input: raw(responsesItems)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := NormalizeRequest(tc.format, tc.req, roomyOpts())
+			require.Equal(t, ContentStateGap, res.ContentState)
+			// 2048 kept items plus at most one gap marker.
+			require.LessOrEqual(t, len(res.Items), maxItems+1)
+			last := res.Items[len(res.Items)-1]
+			require.Equal(t, CanonicalKindGap, last.Kind)
+			assert.True(t, last.Truncated)
+			assert.Greater(t, last.LogicalBytes, int64(0))
+			assert.NotEmpty(t, last.Hmac)
+		})
+	}
+}
+
 // TestNormalizerStabilityOfHmacKeyAbsence proves an empty HMAC key produces a
 // deterministic empty digest instead of a panic (fail-open for the missing-key
 // configuration).

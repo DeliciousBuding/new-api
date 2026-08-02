@@ -55,6 +55,14 @@ const (
 	partTypeUnknown    = "unknown"
 )
 
+// maxNormalizedItems is the per-request normalized item cap from the SSOT
+// Runtime Limits table (default 2048; the 4096 hard maximum is a config
+// concern, so the frozen config keeps the default as a constant here). The
+// normalizer stops building items at this bound and collapses the tail into an
+// explicit gap marker, keeping worker CPU and memory bounded by construction
+// rather than by the later byte cap alone.
+const maxNormalizedItems = 2048
+
 // NormalizeOptions carries the per-event budget and the digest key into the
 // normalizer. Reservation is the event's admission reservation (the request
 // body size); MaxRequestBytes is the global RELAY_OBSERVER_MAX_REQUEST_BYTES
@@ -272,7 +280,12 @@ func normalizeResponses(req *dto.OpenAIResponsesRequest, opts NormalizeOptions) 
 			hasGap = true
 			break
 		}
-		for _, item := range rawItems {
+		for i, item := range rawItems {
+			if len(items) >= maxNormalizedItems {
+				items = append(items, tailGapItem(rawItems[i:], opts))
+				hasGap = true
+				break
+			}
 			it, gap := responsesItem(item, opts)
 			items = append(items, it)
 			if gap {
@@ -460,7 +473,12 @@ func mediaFromResponsesVideo(part map[string]any) (raw []byte, mediaType string)
 func normalizeChat(req *dto.GeneralOpenAIRequest, opts NormalizeOptions) ([]CanonicalItem, bool) {
 	items := make([]CanonicalItem, 0, len(req.Messages))
 	hasGap := false
-	for _, msg := range req.Messages {
+	for i, msg := range req.Messages {
+		if len(items) >= maxNormalizedItems {
+			items = append(items, tailGapItem(req.Messages[i:], opts))
+			hasGap = true
+			break
+		}
 		parts, gap := chatMessageParts(msg, opts)
 		it := CanonicalItem{
 			Kind:         CanonicalKindMessage,
@@ -672,7 +690,12 @@ func normalizeClaude(req *dto.ClaudeRequest, opts NormalizeOptions) ([]Canonical
 		}
 	}
 
-	for _, msg := range req.Messages {
+	for i, msg := range req.Messages {
+		if len(items) >= maxNormalizedItems {
+			items = append(items, tailGapItem(req.Messages[i:], opts))
+			hasGap = true
+			break
+		}
 		it := CanonicalItem{Kind: CanonicalKindMessage, Role: msg.Role}
 		switch content := msg.Content.(type) {
 		case nil:
@@ -912,6 +935,18 @@ func unknownItemFrom(item map[string]any) CanonicalItem {
 // unknownItem carries unrecognized raw input as an explicit gap.
 func unknownItem(rawBytes []byte) CanonicalItem {
 	return CanonicalItem{Kind: CanonicalKindUnknown, LogicalBytes: int64(len(rawBytes))}
+}
+
+// tailGapItem collapses an over-limit item tail (beyond maxNormalizedItems)
+// into one explicit gap marker: LogicalBytes covers the whole dropped tail and
+// the digest authenticates the dropped tail as a whole. The gap marker is
+// built at cap time, so the tail is never expanded item by item.
+func tailGapItem(tail any, opts NormalizeOptions) CanonicalItem {
+	rawBytes, err := common.Marshal(tail)
+	if err != nil {
+		return CanonicalItem{Kind: CanonicalKindGap, Truncated: true}
+	}
+	return withHmac(CanonicalItem{Kind: CanonicalKindGap, LogicalBytes: int64(len(rawBytes)), Truncated: true}, opts)
 }
 
 // hmacDigest returns the hex keyed digest of raw; an absent key yields the
