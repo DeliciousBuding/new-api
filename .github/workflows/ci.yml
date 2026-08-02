@@ -18,7 +18,7 @@ concurrency:
 jobs:
   backend:
     name: Backend vet, build, and test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, sgp2]
     timeout-minutes: 15
     env:
       GOWORK: 'off'
@@ -59,7 +59,7 @@ jobs:
 
   frontend:
     name: Frontend typecheck, test, and build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, sgp2]
     timeout-minutes: 10
     defaults:
       run:
