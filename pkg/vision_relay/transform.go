@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -223,7 +224,7 @@ func replacementBlock(body []byte, path, desc string) ([]byte, error) {
 	}
 	var buf bytes.Buffer
 	buf.WriteString(`{"type":"text","text":`)
-	descJSON, err := json.Marshal(desc)
+	descJSON, err := common.Marshal(desc)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +235,7 @@ func replacementBlock(body []byte, path, desc string) ([]byte, error) {
 		case "type", "text", "source", "image_url", "detail":
 			return true // 被替换/删除的字段
 		}
-		keyJSON, err := json.Marshal(k)
+		keyJSON, err := common.Marshal(k)
 		if err != nil {
 			return false
 		}

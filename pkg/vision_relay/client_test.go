@@ -37,6 +37,11 @@ func testPatchedImage() *PatchedImage {
 	}
 }
 
+// testImageData 测试用 PNG 数据（DescribeOne 直接收压缩后数据）
+func testImageData() []byte {
+	return testPatchedImage().Data
+}
+
 // 成功：断言递归保护头 + image_url data URL + 结果解析（验收 13 部分）
 func TestDescribeOneSuccess(t *testing.T) {
 	var calls int32
@@ -70,7 +75,7 @@ func TestDescribeOneSuccess(t *testing.T) {
 	}))
 	defer ts.Close()
 	client := &VisionClient{HTTPClient: ts.Client()}
-	desc, enum, model := client.DescribeOne(context.Background(), "指令", testPatchedImage(), testConfig(ts.URL))
+	desc, enum, model := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
 	if enum != "" || desc != "这是图片描述" || model != "vision-model-a" {
 		t.Fatalf("unexpected: desc=%q enum=%q model=%s", desc, enum, model)
 	}
@@ -105,7 +110,7 @@ func TestDescribeOneErrorMatrix(t *testing.T) {
 			}))
 			defer ts.Close()
 			client := &VisionClient{HTTPClient: ts.Client()}
-			_, enum, _ := client.DescribeOne(context.Background(), "指令", testPatchedImage(), testConfig(ts.URL))
+			_, enum, _ := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
 			if enum != tc.wantEnum {
 				t.Fatalf("expected enum %s, got %s", tc.wantEnum, enum)
 			}
@@ -116,12 +121,12 @@ func TestDescribeOneErrorMatrix(t *testing.T) {
 	}
 }
 
-// 瞬时错误重试 1 次仍失败 → fallback 切下一模型成功
+// provider 瞬时错误（503）不重试 → fallback 切下一模型成功（v0.2.2 语义）
 func TestDescribeOneFallback(t *testing.T) {
 	var calls int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := atomic.AddInt32(&calls, 1)
-		if n <= 2 {
+		if n == 1 {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			w.Write([]byte(`{"error":{"message":"no channel"}}`))
 			return
@@ -130,13 +135,41 @@ func TestDescribeOneFallback(t *testing.T) {
 	}))
 	defer ts.Close()
 	client := &VisionClient{HTTPClient: ts.Client()}
-	desc, enum, model := client.DescribeOne(context.Background(), "指令", testPatchedImage(), testConfig(ts.URL))
+	desc, enum, model := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
 	if enum != "" || desc != "fallback 成功" || model != "vision-model-b" {
 		t.Fatalf("unexpected: desc=%q enum=%q model=%s", desc, enum, model)
 	}
-	// model-a 重试 1 次（2 次调用）失败 + model-b 成功 = 3 次
-	if atomic.LoadInt32(&calls) != 3 {
-		t.Fatalf("expected 3 calls (retry + fallback), got %d", calls)
+	// 503 不重试：model-a 1 次 + model-b 1 次 = 2 次
+	if atomic.LoadInt32(&calls) != 2 {
+		t.Fatalf("expected 2 calls (no retry, direct fallback), got %d", calls)
+	}
+}
+
+// 传输错误（连接断开）→ 同模型重试 1 次（v0.2.2：仅传输层错误重试）
+func TestDescribeOneTransportRetry(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&calls, 1)
+		if n == 1 {
+			// 模拟传输层失败：Hijack 后直接断开连接
+			hj, ok := w.(http.Hijacker)
+			if ok {
+				conn, _, _ := hj.Hijack()
+				_ = conn.Close()
+				return
+			}
+		}
+		w.Write([]byte(`{"choices":[{"message":{"content":"重试成功"}}]}`))
+	}))
+	defer ts.Close()
+	client := &VisionClient{HTTPClient: ts.Client()}
+	desc, enum, model := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
+	if enum != "" || desc != "重试成功" || model != "vision-model-a" {
+		t.Fatalf("unexpected: desc=%q enum=%q model=%s", desc, enum, model)
+	}
+	// 同模型重试 1 次 = 2 次调用
+	if atomic.LoadInt32(&calls) != 2 {
+		t.Fatalf("expected 2 calls (transport retry), got %d", calls)
 	}
 }
 
@@ -153,7 +186,7 @@ func TestDescribeOneEmptyResponse(t *testing.T) {
 	}))
 	defer ts.Close()
 	client := &VisionClient{HTTPClient: ts.Client()}
-	desc, enum, _ := client.DescribeOne(context.Background(), "指令", testPatchedImage(), testConfig(ts.URL))
+	desc, enum, _ := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
 	if enum != "" || desc != "第二次成功" {
 		t.Fatalf("unexpected: desc=%q enum=%q", desc, enum)
 	}
@@ -169,7 +202,7 @@ func TestDescribeOneCancel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, enum, _ := client.DescribeOne(ctx, "指令", testPatchedImage(), testConfig(ts.URL))
+	_, enum, _ := client.DescribeOne(ctx, "指令", testImageData(), "image/png", testConfig(ts.URL))
 	if enum == "" {
 		t.Fatal("cancel should yield failure enum")
 	}
@@ -202,8 +235,12 @@ func TestEngineEnhanceDedup(t *testing.T) {
 	if stats.Total != 2 {
 		t.Fatalf("expected 2 images, got %d", stats.Total)
 	}
-	if stats.Success != 1 {
-		t.Fatalf("expected 1 success (dedup), got %d", stats.Success)
+	if stats.Success != 2 {
+		t.Fatalf("expected 2 success blocks (dedup: 2 blocks, 1 vision call), got %d", stats.Success)
+	}
+	if stats.UniqueImages != 1 || stats.CacheHits != 1 || stats.VisionCalls != 1 {
+		t.Fatalf("expected unique=1 cache_hits=1 vision_calls=1, got unique=%d cache_hits=%d calls=%d",
+			stats.UniqueImages, stats.CacheHits, stats.VisionCalls)
 	}
 	if atomic.LoadInt32(&calls) != 1 {
 		t.Fatalf("vision endpoint should be called once, got %d", calls)
@@ -259,8 +296,12 @@ func TestEngineEnhanceImageLimitPlaceholder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enhance: %v", err)
 	}
-	if stats.Omitted != 2 {
-		t.Fatalf("expected 2 omitted, got %d", stats.Omitted)
+	// 第 7、8 张直接 image_limit 占位（不下载不解码不识别）
+	if stats.Failed != 2 {
+		t.Fatalf("expected 2 failed (image_limit), got %d", stats.Failed)
+	}
+	if stats.UniqueImages != 6 {
+		t.Fatalf("expected 6 unique images processed, got %d", stats.UniqueImages)
 	}
 	out := string(enhanced)
 	if strings.Contains(out, `"type":"image"`) {

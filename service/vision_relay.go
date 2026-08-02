@@ -2,10 +2,11 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -24,47 +25,61 @@ const relayRequestHeader = "X-NewAPI-Vision-Relay"
 
 // visionRelayFetcher ImageFetcher 的 NewAPI 适配：SSRF 保护客户端 + 有限流下载。
 // 纯核心包不感知 SSRF 客户端/下载策略（v0.2.1 边界）。
+// SSRF 保护客户端不可用时**返回错误**（该图 service_unavailable 占位），
+// 绝不 fallback 到无保护的 http.DefaultClient（v0.2.2 安全修复）。
 type visionRelayFetcher struct{}
 
 func (visionRelayFetcher) Fetch(ctx context.Context, url string, maxBytes int64) ([]byte, string, error) {
 	client := GetSSRFProtectedHTTPClient()
 	if client == nil {
-		client = http.DefaultClient // 防御：测试环境/未初始化时兜底
+		return nil, "", fmt.Errorf("%w: protected HTTP client unavailable", vision_relay.ErrDownload)
 	}
 	return vision_relay.LimitedFetch(ctx, client, url, maxBytes)
 }
 
 // PrepareVisionRelayRequest 预扣费成功后、retry 循环前调用（controller 唯一钩子）。
 //
-// 职责（v0.2.1 service 边界）：
+// 职责（v0.2.1 service 边界 + v0.2.2 修复）：
 //  1. 检查递归头
-//  2. 获取配置 snapshot（不可变）
-//  3. 检查 enabled + target model（OriginModelName，映射前）
-//  4. 从 BodyStorage 读取原始 body
-//  5. 调 pkg/vision_relay.Engine.Enhance
-//  6. 验证增强 body 能反序列化为对应 DTO
-//  7. 创建新 BodyStorage
-//  8. 最后一次性原子提交：relayInfo.Request / Gin BodyStorage / Request.Body / ContentLength
-//  9. 关闭旧 BodyStorage（防 fd/临时文件泄漏）
-//  10. 记录 Stats
+//  2. 获取配置快照（OptionMap 同步读取，不可变）
+//  3. 检查 enabled + target model（OriginModelName，映射前）——未命中 → no-op
+//  4. **命中后**校验端点配置（ValidateEndpoint）——失败 = 5xx，绝不 fail-open
+//  5. 从 BodyStorage 读取原始 body
+//  6. 创建请求级总 deadline（TimeoutSec 全局预算，核心全部继承）
+//  7. 调 pkg/vision_relay.Engine.Enhance
+//  8. 验证增强 body 能反序列化为对应 DTO
+//  9. 创建新 BodyStorage
+//  10. 最后一次性原子提交：relayInfo.Request / Gin BodyStorage / Request.Body / ContentLength
+//  11. 关闭旧 BodyStorage（防 fd/临时文件泄漏）
+//  12. 记录 Stats
 //
-// 返回 *types.NewAPIError：nil = 继续原链路；非 nil = 增强基础设施错误（5xx，
-// 绝不 fail-open 发原图）。图片级错误全部内部占位。
+// 允许 no-op：enabled=false / target_models 空 / 模型未命中 / 协议不支持 /
+// 请求无图片 / 递归保护头。以下必须 5xx：命中后端点配置非法、内部 JSON 变换失败、
+// 新 BodyStorage 创建失败、增强 DTO 验证失败。
 func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo) *types.NewAPIError {
 	// 1. 递归保护：旁路请求直接跳过
 	if c.GetHeader(relayRequestHeader) == "1" {
 		return nil
 	}
-	// 2. 配置快照（请求全程使用不可变副本）
-	cfg := model_setting.GetVisionRelaySnapshot()
-	// 配置非法 → 策略不生效，原请求透传（fail-safe，不阻塞主链路）
-	if err := cfg.Validate(); err != nil {
-		logger.LogWarn(c, fmt.Sprintf("vision relay config invalid, relay disabled: %v", err))
+	// 2. 配置快照（OptionMap 同步读取）
+	cfg, err := model_setting.GetVisionRelaySnapshot()
+	if err != nil {
+		return visionRelayInfraError(fmt.Errorf("vision relay snapshot: %w", err))
+	}
+	// 3. 策略：allowlist 命中才处理（未启用/未命中 → no-op）
+	if !cfg.Enabled {
 		return nil
 	}
-	// 3. 策略：allowlist 命中才处理
-	if !visionRelayTargetMatched(relayInfo.OriginModelName, cfg) {
+	patterns, err := cfg.TargetModelPatterns()
+	if err != nil {
+		return visionRelayInfraError(fmt.Errorf("vision relay target models: %w", err))
+	}
+	if !visionRelayMatchPatterns(patterns, relayInfo.OriginModelName) {
 		return nil
+	}
+	// 4. 命中模型后校验端点配置（v0.2.2：配置损坏不再 fail-open 发原图）
+	if err := cfg.ValidateEndpoint(); err != nil {
+		return visionRelayInfraError(fmt.Errorf("vision relay endpoint config: %w", err))
 	}
 	// 格式判定（Claude/OpenAI；未知格式不处理）
 	format, ok := visionRelayFormat(relayInfo.RelayFormat)
@@ -72,7 +87,7 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 		return nil
 	}
 
-	// 4. 只读原始 body
+	// 5. 只读原始 body
 	originalStorage, err := common.GetBodyStorage(c)
 	if err != nil {
 		return visionRelayInfraError(fmt.Errorf("get body storage: %w", err))
@@ -85,9 +100,15 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 		return visionRelayInfraError(fmt.Errorf("read body: %w", err))
 	}
 
-	// 5. 核心引擎增强（图片级错误内部占位；返回 error = 基础设施错误）
+	// 6. 请求级总 deadline（v0.2.2：单请求全局预算，非每图各自 15s）
+	enhanceCtx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(cfg.TimeoutSec)*time.Second)
+	defer cancel()
+
+	// 7. 核心引擎增强（图片级错误内部占位；返回 error = 基础设施错误）
 	engine := &vision_relay.Engine{
-		Client:  &vision_relay.VisionClient{},
+		Client: &vision_relay.VisionClient{
+			HTTPClient: GetHttpClient(), // 显式注入（继承 NewAPI 连接池/TLS 配置）
+		},
 		Fetcher: visionRelayFetcher{},
 	}
 	coreCfg := vision_relay.Config{
@@ -100,7 +121,7 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 		TimeoutSec:   cfg.TimeoutSec,
 	}
 	var stats vision_relay.Stats
-	enhanced, err := engine.Enhance(c.Request.Context(), rawBody, format, coreCfg, &stats)
+	enhanced, err := engine.Enhance(enhanceCtx, rawBody, format, coreCfg, &stats)
 	if err != nil {
 		return visionRelayInfraError(err)
 	}
@@ -108,46 +129,43 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 		return nil // 真 no-op：无图，原始状态完全不动
 	}
 
-	// 6. 先验证增强 JSON 能反序列化为正确请求 DTO（提交前验证，防半提交）
+	// 8. 先验证增强 JSON 能反序列化为正确请求 DTO（提交前验证，防半提交）
 	enhancedRequest, err := visionRelayDecodeRequest(enhanced, relayInfo.Request)
 	if err != nil {
 		return visionRelayInfraError(fmt.Errorf("decode enhanced request: %w", err))
 	}
 
-	// 7. 创建新存储
+	// 9. 创建新存储
 	newStorage, err := common.CreateBodyStorage(enhanced)
 	if err != nil {
 		return visionRelayInfraError(fmt.Errorf("create enhanced body storage: %w", err))
 	}
 
-	// 8. 原子提交（最后一步才动共享状态）
+	// 10. 原子提交（最后一步才动共享状态）
 	relayInfo.Request = enhancedRequest
 	c.Set(common.KeyBodyStorage, newStorage)
 	c.Set(common.KeyRequestBody, nil)
 	c.Request.Body = io.NopCloser(newStorage)
 	c.Request.ContentLength = int64(len(enhanced))
 
-	// 9. 提交成功后关闭旧存储
+	// 11. 提交成功后关闭旧存储
 	if originalStorage != nil && originalStorage != newStorage {
 		_ = originalStorage.Close()
 	}
 
-	// 10. 结构化统计日志（A12）
+	// 12. 结构化统计日志（A12）
 	logger.LogInfo(c, fmt.Sprintf(
-		"vision: target_model=%s images_total=%d images_success=%d images_failed=%d images_omitted=%d elapsed_ms=%d models_used=%s fallback_count=%d description_bytes=%d",
-		relayInfo.OriginModelName, stats.Total, stats.Success, stats.Failed, stats.Omitted,
-		stats.ElapsedMs, stats.ModelsUsed, stats.FallbackCount, stats.DescriptionBytes))
+		"vision: target_model=%s images_total=%d images_success=%d images_failed=%d unique=%d cache_hits=%d vision_calls=%d fallback_count=%d elapsed_ms=%d models_used=%s description_bytes=%d",
+		relayInfo.OriginModelName, stats.Total, stats.Success, stats.Failed, stats.UniqueImages,
+		stats.CacheHits, stats.VisionCalls, stats.FallbackCount, stats.ElapsedMs,
+		stats.ModelsUsed, stats.DescriptionBytes))
 	return nil
 }
 
-// visionRelayTargetMatched allowlist 匹配（glob，OriginModelName 映射前）
-func visionRelayTargetMatched(model string, cfg model_setting.VisionRelaySnapshot) bool {
-	if !cfg.Enabled || model == "" {
+// visionRelayMatchPatterns 编译好的 allowlist 匹配
+func visionRelayMatchPatterns(patterns []*regexp.Regexp, model string) bool {
+	if model == "" {
 		return false
-	}
-	patterns, err := cfg.TargetModelPatterns()
-	if err != nil {
-		return false // 配置非法 → 不命中（策略不生效，原请求透传）
 	}
 	for _, re := range patterns {
 		if re.MatchString(model) {
@@ -173,13 +191,13 @@ func visionRelayDecodeRequest(enhanced []byte, original dto.Request) (dto.Reques
 	switch original.(type) {
 	case *dto.ClaudeRequest:
 		var req dto.ClaudeRequest
-		if err := json.Unmarshal(enhanced, &req); err != nil {
+		if err := common.Unmarshal(enhanced, &req); err != nil {
 			return nil, err
 		}
 		return &req, nil
 	case *dto.GeneralOpenAIRequest:
 		var req dto.GeneralOpenAIRequest
-		if err := json.Unmarshal(enhanced, &req); err != nil {
+		if err := common.Unmarshal(enhanced, &req); err != nil {
 			return nil, err
 		}
 		return &req, nil

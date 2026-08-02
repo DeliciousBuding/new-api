@@ -2,14 +2,16 @@ package vision_relay
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 	"unicode/utf8"
 )
 
 // 进程级并发闸（门槛四）：容量固定为常量（v0.2.1——不热调整）。
-// 解码/压缩与旁路调用分槽（GlobalDecodeSlots / GlobalCallSlots），
-// 图像处理内存峰值可控。
+// 解码/压缩（内存大户）与旁路调用（网络）分闸：decode gate 容量 2，
+// call gate 容量 8——图像处理内存峰值可控（v0.2.2 修复：CompressForVision
+// 的 image.Decode/resize/JPEG encode 必须真正在 decode gate 内执行）。
 type processGate struct {
 	ch chan struct{}
 }
@@ -40,17 +42,15 @@ type Engine struct {
 
 // Enhance 一次请求的完整增强（事务由调用方保证）：
 //
-//	Discover（协议路径扫描）→ Prepare（解码/下载/校验）→ digest 分组去重
-//	→ 有界并发识图（解码闸 + 调用闸）→ 描述截断 → Apply（sjson 局部替换）
+//	Discover（协议路径扫描）→ Prepare（MaxImages 前置 + 解码/下载/校验）
+//	→ digest 分组去重 → 有界并发（decode gate 内压缩 + call gate 内 HTTP）
+//	→ 严格截断 → Apply（sjson 局部替换）
 //
-// 返回增强 body。图片级错误全部内部占位；返回 error = 基础设施错误
-// （调用方应 5xx，绝不 fail-open 发原图）。
+// 请求级总 deadline 由调用方通过 ctx 传入（v0.2.2：fetch/decode/call/fallback
+// 全部继承同一 deadline）。返回增强 body（nil = 无图 no-op）。
+// 图片级错误全部内部占位；返回 error = 基础设施错误（调用方 5xx）。
 func (e *Engine) Enhance(ctx context.Context, raw []byte, format Format, cfg Config, stats *Stats) ([]byte, error) {
 	start := time.Now()
-	client := e.Client
-	if client == nil {
-		client = &VisionClient{}
-	}
 
 	// 1. 路径感知扫描
 	patches, err := Discover(raw, format)
@@ -62,32 +62,35 @@ func (e *Engine) Enhance(ctx context.Context, raw []byte, format Format, cfg Con
 		return nil, nil // 真 no-op：无图，原请求原样返回
 	}
 
-	// 2. prepare：base64 解码 / URL 有限流下载（解码闸内）+ 数量上限标记
-	images := make([]*PatchedImage, 0, len(patches))
+	// 2. prepare：**MaxImages 前置**（v0.2.2：第 MaxImages 张以后的图不下载、
+	//    不解码、不计算 digest——直接 image_limit 占位，限制前置网络与内存消耗）
+	images := make([]*PatchedImage, 0, min(len(patches), MaxImages))
 	for i := range patches {
+		if i >= MaxImages {
+			images = append(images, &PatchedImage{Patch: patches[i], Err: ErrImageLimit})
+			stats.Failed++
+			continue
+		}
 		gateCh, err := globalDecodeGate.acquire(ctx)
 		if err != nil {
+			// 闸等待被取消 → 保持无结果（Apply 按 service_unavailable 占位）
 			images = append(images, &PatchedImage{Patch: patches[i], Err: err})
+			stats.Failed++
 			continue
 		}
 		img := PrepareImage(ctx, patches[i], e.Fetcher, MaxDecodedBytes)
 		globalDecodeGate.release(gateCh)
 		images = append(images, img)
-	}
-	if len(images) > MaxImages {
-		for i := MaxImages; i < len(images); i++ {
-			if images[i].Err == nil {
-				images[i].Err = ErrImageLimit
-			}
+		if img.Err != nil {
+			stats.Failed++
 		}
-		stats.Omitted = len(images) - MaxImages
 	}
 
 	// 3. digest 预分组去重（门槛六）：每唯一 digest 一个识图任务
 	results := e.describeGrouped(ctx, images, cfg, stats)
 
-	// 4. 描述截断（P0-6：注入大小上限；保持非空）
-	truncateResults(results, stats)
+	// 4. 严格截断（v0.2.2：单图/总量预算含边界文本与尾标；按图片原始顺序）
+	truncateResults(images, results, stats)
 
 	// 5. sjson 局部替换（A4：所有 image 块 → text 块/占位，零残留）
 	enhanced, err := Apply(raw, images, results)
@@ -98,16 +101,22 @@ func (e *Engine) Enhance(ctx context.Context, raw []byte, format Format, cfg Con
 	return enhanced, nil
 }
 
-// describeGrouped digest 分组 + 有界并发识图（门槛六 + A8）
+// describeGrouped digest 分组 + 有界并发识图（门槛六 + A8 + v0.2.2 闸门拆分）。
+// 每组在 decode gate 内完成压缩（DecodeConfig/Decode/resize/JPEG——内存大户），
+// 然后在 call gate 内完成 HTTP 调用。
 func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cfg Config, stats *Stats) map[string]string {
 	// 分组：每唯一 digest 一个任务（含 Err 的图不参与识别）
 	groups := make(map[string][]*PatchedImage)
 	for _, img := range images {
 		if img.Err != nil || img.Digest == "" {
-			stats.Failed++
-			continue
+			continue // 已在 prepare 阶段计 Failed
 		}
 		groups[img.Digest] = append(groups[img.Digest], img)
+	}
+	stats.UniqueImages = len(groups)
+	stats.CacheHits = stats.Total - stats.UniqueImages - stats.Failed
+	if stats.CacheHits < 0 {
+		stats.CacheHits = 0
 	}
 	if len(groups) == 0 {
 		return map[string]string{}
@@ -123,31 +132,45 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 	var wg sync.WaitGroup
 	for digest, group := range groups {
 		if ctx.Err() != nil {
-			// 客户端断开 → 剩余图保持无结果 → 占位（验收 15）
-			continue
+			continue // 客户端断开 → 剩余图保持无结果 → 占位（验收 15）
 		}
 		sem <- struct{}{}
 		wg.Add(1)
 		go func(d string, g []*PatchedImage) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			// 调用闸：decode/resize/encode + 旁路调用全在闸内（门槛四）
-			callGateCh, err := globalCallGate.acquire(ctx)
+			// ① decode gate（2）：完整解码/降采样/JPEG 编码——内存峰值闸门
+			decodeGateCh, err := globalDecodeGate.acquire(ctx)
 			if err != nil {
-				return // 闸等待被取消 → 该图无结果 → 占位
+				return
 			}
-			defer globalCallGate.release(callGateCh)
-			desc, enum, model := client.DescribeOne(ctx, instruction, g[0], cfg)
+			compressed, mediaType, err := CompressForVision(g[0].Data, g[0].Patch.Source.MediaType)
+			globalDecodeGate.release(decodeGateCh)
+			enum := ""
+			if err != nil {
+				enum = enumFromErr(err)
+			}
+			// ② call gate（8）：HTTP 旁路调用
+			desc := ""
+			model := ""
+			if enum == "" {
+				callGateCh, err := globalCallGate.acquire(ctx)
+				if err == nil {
+					desc, enum, model = client.DescribeOne(ctx, instruction, compressed, mediaType, cfg)
+					globalCallGate.release(callGateCh)
+				}
+			}
 			mu.Lock()
 			defer mu.Unlock()
-			if enum == "" {
+			stats.VisionCalls++
+			if enum == "" && desc != "" {
 				results[d] = desc
-				stats.Success++
+				stats.Success += len(g) // 成功替换的图片块
 				if stats.ModelsUsed == "" {
 					stats.ModelsUsed = model
 				}
 			} else {
-				stats.Failed++
+				stats.Failed += len(g)
 				stats.FallbackCount++
 			}
 		}(digest, group)
@@ -156,35 +179,48 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 	return results
 }
 
-// truncateResults 描述注入上限（P0-6）：单图截断 + 总量截断；保持非空。
-func truncateResults(results map[string]string, stats *Stats) {
+// truncateResults 严格截断（v0.2.2）：
+// - 单图：预算 = MaxDescriptionBytes - len(TruncatedSuffix)，截断后加尾标，
+//   最终长度 ≤ MaxDescriptionBytes
+// - 总量：预算含 wrap 边界文本（prefix/suffix/换行）与占位文本，按图片
+//   原始顺序累计（确定性，非 map 随机序）
+func truncateResults(images []*PatchedImage, results map[string]string, stats *Stats) {
 	total := 0
-	for d, desc := range results {
+	for _, img := range images {
+		desc, ok := results[img.Digest]
+		if !ok {
+			// 占位文本（含边界），计入总量
+			total += len(placeholderUnavailable(img.Patch, enumFromErr(img.Err), len(images)))
+			continue
+		}
+		// wrap 后注入长度：prefix + \n + desc + \n + suffix
+		base := len(fmt.Sprintf(ResultPrefix, img.Patch.Index, len(images))) +
+			1 + len(ResultSuffix) + 1
+		budget := MaxTotalBytes - total - base
+		if budget < len(TruncatedSuffix)+16 {
+			// 总量已耗尽：最小化——只留最短占位（不可空）
+			results[img.Digest] = "[omitted]"
+			total += len("[omitted]") + base
+			continue
+		}
 		if len(desc) > MaxDescriptionBytes {
-			results[d] = truncateUTF8(desc, MaxDescriptionBytes) + "[truncated]"
+			desc = truncateUTF8(desc, MaxDescriptionBytes-len(TruncatedSuffix)) + TruncatedSuffix
+			results[img.Digest] = desc
 		}
-		total += len(results[d])
-	}
-	if total > MaxTotalBytes {
-		remaining := MaxTotalBytes
-		for d, desc := range results {
-			if remaining <= 0 {
-				results[d] = "[truncated]"
-				continue
-			}
-			if len(desc) > remaining {
-				results[d] = truncateUTF8(desc, remaining) + "[truncated]"
-				remaining = 0
-			} else {
-				remaining -= len(desc)
-			}
+		if len(desc) > budget {
+			desc = truncateUTF8(desc, budget-len(TruncatedSuffix)) + TruncatedSuffix
+			results[img.Digest] = desc
 		}
+		total += base + len(desc)
 	}
 	stats.DescriptionBytes = total
 }
 
 // truncateUTF8 按字节截断但保持 UTF-8 完整性
 func truncateUTF8(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
 	if len(s) <= maxBytes {
 		return s
 	}

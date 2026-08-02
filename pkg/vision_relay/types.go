@@ -21,16 +21,18 @@ type Config struct {
 // 安全限制常量（v0.2.1：不进 DB 配置面，先写死；有真实调优需求再升为
 // 启动时环境变量——尤其全局闸容量不适合热修改）。
 const (
-	MaxImages           = 6               // 单请求最多处理图片数
+	MaxImages           = 6               // 单请求最多处理图片数（fetch/decode 前生效）
 	MaxDecodedBytes     = 15 << 20        // 单图解码后字节上限（含远程下载限量）
 	MaxPixels           = 12_000_000      // 单图像素上限（宽*高，DecodeConfig 阶段校验）
 	MaxDimension        = 4096            // 单图边长上限
 	MaxDescriptionBytes = 8_000           // 单图描述注入上限
-	MaxTotalBytes       = 24_000          // 全部描述总注入上限
+	MaxTotalBytes       = 24_000          // 全部注入（含边界文本）总上限
 	RequestConcurrency  = 2               // 每请求图片并发度
 	GlobalDecodeSlots   = 2               // 进程级解码/压缩并发槽（内存闸门）
 	GlobalCallSlots     = 8               // 进程级旁路调用并发槽
 	DefaultMaxTokens    = 2000            // 视觉模型输出上限
+	MaxFallbackModels   = 3               // fallback 链最多尝试模型数（v0.2.2 硬限制）
+	TruncatedSuffix     = "[truncated]"   // 截断尾标（预算需预留其字节）
 )
 
 // 占位枚举（A9：占位文本只允许以下稳定枚举——不含 URL/key/模型名/provider 错误体）
@@ -70,16 +72,18 @@ type Result struct {
 	Model  string // 使用模型（成功时）
 }
 
-// Stats 结构化统计（A12）
+// Stats 结构化统计（v0.2.2 拆分：按图片块与唯一图片分别计数）
 type Stats struct {
-	Total           int
-	Success         int
-	Failed          int
-	Omitted         int
+	Total           int    // 图片块总数
+	Success         int    // 成功替换的图片块
+	Failed          int    // 占位图片块
+	UniqueImages    int    // 唯一 digest 数
+	CacheHits       int    // 有效重复块数（Total - UniqueImages）
+	VisionCalls     int    // 实际旁路调用次数
+	FallbackCount   int    // fallback 切换次数
 	ElapsedMs       int64
 	ModelsUsed      string
-	FallbackCount   int
-	DescriptionBytes int
+	DescriptionBytes int // 截断后实际注入字节
 }
 
 // ErrorKind 错误分类（service 层映射 NewAPI 语义）

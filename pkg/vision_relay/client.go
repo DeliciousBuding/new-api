@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 // 旁路错误哨兵（错误矩阵，门槛七）
@@ -18,6 +19,13 @@ var (
 	ErrBlocked = errors.New("vision provider content blocked")   // 451
 	ErrAuth    = errors.New("vision provider auth/config error") // 401/403 → 终止整条 fallback
 )
+
+// transportError 网络传输层错误（连接失败/超时）——唯一允许同模型重试的类型
+// （v0.2.2：429/5xx/空响应等 provider 瞬时错误不重试，直接换模型）。
+type transportError struct{ err error }
+
+func (e *transportError) Error() string { return e.err.Error() }
+func (e *transportError) Unwrap() error { return e.err }
 
 // 默认识图指令（保真基线，与 vision-bridge 同款防幻觉前缀）
 const defaultInstruction = "你是图片转述桥接器。你的输出会被原样注入给另一个看不到图片的文本模型，" +
@@ -72,20 +80,18 @@ type VisionClient struct {
 	HTTPClient *http.Client
 }
 
-// Call 单次旁路调用（一个模型一次尝试；传输错误预算内重试 1 次）。
-// 错误矩阵（门槛七）：
+// Call 单次旁路调用。错误矩阵（门槛七 + v0.2.2 语义）：
 //
+//	网络传输错误（transportError）：同模型重试 1 次（预算内）
+//	429 / 5xx / 空 choices / 空 content / 非 JSON：provider 瞬时错误 → 换下一模型（不重试）
 //	400 → ErrUnsupported（停止该图，不遍历其他模型）
 //	401/403 → ErrAuth（终止整条 fallback，防 key 错误打三模型）
 //	413 → ErrSizeLimit（不 fallback）
-//	429 → 瞬时错误（fallback 切下一模型；尊重 Retry-After 但不 sleep 突破总预算）
 //	451 → ErrBlocked（当前图停止）
-//	2xx 但 choices/content 为空 → 瞬时错误（允许换下一模型）
-//	其他 5xx/非 JSON 错误体 → 瞬时错误（截断仅内部记录，绝不进占位文本）
 func (c *VisionClient) Call(ctx context.Context, model, instruction string, data []byte, mediaType, baseURL, apiKey string, timeout time.Duration, maxTokens int) (string, error) {
 	maxTokensUint := uint(maxTokens)
 	payload := map[string]any{
-		"model":     model,
+		"model":      model,
 		"max_tokens": maxTokensUint,
 		"messages": []any{
 			map[string]any{
@@ -102,7 +108,7 @@ func (c *VisionClient) Call(ctx context.Context, model, instruction string, data
 			},
 		},
 	}
-	body, err := json.Marshal(payload)
+	body, err := common.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
@@ -111,9 +117,10 @@ func (c *VisionClient) Call(ctx context.Context, model, instruction string, data
 		client = http.DefaultClient
 	}
 	var text string
-	for attempt := 0; attempt <= 1; attempt++ { // 传输错误重试 ≤1（预算内）
+	for attempt := 0; attempt <= 1; attempt++ { // 仅传输错误重试 ≤1（预算内）
 		text, err = c.doRequest(ctx, client, model, baseURL, apiKey, body, timeout)
-		if err == nil || !isTransientError(err) {
+		var te *transportError
+		if err == nil || !errors.As(err, &te) {
 			break
 		}
 	}
@@ -134,14 +141,15 @@ func (c *VisionClient) doRequest(ctx context.Context, client *http.Client, model
 	req.Header.Set("X-NewAPI-Vision-Relay", "1")
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err // 传输错误（超时/连接失败）
+		// 网络传输错误（连接失败/超时）——同模型重试 1 次
+		return "", &transportError{err: err}
 	}
 	defer resp.Body.Close()
 	switch {
 	case resp.StatusCode == http.StatusOK:
 		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
 		if readErr != nil {
-			return "", readErr
+			return "", &transportError{err: readErr}
 		}
 		var result struct {
 			Choices []struct {
@@ -150,7 +158,7 @@ func (c *VisionClient) doRequest(ctx context.Context, client *http.Client, model
 				} `json:"message"`
 			} `json:"choices"`
 		}
-		if err := json.Unmarshal(respBody, &result); err != nil {
+		if err := common.Unmarshal(respBody, &result); err != nil {
 			return "", fmt.Errorf("invalid vision response: %v", err)
 		}
 		if len(result.Choices) == 0 {
@@ -168,6 +176,7 @@ func (c *VisionClient) doRequest(ctx context.Context, client *http.Client, model
 	case resp.StatusCode == http.StatusRequestEntityTooLarge:
 		return "", fmt.Errorf("%w: HTTP 413", ErrSizeLimit)
 	case resp.StatusCode == http.StatusTooManyRequests:
+		// 429：provider 瞬时错误 → 换下一模型（不重试；尊重 Retry-After 不 sleep 破预算）
 		return "", fmt.Errorf("vision rate limited (retry_after=%s)", resp.Header.Get("Retry-After"))
 	case resp.StatusCode == http.StatusUnavailableForLegalReasons:
 		return "", fmt.Errorf("%w: HTTP 451", ErrBlocked)
@@ -199,35 +208,30 @@ func contentString(content any) string {
 	return ""
 }
 
-// isTransientError 瞬时错误（可重试/换模型）；鉴权/格式/尺寸/审核错误除外
-func isTransientError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, ErrBlocked) || errors.Is(err, ErrAuth) ||
-		errors.Is(err, ErrSizeLimit) || errors.Is(err, ErrUnsupported) {
-		return false
-	}
-	return true
-}
-
-// DescribeOne 单图识图（调用方已在解码/调用并发闸内；压缩也在闸内执行）。
+// DescribeOne 单图旁路识图（调用方已在 decode gate 内完成压缩、call gate 内
+// 调用本函数——v0.2.2 闸门拆分）。fallback 链最多 MaxFallbackModels 个模型，
+// 总预算继承 ctx deadline（v0.2.2：请求级全局 deadline，非每图独立）。
 // 返回 (纯描述, 枚举, 使用模型)。枚举非空 = 失败（对应占位）。
-func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, img *PatchedImage, cfg Config) (string, string, string) {
-	data, mediaType, err := CompressForVision(img.Data, img.Patch.Source.MediaType)
-	if err != nil {
-		return "", enumFromErr(err), ""
-	}
+func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, data []byte, mediaType string, cfg Config) (string, string, string) {
 	models := make([]string, 0, len(cfg.Models))
 	for _, item := range cfg.Models {
 		if item = strings.TrimSpace(item); item != "" {
 			models = append(models, item)
 		}
+		if len(models) >= MaxFallbackModels {
+			break // v0.2.2：fallback 模型硬限制
+		}
 	}
 	if len(models) == 0 {
 		return "", EnumServiceUnavailable, ""
 	}
-	totalBudget := time.Duration(cfg.TimeoutSec) * time.Second
+	// 总预算：优先 ctx deadline（请求级全局），无 deadline 时退回 cfg.TimeoutSec
+	var totalBudget time.Duration
+	if deadline, ok := ctx.Deadline(); ok {
+		totalBudget = time.Until(deadline)
+	} else {
+		totalBudget = time.Duration(cfg.TimeoutSec) * time.Second
+	}
 	deadline := time.Now().Add(totalBudget)
 	for _, model := range models {
 		remaining := time.Until(deadline)
@@ -250,7 +254,7 @@ func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, img 
 		case errors.Is(err, ErrUnsupported):
 			return "", EnumUnsupportedFormat, model
 		default:
-			continue // 瞬时（超时/5xx/429/空响应）→ 换下一模型
+			continue // provider 瞬时（429/5xx/空响应）或传输重试后仍失败 → 换下一模型
 		}
 	}
 	return "", EnumServiceUnavailable, ""

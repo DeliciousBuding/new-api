@@ -3,9 +3,10 @@ package model_setting
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
-	"sync"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/config"
 )
 
@@ -38,38 +39,58 @@ var defaultVisionRelaySettings = VisionRelaySettings{
 	TimeoutSec:   15,
 }
 
-// 全局实例 + 快照读锁（配置由 ConfigManager 热更新，读侧拷贝防撕裂）
-var (
-	visionRelaySettings = defaultVisionRelaySettings
-	visionRelayMu       sync.RWMutex
-)
+// 全局实例（配置注册/默认导出对象；运行时快照从 OptionMap 读取，见
+// GetVisionRelaySnapshot——不直接读本变量，避免与 ConfigManager 反射写入竞态）
+var visionRelaySettings = defaultVisionRelaySettings
 
 func init() {
 	config.GlobalConfig.Register("vision_relay", &visionRelaySettings)
 }
 
-// GetVisionRelaySnapshot 返回不可变配置快照（审核 v0.2.1）：
-// 锁内复制 + 深拷贝 []string + Trim + 默认值填充。每个请求开始取一次，
-// 整个 Enhance 流程使用该副本，防热更新读到半套参数。
-func GetVisionRelaySnapshot() VisionRelaySnapshot {
-	visionRelayMu.RLock()
-	defer visionRelayMu.RUnlock()
-	cfg := visionRelaySettings
-	cfg.TargetModels = append([]string(nil), visionRelaySettings.TargetModels...)
-	cfg.Models = append([]string(nil), visionRelaySettings.Models...)
-	cfg.BaseURL = strings.TrimSpace(cfg.BaseURL)
-	cfg.APIKey = strings.TrimSpace(cfg.APIKey)
-	cfg.Prompt = strings.TrimSpace(cfg.Prompt)
-	if cfg.TimeoutSec <= 0 {
-		cfg.TimeoutSec = defaultVisionRelaySettings.TimeoutSec
+// GetVisionRelaySnapshot 从 common.OptionMap 读取运行时快照（v0.2.2 修复 data race）：
+// ConfigManager 通过反射直接修改已注册 struct，自研锁无法覆盖该写入路径；
+// 而 updateOptionMap 与读取方共用 OptionMapRWMutex——从 OptionMap 读取才是
+// 真正同步的。读取在锁内复制 string，解析在锁外。每个请求开始取一次，
+// 整个 Enhance 流程使用该副本（防热更新读到半套参数）。
+func GetVisionRelaySnapshot() (VisionRelaySnapshot, error) {
+	common.OptionMapRWMutex.RLock()
+	enabledRaw := common.OptionMap["vision_relay.enabled"]
+	targetsRaw := common.OptionMap["vision_relay.target_models"]
+	modelsRaw := common.OptionMap["vision_relay.models"]
+	baseURL := common.OptionMap["vision_relay.base_url"]
+	apiKey := common.OptionMap["vision_relay.api_key"]
+	prompt := common.OptionMap["vision_relay.prompt"]
+	timeoutRaw := common.OptionMap["vision_relay.timeout_sec"]
+	common.OptionMapRWMutex.RUnlock()
+
+	snap := defaultVisionRelaySettings
+	if enabledRaw != "" {
+		snap.Enabled = enabledRaw == "true"
 	}
-	if len(cfg.Models) == 0 {
-		cfg.Models = append([]string(nil), defaultVisionRelaySettings.Models...)
+	if targetsRaw != "" {
+		_ = common.UnmarshalJsonStr(targetsRaw, &snap.TargetModels)
 	}
-	if cfg.BaseURL == "" {
-		cfg.BaseURL = defaultVisionRelaySettings.BaseURL
+	if modelsRaw != "" {
+		_ = common.UnmarshalJsonStr(modelsRaw, &snap.Models)
 	}
-	return cfg
+	snap.BaseURL = strings.TrimSpace(baseURL)
+	if snap.BaseURL == "" {
+		snap.BaseURL = defaultVisionRelaySettings.BaseURL
+	}
+	snap.APIKey = strings.TrimSpace(apiKey)
+	snap.Prompt = strings.TrimSpace(prompt)
+	if timeoutRaw != "" {
+		if v, err := strconv.Atoi(timeoutRaw); err == nil && v > 0 {
+			snap.TimeoutSec = v
+		}
+	}
+	if snap.TimeoutSec <= 0 {
+		snap.TimeoutSec = defaultVisionRelaySettings.TimeoutSec
+	}
+	if len(snap.Models) == 0 {
+		snap.Models = append([]string(nil), defaultVisionRelaySettings.Models...)
+	}
+	return snap, nil
 }
 
 // globToRegexp 把模型 glob 模式转为正则：
@@ -135,9 +156,19 @@ func (v *VisionRelaySettings) TargetModelPatterns() ([]*regexp.Regexp, error) {
 	return patterns, nil
 }
 
-// Validate 校验最终生效配置（service 层每次请求开始时调用）：
-// 非法配置 → 记录并放行原请求（策略不生效，fail-safe 不阻塞主链路）。
+// Validate 校验完整配置（含端点必填项）——测试/工具用；Service 路径用
+// ValidateEndpoint（模型命中后才要求端点完整，v0.2.2 不再 fail-open）。
 func (v *VisionRelaySettings) Validate() error {
+	if err := v.ValidateEndpoint(); err != nil {
+		return err
+	}
+	_, err := v.TargetModelPatterns()
+	return err
+}
+
+// ValidateEndpoint 校验端点相关配置（enabled 且模型命中后调用）。
+// 失败 = 配置错误 → Service 返回 5xx（绝不把原图发给纯文本模型）。
+func (v *VisionRelaySettings) ValidateEndpoint() error {
 	if v.TimeoutSec <= 0 {
 		return fmt.Errorf("timeout_sec must be > 0, got %d", v.TimeoutSec)
 	}
@@ -155,9 +186,6 @@ func (v *VisionRelaySettings) Validate() error {
 		if len(v.Models) == 0 {
 			return fmt.Errorf("models must not be empty when enabled")
 		}
-	}
-	if _, err := v.TargetModelPatterns(); err != nil {
-		return err
 	}
 	return nil
 }

@@ -91,20 +91,28 @@ func TestVisionRelayTargetModelPatterns(t *testing.T) {
 	}
 }
 
-func TestGetVisionRelaySnapshotIsolation(t *testing.T) {
-	snap := GetVisionRelaySnapshot()
+func TestGetVisionRelaySnapshotDefaults(t *testing.T) {
+	// OptionMap 未初始化（nil map 读安全）→ 返回默认配置
+	snap, err := GetVisionRelaySnapshot()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if snap.Enabled {
+		t.Fatal("default should be disabled")
+	}
+	if len(snap.Models) == 0 || snap.Models[0] != "gemma-4-31b" {
+		t.Fatalf("default models chain expected, got %v", snap.Models)
+	}
+	if snap.TimeoutSec != 15 {
+		t.Fatalf("default timeout expected 15, got %d", snap.TimeoutSec)
+	}
+	if snap.BaseURL != "https://api.tokendancelab.com" {
+		t.Fatalf("default base url expected, got %q", snap.BaseURL)
+	}
+	// 快照是值对象：修改不影响下次读取
 	snap.Enabled = true
-	snap.TargetModels = append(snap.TargetModels, "mutated")
-	if GetVisionRelaySnapshot().Enabled {
-		t.Fatal("snapshot mutation leaked into global settings")
-	}
-	if len(GetVisionRelaySnapshot().TargetModels) != len(defaultVisionRelaySettings.TargetModels) {
-		t.Fatal("slice mutation leaked into global settings")
-	}
-	// 默认值填充：空 Models → 默认链
-	s := defaultVisionRelaySettings
-	s.Models = nil
-	if len(s.Models) != 0 {
-		t.Fatal("setup error")
+	snap2, _ := GetVisionRelaySnapshot()
+	if snap2.Enabled {
+		t.Fatal("snapshot mutation leaked")
 	}
 }
