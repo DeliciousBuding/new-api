@@ -89,7 +89,8 @@ func ObserveTurnAttemptBegin(c *gin.Context) {
 			common.SysError("relay observer: ObserveTurnAttemptBegin recovered from panic")
 		}
 	}()
-	if relayObserverSnapshot() == nil {
+	rt := relayObserverSnapshot()
+	if rt == nil || !rt.CanPublish() {
 		return
 	}
 	now := time.Now()
@@ -156,7 +157,8 @@ func ObserveTurnSettlement(c *gin.Context, info *relaycommon.RelayInfo, usage Tu
 			common.SysError("relay observer: ObserveTurnSettlement recovered from panic")
 		}
 	}()
-	if relayObserverSnapshot() == nil {
+	rt := relayObserverSnapshot()
+	if rt == nil || !rt.CanPublish() {
 		return
 	}
 	if st := turnObserverStateFrom(c); st != nil {
@@ -183,7 +185,8 @@ func ObserveTurnFailure(c *gin.Context, info *relaycommon.RelayInfo) {
 			common.SysError("relay observer: ObserveTurnFailure recovered from panic")
 		}
 	}()
-	if relayObserverSnapshot() == nil {
+	rt := relayObserverSnapshot()
+	if rt == nil || !rt.CanPublish() {
 		return
 	}
 	ev := buildTurnEvent(c, info, TurnUsage{}, false)
