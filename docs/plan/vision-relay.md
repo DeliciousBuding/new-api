@@ -617,7 +617,8 @@ ModelRatio                  = {"deepseek-v4-flash": 1.0, "gemma-4-31b": 1.0}（�
 | T4-S3 | provider 5xx | ✅ | base_url→mock500；620/620 ok；fallback_count=1（单模型链尝试后占位） |
 | T4-S4 | 15s 超时 | ✅ | base_url→mockhang（30s sleep）；155/155 ok；elapsed_ms 精确 15000-15001；vision_calls=2=超时后预算内 transport retry 被 ctx 拦截（设计内，P2-6 语义） |
 | T4-S5 | 6 图 + 并发 | ✅ | 70/70 ok；6 图全部占位时 vision_calls=6、fallback_count=6（HK3 上游 503 期间）；mock 正常路径 images_success=6、vision_calls=6、fallback_count=0 |
-| T5 | 长稳 30min | ⏳ 执行中 | mock 路径（绕开 HK3 上游）；全 200；RSS ~32MiB 稳定 |
+| T5 | 长稳 30min | ✅ | mock 路径（绕开 HK3 上游）；**109/109 全 200**；p50=1175ms max=1872ms；RSS 31.8→26.1MiB 波动**无单调增长**；无永久挂起；消费/配额线性无漂移；disabled 后即时零行为（vision 日志零新增） |
+| T6 | 8 项复验回归 | ✅ | Claude/OpenAI 带图注入、无图 no-op（vision 日志零新增）、伪造递归头不绕过（Enhance 照常）、重复请求同产物（description_bytes 一致）、malformed→500（"unexpected end of JSON input" 不 fail-open）、disabled 零行为、6图+401 sidecall 有界（S2/S5 复验） |
 
 ### 22.3 重要发现：HK3 Cerebras 渠道被压测打爆（2026-08-03 15:10）
 
