@@ -154,12 +154,18 @@ type GapInfo struct {
 
 `reason` 枚举：
 - `capture_budget` —— Observer 因预算省略（选择器主动裁）；
+- `capture_limit_too_small` —— 预算连最小 gap marker 都放不下（§5.1），items 为空，仅含 GapInfo 解释；
 - `source_compaction` —— 客户端压缩（compact 边界/窗口变化），只描述观察到的窗口变化或 summary，**不编造 omitted byte count**（LogicalBytes 可为 0 或省略）；
 - `source_tool_truncation` —— 客户端工具输出截断（codex truncate_middle 中段）；
 - `item_count_limit` —— 条目数上限（如未来引入时）；
 - `oversized_semantic_unit` —— 最新超大语义单元（§5）。
 
 约束：**不伪造客户端未提供的省略字节**。`source_truncated=true` 且客户端报告了 original token count 时才填 `logical_bytes`；否则只标注类型。
+
+**Gap marker 大小必须包含最终 HMAC**：marker 的 `TotalBytes` 计算必须对接入层真实的 withHmac 之后的最终序列化大小，而不是空 HMAC 占位符的 marker。写入时 actual 序列化比空 HMAC 多 64 字节 hex 开销（`hmac` 字段：64 hex chars + 2 引号 + 字段 key 开销 ≈ 72B），预算必须覆盖。具体实现：
+- `minGapMarkerSize` 按**含最终 HMAC** 的最小合法 marker 计算（不可用空 HMAC 短 marker 估算）；
+- 阶段三校验步骤（第 3.e 步）中 gap marker 的 `CanonicalBytes` 取 withHmac 后的真实值；
+- 若因 HMAC 开销导致 gap 超限，按 §5.1 处理（`capture_limit_too_small`）。
 
 ## 5. 最新超大语义单元处理
 
@@ -177,7 +183,17 @@ type GapInfo struct {
 
 **session/content 解耦合同继续生效**：即使 selector 零正文 item，会话仍被跟踪（身份解析与内容选择解耦，见 `reservation-budget-findings.md` §3.3 短路保护——gap 状态且 items 空时仍应尝试身份解析）。
 
-## 6. 七条硬不变量
+### 5.1 极限情况：预算连最小 gap marker 都放不下
+
+当 limit 小到连最小 gap marker（一空 JSON 对象 `{}` 加上固定字段 + HMAC 64 字节 hex，见 §4 C2）的真实序列化大小都容纳不了时，canonical items 输出为空，但必须遵守以下规则：
+
+- **`SelectionResult.Gap` 必须非 nil**，`reason=capture_limit_too_small`，标明"预算不足以容纳任何内容，包括 marker 自身"。这是结构化结果"无解释"的底线——消费者收到零 items 时仍能区分"请求无内容"与"预算过小导致丢弃"。
+- **session 由 P0-A 解耦正常追踪**：身份解析在内容选择之外独立路径运行（见不变量 6），不因零 items 跳过。
+- **turn 的 ContentStateGap 仍落库**：gap_count 递增、content 表写入 gap marker（即使 canonical items 为空，选择器仍产出 GapInfo 结构）。
+
+实现注意：`SelectEvidence` 的校验步骤（§3 阶段三第 3.e 步）在 `limit < minGapMarkerSize` 时直接返回零 items + `Gap{reason: capture_limit_too_small}`，不进入 anchor/tail 构造流程。
+
+## 6. 八条硬不变量
 
 1. **full-fit 优先**：`total <= limit` 时原样完整保留，零 gap。
 2. **tool 单元原子化**：call/result 同一选择单位，**按 ID 匹配（codex call_id / claude tool_use_id）不靠邻接**；孤儿 result 保留并标记，绝不拆对。
@@ -188,9 +204,15 @@ type GapInfo struct {
    4. agent 任务/计划状态。
    锚预算上限：首版 = capture limit 的固定比例（建议 ≤ 1/4），corpus benchmark 校准；"稳定少量 anchor" 而非"保全部头部"。
 4. **tail 从语义单元倒序选择**：以 unit 为粒度从尾部向前，直到预算耗尽。
-5. **gap 唯一且位置明确**：每个输出最多一个 gap，`Position`（head | middle | tail）确定；anchor 在头、最新证据在尾时 gap 落在中间区间。
+5. **gap 唯一且位置明确**：每个输出最多一个 gap，`Position`（head | middle | tail）确定；anchor 在头、最新证据在尾时 gap 落在中间区间。v1 禁止"anchor → gap → anchor → gap → tail"的多段结构（见不变量 8）。
 6. **session tracking 永远独立**：selector 零 items / 超大 unit / 协议不支持 / panic 均不影响身份绑定（session 解析在内容选择之外，独立路径保证）。
 7. **首版不改 schema**：输出普通 ordered canonical items（+ gap marker item），不做 prefix+suffix 双端 delta、不引入 schema v4、不新增 context 类型。**实现 PR 必须额外测 context storage amplification**——anchor + gap + tail 布局可能降低公共前缀命中（gap marker 内容随 omitted 变化，commonPrefix 在 marker 处断裂），须以 `suffix bytes / full bytes` 量化并记录基线。
+8. **v1 布局限制：连续 anchor prefix + 一个 middle gap + 连续 tail suffix，禁止中间 anchor islands**。具体：
+   - anchor 只能从**头部连续区域**选取：system/developer 指令（开头的若干条）、compact summary（位于窗口头部时）、agent 任务/计划（头部连续 context）。
+   - compact summary 只有位于窗口头部时才算 anchor（窗口重建后 compact_boundary 后的第一个语义单元），不在尾部/中部形成独立锚点。
+   - 最新用户指令由 tail 自然保留（尾部倒序选择已覆盖），不作为中间孤岛 anchor。
+   - 不允许"保留 anchor → gap → 保留 compact_summary → gap → tail"的多段结构。v1 输出始终为：`[anchor prefix] + [gap marker] + [tail suffix]`，其中 gap marker 最多一个，anchor prefix 和 tail suffix 各自连续。
+   - 此限制在未来版本（v2，AgentLoop 产品线中）可能放开，但 v1 需要确定性输出布局以简化消费者逻辑。
 
 ## 7. 锁顺序事实（T3，修正文档描述）
 
