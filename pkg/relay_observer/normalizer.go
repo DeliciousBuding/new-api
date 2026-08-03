@@ -69,15 +69,15 @@ const maxNormalizedItems = 2048
 // (RELAY_OBSERVER_MAX_CAPTURE_BYTES_PER_TURN) — decoupled from the queue
 // admission estimate, which only bounds queue memory (P0-B). MaxRequestBytes
 // is the global RELAY_OBSERVER_MAX_REQUEST_BYTES cap; the effective limit is
-// min(captureLimit, maxRequestBytes). MinCaptureEnvelopeBytes reserves the
-// worst-case gap marker inside the limit, so a truncated capture always
-// closes with an explicit marker. HMACKey is the observer key used for item
-// digests; it must never be written into canonical output.
+// min(captureLimit, maxRequestBytes). HMACKey is the observer key used for
+// item digests; it must never be written into canonical output. There is no
+// configurable gap-marker envelope: the marker is charged its exact
+// serialized size when truncation actually happens, and content that fits the
+// cap is never truncated (P0-B boundary contract).
 type NormalizeOptions struct {
-	CaptureLimit           int64
-	MaxRequestBytes        int64
-	MinCaptureEnvelopeBytes int64
-	HMACKey                string
+	CaptureLimit    int64
+	MaxRequestBytes int64
+	HMACKey         string
 }
 
 // NormalizeResult is the outcome of one normalization. ContentState reuses the
@@ -180,45 +180,62 @@ func NormalizeRequest(relayFormat string, req dto.Request, opts NormalizeOptions
 	return finishNormalize(items, hasGap, opts)
 }
 
+// measuredItem pairs one canonical item with the serialized payload size it
+// was charged. The full-fit check and the selection loop share one
+// marshaling pass per item, so no item is serialized twice (P0-B).
+type measuredItem struct {
+	item CanonicalItem
+	size int64
+}
+
 // finishNormalize applies the canonical byte cap and assembles the result.
-// The effective cap is min(captureLimit, maxRequestBytes). The selection
-// budget reserves the worst-case gap marker (MinCaptureEnvelopeBytes) inside
-// the cap, so an over-limit tail is always closed by an explicit gap marker
-// that stays structurally valid JSON — the marker is data, not silent loss,
-// and never competes with item selection for the last bytes.
+// The effective cap is min(captureLimit, maxRequestBytes). The full-fit check
+// runs first: content that fits the cap is kept whole, no matter how close it
+// sits to the boundary — the previous fixed-envelope reservation truncated
+// the (limit - envelope, limit] band that should have been kept (P0-B). Only
+// a capture that really exceeds the cap is truncated, and the truncation
+// closes with an explicit gap marker charged its exact serialized size: the
+// marker is data, not silent loss, and never competes with item selection for
+// the last bytes.
 func finishNormalize(items []CanonicalItem, protocolGap bool, opts NormalizeOptions) NormalizeResult {
 	limit := opts.CaptureLimit
 	if opts.MaxRequestBytes < limit {
 		limit = opts.MaxRequestBytes
 	}
-	envelope := opts.MinCaptureEnvelopeBytes
-	if envelope < 0 {
-		envelope = 0
-	}
-	if envelope > limit {
-		envelope = limit
-	}
-	selectionLimit := limit - envelope
-	res := NormalizeResult{ContentState: ContentStateFull}
+	measured := make([]measuredItem, 0, len(items))
 	var total int64
-	var i int
-	for ; i < len(items); i++ {
-		payload, err := common.Marshal(items[i])
+	for _, it := range items {
+		payload, err := common.Marshal(it)
 		if err != nil {
 			return NormalizeResult{ContentState: ContentStateMetadataOnly}
 		}
-		if total+int64(len(payload)) > selectionLimit {
-			break
-		}
-		res.Items = append(res.Items, items[i])
+		measured = append(measured, measuredItem{item: it, size: int64(len(payload))})
 		total += int64(len(payload))
 	}
-	if i < len(items) {
-		res.ContentState = ContentStateGap
-		res.OmittedItems = len(items) - i
+	res := NormalizeResult{ContentState: ContentStateFull}
+	if total <= limit {
+		res.Items = items
+		res.CanonicalBytes = total
+		if protocolGap {
+			res.ContentState = ContentStateGap
+		}
+		return res
+	}
+	res.ContentState = ContentStateGap
+	var selected int64
+	var i int
+	for ; i < len(measured); i++ {
+		if selected+measured[i].size > limit {
+			break
+		}
+		res.Items = append(res.Items, measured[i].item)
+		selected += measured[i].size
+	}
+	if i < len(measured) {
+		res.OmittedItems = len(measured) - i
 		var droppedLogical int64
-		for j := i; j < len(items); j++ {
-			droppedLogical += items[j].LogicalBytes
+		for j := i; j < len(measured); j++ {
+			droppedLogical += measured[j].item.LogicalBytes
 		}
 		// The marker's digest is its own content digest, never the digest of a
 		// dropped item: T2.3 dedups content objects on (session, digest), so a
@@ -231,15 +248,18 @@ func finishNormalize(items []CanonicalItem, protocolGap bool, opts NormalizeOpti
 			Truncated:    true,
 		}
 		gap.Hmac = withHmac(gap, opts).Hmac
-		if gapPayload, err := common.Marshal(gap); err == nil && total+int64(len(gapPayload)) <= limit {
+		// The marker is charged its exact serialized size against the
+		// remaining budget; only a capture whose limit is smaller than the
+		// marker itself closes without one.
+		if gapPayload, err := common.Marshal(gap); err == nil && selected+int64(len(gapPayload)) <= limit {
 			res.Items = append(res.Items, gap)
-			total += int64(len(gapPayload))
+			selected += int64(len(gapPayload))
 		}
 	}
+	res.CanonicalBytes = selected
 	if protocolGap {
 		res.ContentState = ContentStateGap
 	}
-	res.CanonicalBytes = total
 	return res
 }
 
