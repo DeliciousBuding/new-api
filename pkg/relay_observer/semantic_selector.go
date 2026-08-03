@@ -32,6 +32,7 @@ const (
 	GapReasonBudget        = "capture_budget"
 	GapReasonOversized     = "oversized_semantic_unit"
 	GapReasonLimitTooSmall = "capture_limit_too_small"
+	GapReasonItemCount     = "item_count_limit"
 )
 
 const (
@@ -117,7 +118,9 @@ type unitSpan struct {
 
 // SelectEvidence selects a deterministic canonical subsequence under policy.
 // Full-fit requests return the exact original item order. Truncated requests
-// retain whole safe-cut blocks and contain at most one structured gap marker.
+// retain whole safe-cut blocks and add at most one structured capture gap.
+// Existing source/item-count gap items are evidence in the input stream and
+// may coexist with that capture gap when they describe a different omission.
 func SelectEvidence(units []SemanticUnit, policy SelectionPolicy) (SelectionResult, error) {
 	var res SelectionResult
 	if len(units) == 0 {

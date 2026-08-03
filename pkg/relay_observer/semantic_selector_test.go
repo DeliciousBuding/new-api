@@ -81,6 +81,19 @@ func gapKindCount(items []CanonicalItem) int {
 	return n
 }
 
+func selectionGapCount(items []CanonicalItem, gap *GapInfo) int {
+	if gap == nil {
+		return 0
+	}
+	count := 0
+	for _, item := range items {
+		if item.Kind == CanonicalKindGap && item.Gap != nil && assert.ObjectsAreEqual(*item.Gap, *gap) {
+			count++
+		}
+	}
+	return count
+}
+
 func requireGapItem(t *testing.T, items []CanonicalItem) CanonicalItem {
 	t.Helper()
 	var gaps []CanonicalItem
@@ -101,7 +114,7 @@ func assertSelectionInvariants(t *testing.T, units []SemanticUnit, limit int64, 
 	assert.LessOrEqual(t, res.TotalBytes, limit, "byte budget must never be exceeded")
 	selected := 0
 	for _, it := range res.Items {
-		if it.Kind == CanonicalKindGap {
+		if res.Gap != nil && it.Kind == CanonicalKindGap && it.Gap != nil && assert.ObjectsAreEqual(*it.Gap, *res.Gap) {
 			continue
 		}
 		selected++
@@ -115,7 +128,7 @@ func assertSelectionInvariants(t *testing.T, units []SemanticUnit, limit int64, 
 			return
 		}
 		assert.Equal(t, unitTotal(units), res.TotalBytes, "full fit reports the exact full total")
-		assert.Equal(t, 0, gapKindCount(res.Items), "no gap marker without truncation")
+		assert.Equal(t, 0, selectionGapCount(res.Items, res.Gap), "full fit adds no capture gap marker")
 		assert.Equal(t, selected, countUnitItems(units), "full fit returns every item")
 	} else {
 		if res.Gap.Reason == GapReasonLimitTooSmall {
@@ -124,7 +137,7 @@ func assertSelectionInvariants(t *testing.T, units []SemanticUnit, limit int64, 
 			assert.Equal(t, countUnitItems(units), res.Gap.OmittedItems)
 			return
 		}
-		assert.Equal(t, 1, gapKindCount(res.Items), "truncation has exactly one gap marker")
+		assert.Equal(t, 1, selectionGapCount(res.Items, res.Gap), "truncation adds exactly one capture gap marker")
 		assert.Equal(t, selected, countUnitItems(units)-res.Gap.OmittedItems, "gap omitted_items must match the selection")
 	}
 	// Verify protocol order against the original global item indexes, not unit
@@ -135,15 +148,17 @@ func assertSelectionInvariants(t *testing.T, units []SemanticUnit, limit int64, 
 			input[itemIndex] = units[unitIndex].Items[localIndex]
 		}
 	}
-	assertSubsequence(t, input, res.Items)
+	assertSubsequence(t, input, res.Items, res.Gap)
 }
 
-// assertSubsequence verifies that got (minus gap markers) appears in want in order.
-func assertSubsequence(t *testing.T, want, got []CanonicalItem) {
+// assertSubsequence verifies that got, excluding only the capture marker added
+// by this selection, appears in want in order. Source gap items remain evidence
+// and therefore participate in the subsequence check.
+func assertSubsequence(t *testing.T, want, got []CanonicalItem, selectionGap *GapInfo) {
 	t.Helper()
 	j := 0
 	for _, item := range got {
-		if item.Kind == CanonicalKindGap {
+		if selectionGap != nil && item.Kind == CanonicalKindGap && item.Gap != nil && assert.ObjectsAreEqual(*item.Gap, *selectionGap) {
 			continue
 		}
 		found := false
@@ -494,6 +509,49 @@ func TestSelectCrossingToolSpansFormOneSafeBlock(t *testing.T) {
 	assert.Equal(t, 4, res.Gap.OmittedItems)
 	assert.Len(t, res.Items, 1)
 	assert.Equal(t, CanonicalKindGap, res.Items[0].Kind)
+	assertSelectionInvariants(t, units, limit, res, err)
+}
+
+func TestSelectPreservesSourceGapAlongsideCaptureGap(t *testing.T) {
+	old := mkMsg("user", strings.Repeat("old-", 1000), 4000)
+	latest := mkMsg("user", strings.Repeat("latest-", 80), 560)
+	sourceInfo := GapInfo{
+		Position:        GapPositionTail,
+		Reason:          GapReasonItemCount,
+		OmittedItems:    7,
+		LogicalBytes:    9000,
+		SourceTruncated: true,
+	}
+	sourceGap, err := testBuildGap(sourceInfo)
+	require.NoError(t, err)
+	items := []CanonicalItem{old, latest, sourceGap}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+
+	captureInfo := GapInfo{
+		Position:     GapPositionHead,
+		Reason:       GapReasonBudget,
+		OmittedItems: 1,
+		LogicalBytes: old.LogicalBytes,
+	}
+	captureGap, err := testBuildGap(captureInfo)
+	require.NoError(t, err)
+	latestBytes, err := canonicalBytesOf(latest)
+	require.NoError(t, err)
+	sourceGapBytes, err := canonicalBytesOf(sourceGap)
+	require.NoError(t, err)
+	captureGapBytes, err := canonicalBytesOf(captureGap)
+	require.NoError(t, err)
+	limit := latestBytes + sourceGapBytes + captureGapBytes
+	require.Less(t, limit, unitTotal(units))
+
+	res, err := SelectEvidence(units, testPolicy(limit))
+	require.NoError(t, err)
+	require.NotNil(t, res.Gap)
+	assert.Equal(t, captureInfo, *res.Gap)
+	assert.Equal(t, []CanonicalItem{captureGap, latest, sourceGap}, res.Items)
+	assert.Equal(t, 2, gapKindCount(res.Items), "independent capture and source omissions require two markers")
+	assert.Equal(t, 1, selectionGapCount(res.Items, res.Gap), "the selector still adds only one capture marker")
 	assertSelectionInvariants(t, units, limit, res, err)
 }
 

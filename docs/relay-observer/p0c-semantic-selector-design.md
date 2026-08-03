@@ -1,4 +1,4 @@
-# P0-C 设计：语义选择器（semantic selector）—— 稳定 anchor + 单个明确 gap + 最新完整语义单元
+# P0-C 设计：语义选择器（semantic selector）—— 稳定 anchor + 单个明确 capture gap + 最新完整语义单元
 
 日期：2026-08-03（外部审核裁决后修订；旧文件名 `p0c-tail-biased-selection-design.md`，已更名为本文档）
 状态：设计定稿（修订版），待实现
@@ -8,11 +8,12 @@
 
 ```
 完整请求能放下 → 原样完整保留（零 gap）
-完整请求放不下 → 稳定的少量 anchor + 单个明确 gap + 最新完整语义单元
+完整请求放不下 → 稳定的少量 anchor + 单个明确 capture gap + 最新完整语义单元
 ```
 
 - 完整放得下：不做任何选择，`total <= limit` 时零 gap、零省略。
-- 完整放不下：**头部少量稳定 anchor**（不依赖 items[0] 位置，见 §6 不变量 3）+ **单个 position 明确的 gap** + **尾部最新完整语义单元**（按语义单元倒序选择，tool 配对不可拆）。
+- 完整放不下：**头部少量稳定 anchor**（不依赖 items[0] 位置，见 §6 不变量 3）+ **单个 position 明确的 capture gap** + **尾部最新完整语义单元**（按语义单元倒序选择，tool 配对不可拆）。
+- “单个”约束只针对 selector 本次新增的 observer capture gap。输入 canonical 流中已存在的 `source_*` / `item_count_limit` gap 是原始证据，若描述另一段独立丢失，可与 capture gap 共存；强行合并会伪造位置，强行删除会丢证据。
 - "语义单元"定义：以证据语义（消息、工具交换、compact 摘要）为粒度的最小原子选择单位，见 §3 阶段二。
 
 ## 1. 五条研究结论修正（相对旧版 tail-biased 设计的表述）
@@ -216,14 +217,14 @@ type CanonicalItem struct {
    4. agent 任务/计划状态。
    锚预算上限：首版 = capture limit 的固定比例（建议 ≤ 1/4），corpus benchmark 校准；"稳定少量 anchor" 而非"保全部头部"。
 4. **tail 从安全切分块倒序选择**：普通相邻 unit 各自形成 block；非邻接、重叠或交错 tool span 先做闭包合并，避免在 call/result 之间产生不可表达的第二个物理缺口。最新 block 的优先级高于可选 anchor。
-5. **gap 唯一且位置明确**：每个输出最多一个 gap，`Position`（head | middle | tail）按原始 canonical item 区间确定；marker 回退后必须重新计算。anchor 在头、最新证据在尾时 gap 落在中间区间。v1 禁止"anchor → gap → anchor → gap → tail"的多段结构（见不变量 8）。
+5. **capture gap 唯一且位置明确**：每次 `SelectEvidence` 最多新增一个 observer capture gap，`Position`（head | middle | tail）按本次省略的原始 canonical item 区间确定；marker 回退后必须重新计算。输入中已有的 source/item-count gap 仍作为普通 ordered evidence 保留，因此多原因截断时输出可包含一个 capture marker 加已有 source marker。v1 仍禁止 selector 自己制造"anchor → capture gap → anchor → capture gap → tail"的多段结构（见不变量 8）。
 6. **session tracking 永远独立**：selector 零 items / 超大 unit / 协议不支持 / panic 均不影响身份绑定（session 解析在内容选择之外，独立路径保证）。
 7. **首版不改 schema**：输出普通 ordered canonical items（+ gap marker item），不做 prefix+suffix 双端 delta、不引入 schema v4、不新增 context 类型。**实现 PR 必须额外测 context storage amplification**——anchor + gap + tail 布局可能降低公共前缀命中（gap marker 内容随 omitted 变化，commonPrefix 在 marker 处断裂），须以 `suffix bytes / full bytes` 量化并记录基线。
-8. **v1 布局限制：连续 anchor prefix + 一个 middle gap + 连续 tail suffix，禁止中间 anchor islands**。具体：
+8. **v1 capture 布局限制：连续 anchor prefix + 一个 capture gap + 连续 tail suffix，禁止中间 anchor islands**。具体：
    - anchor 只能从**头部连续区域**选取：system/developer 指令（开头的若干条）、compact summary（位于窗口头部时）、agent 任务/计划（头部连续 context）。
    - compact summary 只有位于窗口头部时才算 anchor（窗口重建后 compact_boundary 后的第一个语义单元），不在尾部/中部形成独立锚点。
    - 最新用户指令由 tail 自然保留（尾部倒序选择已覆盖），不作为中间孤岛 anchor。
-   - 不允许"保留 anchor → gap → 保留 compact_summary → gap → tail"的多段结构。v1 输出始终为：`[anchor prefix] + [gap marker] + [tail suffix]`，其中 gap marker 最多一个，anchor prefix 和 tail suffix 各自连续。
+   - 不允许 selector 生成"保留 anchor → capture gap → 保留 compact_summary → capture gap → tail"的多段结构。v1 capture 布局始终为：`[anchor prefix] + [capture gap marker] + [tail suffix]`，其中 selector 新增的 capture marker 最多一个，anchor prefix 和 tail suffix 各自连续；tail suffix 内可包含输入已有的 source/item-count gap evidence。
    - 此限制在未来版本（v2，AgentLoop 产品线中）可能放开，但 v1 需要确定性输出布局以简化消费者逻辑。
 
 ## 7. 锁顺序事实（T3，修正文档描述）
