@@ -34,9 +34,9 @@ jobs:
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
-          cache-dependency-path: |
-            go.sum
-            relaykit/go.sum
+          # us1 keeps GOMODCACHE/GOCACHE in the runner's persistent _cache.
+          # Avoid a redundant multi-GB GitHub cache upload in the post step.
+          cache: false
 
       - name: Create frontend embed placeholder
         run: |
