@@ -241,7 +241,7 @@ session → content objects → head
 
 即 `insertContentObjectsTx` 在 `lockHeadTx` **之前**执行。retention 路径持有 `session → head`，从不持有 content 行锁的逆序。全系统不存在 `head → session` 或 `head → content` 反序路径，因此**不会产生之前担心的 session/head 死锁**——但注释与测试说明必须按此实际顺序书写。
 
-注意：`persistence.go:445` 注释仍写 "append always holds session → head → content"，与代码顺序不符（本 PR 纯文档，不动 .go）；**实现 PR 应顺带修正该注释及 retention 测试中的锁序说明**。
+实现 PR 已同步修正 `persistence.go` 的锁序注释为 `session → content → head`，与实际 append 路径和 retention 的 `session → head` 顺序一致。
 
 ## 8. 权衡与风险
 
@@ -276,8 +276,11 @@ go test -race ./pkg/relay_observer/ -run 'TestBuildUnits|TestSelect|TestGapMarke
 # 固定滑动回放 benchmark + context suffix/full 基线
 go test ./pkg/relay_observer/ -run '^$' -bench '^BenchmarkSemanticSelector$' -benchtime=200x -count=1
 
-# 集成（17B 接线后）：tail 截断 + 重建 + 配对标注 + 死链检查
-go test -tags relay_observer_pg_integration ./pkg/relay_observer/ -run TestIntegrationSemanticSelector -count=1
+# 接线层：真实 normalizer + crossing tool block + marker / item-count 边界
+go test ./pkg/relay_observer/ -run 'TestNormalizerTruncationBounds|TestNormalizerFullFitBypass|TestNormalizerSemanticToolBlockAtomicity|TestNormalizerItemCountAndCaptureGaps' -count=1
+
+# 真实 PG：dispatcher → normalizer → selector → content objects/context → reconstruct
+go test -tags relay_observer_pg_integration ./pkg/relay_observer/ -run '^(TestIntegrationContentPipeline|TestIntegrationSessionOnlyAppend)' -count=1
 ```
 
 **接受标准**：
@@ -286,9 +289,23 @@ go test -tags relay_observer_pg_integration ./pkg/relay_observer/ -run TestInteg
 - full-fit 与截断输出中的非 gap items 都是原始 canonical 流的严格子序列；
 - 重建无死链（配对被省略时整体省略，部分孤儿 result 的缺失 ID 明确记录）。
 
+### 9.1 17B 运行时接线边界
+
+17B 只替换 `finishNormalize` 的旧 head-first 裁剪器，不新增第二套 normalizer，也不改变 dispatcher/store 接口：
+
+1. 协议 normalizer 仍先生成完整 canonical items；
+2. `finishNormalize` 调用 `BuildSemanticUnits` 与 `SelectEvidence`；
+3. `GapBuilder` 复用现有 `withHmac`，selector 对最终 marker 自行 marshal 计量；
+4. `NormalizeResult` 映射 items/state/bytes/结构化 `GapInfo`/omitted/reason，不把 selector 内部 block 暴露给运行时；正常截断的 GapInfo 同时存在于 canonical marker，极小预算无法容纳 marker 时仍保留在即时返回值中；
+5. queue reservation 只负责原始请求入队字节，不再作为 canonical capture budget；运行时预算仍来自 `MaxCaptureBytesPerTurn` 与 `MaxRequestBytes`；
+6. 任意分组/选择错误继续 fail-open 为 `metadata_only`，不影响 relay 响应、计费或 session identity 路径；
+7. PostgreSQL schema、content/context 格式版本与 Store port 均不变，结构化 `GapInfo` 作为 canonical gap JSON 的可选字段持久化；若预算连 marker 都放不下，则只持久化 `ContentStateGap` 与空 items，完整 GapInfo 仅在本次 normalize 返回值中可见，这是“不破 schema + 严格字节上限”的明确极限取舍。
+8. `maxNormalizedItems` 产生的尾部省略升级为 `reason=item_count_limit` 的结构化 source marker，记录 tail position、omitted count、logical bytes 与最终 HMAC；若同一请求随后又触发 capture budget，可同时保留一个 item-count marker 和 selector 新增的一个 capture marker，两者描述不同区间，不得伪合并。
+
+接线后的 golden 明确从旧 `[old prefix, tail gap]` 变为 `[head/middle capture gap, latest suffix]`。测试不得再假设 gap 固定为最后一项或总数恒为一；消费者按 `kind=gap`、`GapInfo.Reason` 与 `GapInfo.Position` 区分 capture/source 多原因丢失。
+
 ## 10. 后续（不属本轮）
 
 - AgentLoop 产品线：window 分段、fork DAG、subagent 关系、`AgentLoopWindow` 模型；
 - output-side evidence 旁路（v2 评估）；
 - prefix+suffix 双端 delta（方案 B）；
-- `persistence.go:445` 锁序注释修正（随实现 PR）。

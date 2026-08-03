@@ -315,8 +315,7 @@ func TestIntegrationQueryTurnContext(t *testing.T) {
 // timeout classification instead of queueing.
 func TestIntegrationQuerySemaphore(t *testing.T) {
 	dsn := integrationDSN(t)
-	ensureV1(t, dsn)
-	store := openVerifyStore(t, dsn)
+	store := resetObserverSchema(t, dsn)
 	defer store.Close(context.Background())
 
 	qs, err := NewQueryStore(store)

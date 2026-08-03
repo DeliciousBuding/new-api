@@ -144,3 +144,32 @@ func TestBuildTurnEventAttachesRequestAndIdentity(t *testing.T) {
 	assert.Nil(t, ev.Request)
 	assert.Equal(t, relayobserver.ContentStateMetadataOnly, ev.ContentState)
 }
+
+// TestBuildTurnEventKeepsOriginalCaptureFormatAcrossConversion locks the
+// request/format pairing used by worker normalization. The persisted turn
+// keeps the final upstream format, while the zero-copy original Claude DTO is
+// normalized with its original client format.
+func TestBuildTurnEventKeepsOriginalCaptureFormatAcrossConversion(t *testing.T) {
+	SetRelayObserverRuntime(relayobserver.NewRuntime())
+	t.Cleanup(func() { SetRelayObserverRuntime(nil) })
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest("POST", "/v1/messages", nil)
+	req := dto.Request(&dto.ClaudeRequest{
+		Model:    "claude-test",
+		Messages: []dto.ClaudeMessage{{Role: "user", Content: "hello"}},
+	})
+	info := &relaycommon.RelayInfo{
+		RequestId:              "turn-claude-converted",
+		RelayFormat:            types.RelayFormatClaude,
+		RequestConversionChain: []types.RelayFormat{types.RelayFormatClaude, types.RelayFormatOpenAI},
+		ChannelMeta:            &relaycommon.ChannelMeta{ChannelId: 7},
+		Request:                req,
+	}
+
+	ev := buildTurnEvent(ctx, info, TurnUsage{}, true)
+	assert.Equal(t, string(types.RelayFormatOpenAI), ev.RelayFormat)
+	assert.Equal(t, string(types.RelayFormatClaude), ev.CaptureRelayFormat)
+	require.NotNil(t, ev.Request)
+	assert.Same(t, req, *ev.Request)
+}
