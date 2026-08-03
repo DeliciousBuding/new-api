@@ -3,6 +3,7 @@ package relayobserver
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -357,19 +358,24 @@ func TestNormalizerTruncationBounds(t *testing.T) {
 	require.Greater(t, int64(len(full.Items)), int64(1))
 
 	cases := []struct {
-		name      string
-		limit     int64
-		wantState string
-		wantCount int
-		wantGap   bool
+		name              string
+		limit             int64
+		wantState         string
+		wantCount         int
+		wantGap           bool
+		wantGapReason     string
+		wantMarkerOmitted bool
 	}{
 		{name: "exact_fit", limit: total, wantState: ContentStateFull, wantCount: len(full.Items), wantGap: false},
 		{name: "one_byte_short", limit: total - 1, wantState: ContentStateGap, wantCount: len(full.Items), wantGap: true},
-		// The first item alone fits; the second does not, so the tail is
-		// truncated even though no gap marker itself fits into the limit.
-		{name: "first_item_only", limit: int64(len(payloads[0])), wantState: ContentStateGap, wantCount: 1, wantGap: false},
+		// The first item alone fits and the second does not; the prefix then
+		// backtracks so the capture closes with the gap marker alone — the
+		// marker is data, not silent loss, and wins over the leading item.
+		{name: "first_item_only", limit: int64(len(payloads[0])), wantState: ContentStateGap, wantCount: 1, wantGap: true},
 		{name: "below_first_item", limit: int64(len(payloads[0])) - 1, wantState: ContentStateGap, wantCount: 1, wantGap: true},
-		{name: "zero_limit", limit: 0, wantState: ContentStateGap, wantCount: 0, wantGap: false},
+		// A limit that cannot hold even the marker alone degrades to an empty
+		// capture with the reason surfaced on the result.
+		{name: "zero_limit", limit: 0, wantState: ContentStateGap, wantCount: 0, wantGap: false, wantGapReason: GapReasonCaptureLimitTooSmall, wantMarkerOmitted: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -379,6 +385,13 @@ func TestNormalizerTruncationBounds(t *testing.T) {
 			res := NormalizeRequest(string(types.RelayFormatOpenAI), req, o)
 			assert.Equal(t, tc.wantState, res.ContentState)
 			assert.Equal(t, tc.wantCount, len(res.Items))
+			if tc.wantGapReason != "" {
+				assert.Equal(t, tc.wantGapReason, res.GapReason)
+				assert.True(t, res.MarkerOmitted)
+			} else {
+				assert.Empty(t, res.GapReason)
+				assert.False(t, res.MarkerOmitted)
+			}
 			if tc.wantGap {
 				require.NotEmpty(t, res.Items)
 				last := res.Items[len(res.Items)-1]
@@ -434,13 +447,14 @@ func TestNormalizerCanonicalLimitSources(t *testing.T) {
 	assert.Equal(t, byCaptureLimit.CanonicalBytes, byMaxRequestBytes.CanonicalBytes)
 }
 
-// TestNormalizerEnvelopeReservesGapMarker locks the P0-B envelope contract:
-// the selection budget reserves the worst-case gap marker inside the capture
-// limit. With an envelope, a truncating capture always closes with an
-// explicit gap marker; without one, the first item can consume the whole
-// budget and the marker silently disappears (the empty/gap-less failure mode
-// the envelope closes).
-func TestNormalizerEnvelopeReservesGapMarker(t *testing.T) {
+// TestNormalizerFullFitBypass locks the P0-B boundary contract: content that
+// fits the effective cap is kept whole, and the gap marker is charged its
+// exact serialized size only when truncation actually happens. The previous
+// fixed-envelope algorithm reserved a worst-case gap marker inside the limit
+// before selecting items, so a capture whose total canonical bytes sat in the
+// (limit - envelope, limit] band was truncated and replaced by a marker even
+// though it fit whole.
+func TestNormalizerFullFitBypass(t *testing.T) {
 	req := &dto.GeneralOpenAIRequest{
 		Model: "gpt-5",
 		Messages: []dto.Message{
@@ -448,45 +462,109 @@ func TestNormalizerEnvelopeReservesGapMarker(t *testing.T) {
 			{Role: "user", Content: "bravo"},
 		},
 	}
+	opts := NormalizeOptions{CaptureLimit: 1 << 20, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey}
 
-	// Calibrate the budget on the actual canonical sizes: a limit that fits
-	// the first item but not the item plus the gap marker.
-	probe := NormalizeRequest(string(types.RelayFormatOpenAI), req, NormalizeOptions{
-		CaptureLimit: 1 << 20, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey,
-	})
+	// Calibrate the actual canonical sizes: total is the full capture and
+	// first is the leading item alone.
+	probe := NormalizeRequest(string(types.RelayFormatOpenAI), req, opts)
 	require.Equal(t, ContentStateFull, probe.ContentState)
-	firstBytes := len(mustMarshalForTest(t, probe.Items[0]))
-	limit := int64(firstBytes) + 40 // item fits; item + marker (well over 40 B) does not
-
-	// With the envelope the item is not selected, and the marker always
-	// lands: the capture closes with data, not silent loss.
-	withEnvelope := NormalizeOptions{
-		CaptureLimit:            limit,
-		MaxRequestBytes:         1 << 20,
-		MinCaptureEnvelopeBytes: 256,
-		HMACKey:                 testHMACKey,
+	var total int64
+	for _, it := range probe.Items {
+		total += int64(len(mustMarshalForTest(t, it)))
 	}
-	res := NormalizeRequest(string(types.RelayFormatOpenAI), req, withEnvelope)
-	assert.Equal(t, ContentStateGap, res.ContentState)
-	require.NotEmpty(t, res.Items, "the gap marker must always be written when truncation happens")
-	last := res.Items[len(res.Items)-1]
-	assert.Equal(t, CanonicalKindGap, last.Kind)
-	assert.True(t, last.Truncated)
-	assert.Greater(t, last.LogicalBytes, int64(0))
-	assert.NotEmpty(t, last.Hmac)
+	first := int64(len(mustMarshalForTest(t, probe.Items[0])))
+	require.Less(t, first, total, "calibration: the leading item must not fit the whole capture alone")
 
-	// Without an envelope, the first item eats the whole budget and the
-	// marker does not fit: a truncation with no marker (silent loss).
-	noEnvelope := NormalizeOptions{
-		CaptureLimit:    limit,
-		MaxRequestBytes: 1 << 20,
-		HMACKey:         testHMACKey,
+	// The band the old envelope reserved: limits in [total, total+1024) fit
+	// whole and must be kept full — the old algorithm truncated these.
+	for _, limit := range []int64{total, total + 512} {
+		t.Run(fmt.Sprintf("band_limit_%d", limit), func(t *testing.T) {
+			o := opts
+			o.CaptureLimit = limit
+			o.MaxRequestBytes = limit
+			res := NormalizeRequest(string(types.RelayFormatOpenAI), req, o)
+			assert.Equal(t, ContentStateFull, res.ContentState)
+			assert.Equal(t, len(probe.Items), len(res.Items))
+			assert.Zero(t, res.OmittedItems)
+			assert.Equal(t, total, res.CanonicalBytes)
+		})
 	}
-	res2 := NormalizeRequest(string(types.RelayFormatOpenAI), req, noEnvelope)
-	assert.Equal(t, ContentStateGap, res2.ContentState)
-	require.NotEmpty(t, res2.Items, "the first item fits without an envelope")
-	last2 := res2.Items[len(res2.Items)-1]
-	assert.NotEqual(t, CanonicalKindGap, last2.Kind, "without an envelope the marker is not guaranteed")
+
+	// The marker is charged its exact serialized size: it lands whenever the
+	// budget after item selection holds it, never stealing bytes from
+	// selection in advance — and when the prefix would crowd it out, the
+	// prefix backtracks so the marker still lands. Calibrate the two marker
+	// payloads the normalizer can emit — one dropped item (the tail of a
+	// two-item capture) and the whole capture — with the same construction
+	// finishNormalize uses, so the limits below are exact.
+	droppedOne := probe.Items[1].LogicalBytes
+	droppedAll := probe.Items[0].LogicalBytes + probe.Items[1].LogicalBytes
+	gapOneSize := int64(len(mustMarshalForTest(t, withHmac(CanonicalItem{Kind: CanonicalKindGap, LogicalBytes: droppedOne, Truncated: true}, opts))))
+	gapAllSize := int64(len(mustMarshalForTest(t, withHmac(CanonicalItem{Kind: CanonicalKindGap, LogicalBytes: droppedAll, Truncated: true}, opts))))
+
+	markerCases := []struct {
+		name              string
+		limit             int64
+		wantItems         int
+		wantGap           bool
+		wantOmitted       int
+		wantMarkerBytes   int64
+		wantGapReason     string
+		wantMarkerOmitted bool
+	}{
+		// The earliest item plus the marker both fit: no backtracking.
+		{name: "first_plus_marker_exact", limit: first + gapOneSize, wantItems: 2, wantGap: true, wantOmitted: 1, wantMarkerBytes: droppedOne},
+		// One byte short of prefix-plus-marker: the leading item is dropped
+		// back into the omitted tail and the marker alone closes the capture
+		// — the marker is data, not silent loss, and wins over the last
+		// selected item.
+		{name: "first_plus_marker_one_short", limit: first + gapOneSize - 1, wantItems: 1, wantGap: true, wantOmitted: 2, wantMarkerBytes: droppedAll},
+		// A limit holding exactly the leading item cannot also hold the
+		// marker; backtracking prefers the marker over that item.
+		{name: "backtrack_to_marker_alone", limit: first, wantItems: 1, wantGap: true, wantOmitted: 2, wantMarkerBytes: droppedAll},
+		// Marker alone at its exact serialized size.
+		{name: "marker_alone_exact", limit: gapAllSize, wantItems: 1, wantGap: true, wantOmitted: 2, wantMarkerBytes: droppedAll},
+		// The limit cannot hold even the marker alone: the capture degrades
+		// with the reason surfaced instead of silently returning an empty
+		// capture.
+		{name: "marker_alone_one_short", limit: gapAllSize - 1, wantItems: 0, wantGap: false, wantOmitted: 2, wantGapReason: GapReasonCaptureLimitTooSmall, wantMarkerOmitted: true},
+		// Zero limit: the same out-of-band degenerate path with nothing to
+		// select at all.
+		{name: "backtrack_impossible", limit: 0, wantItems: 0, wantGap: false, wantOmitted: 2, wantGapReason: GapReasonCaptureLimitTooSmall, wantMarkerOmitted: true},
+	}
+	for _, tc := range markerCases {
+		t.Run(tc.name, func(t *testing.T) {
+			o := opts
+			o.CaptureLimit = tc.limit
+			o.MaxRequestBytes = tc.limit
+			res := NormalizeRequest(string(types.RelayFormatOpenAI), req, o)
+			assert.Equal(t, ContentStateGap, res.ContentState)
+			assert.Equal(t, tc.wantItems, len(res.Items))
+			assert.Equal(t, tc.wantOmitted, res.OmittedItems)
+			if tc.wantGapReason != "" {
+				assert.Equal(t, tc.wantGapReason, res.GapReason)
+				assert.True(t, res.MarkerOmitted)
+			} else {
+				assert.Empty(t, res.GapReason)
+				assert.False(t, res.MarkerOmitted)
+			}
+			if tc.wantGap {
+				require.NotEmpty(t, res.Items)
+				last := res.Items[len(res.Items)-1]
+				assert.Equal(t, CanonicalKindGap, last.Kind)
+				assert.True(t, last.Truncated)
+				assert.Equal(t, tc.wantMarkerBytes, last.LogicalBytes)
+				assert.NotEmpty(t, last.Hmac)
+				// The marker carries the exact dropped logical bytes of the
+				// tail: the capture stays reconstructible as data, not loss.
+				var sum int64
+				for _, it := range res.Items {
+					sum += int64(len(mustMarshalForTest(t, it)))
+				}
+				assert.LessOrEqual(t, sum, tc.limit)
+			}
+		})
+	}
 }
 
 // mustMarshalForTest marshals a canonical item for size calibration.

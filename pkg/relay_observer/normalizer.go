@@ -69,27 +69,47 @@ const maxNormalizedItems = 2048
 // (RELAY_OBSERVER_MAX_CAPTURE_BYTES_PER_TURN) — decoupled from the queue
 // admission estimate, which only bounds queue memory (P0-B). MaxRequestBytes
 // is the global RELAY_OBSERVER_MAX_REQUEST_BYTES cap; the effective limit is
-// min(captureLimit, maxRequestBytes). MinCaptureEnvelopeBytes reserves the
-// worst-case gap marker inside the limit, so a truncated capture always
-// closes with an explicit marker. HMACKey is the observer key used for item
-// digests; it must never be written into canonical output.
+// min(captureLimit, maxRequestBytes). HMACKey is the observer key used for
+// item digests; it must never be written into canonical output. There is no
+// configurable gap-marker envelope: the marker is charged its exact
+// serialized size when truncation actually happens, content that fits the
+// cap is never truncated (P0-B boundary contract), and a prefix that would
+// crowd the marker out backtracks so the marker still lands whenever the
+// limit can hold it.
 type NormalizeOptions struct {
-	CaptureLimit           int64
-	MaxRequestBytes        int64
-	MinCaptureEnvelopeBytes int64
-	HMACKey                string
+	CaptureLimit    int64
+	MaxRequestBytes int64
+	HMACKey         string
 }
 
 // NormalizeResult is the outcome of one normalization. ContentState reuses the
 // frozen Event content states: ContentStateFull, ContentStateGap (unknown
 // items or a truncated tail), or ContentStateMetadataOnly (fail-open: unknown
-// format, nil request, or panic).
+// format, nil request, or panic). GapReason and MarkerOmitted carry the
+// out-of-band degenerate case: a capture limit so small that not even the gap
+// marker fits leaves ContentStateGap set (identity tracking is unaffected)
+// while the reason is surfaced here instead of silently returning an empty
+// capture.
 type NormalizeResult struct {
 	Items          []CanonicalItem
 	ContentState   string
 	CanonicalBytes int64
 	OmittedItems   int
+	GapReason      string // "" | "budget_exceeded" | "capture_limit_too_small"
+	MarkerOmitted  bool   // true when the gap marker could not fit the limit
 }
+
+// GapReason values for NormalizeResult.GapReason.
+const (
+	// GapReasonCaptureLimitTooSmall marks an over-limit capture whose limit
+	// cannot hold even the gap marker alone: no items and no marker are
+	// emitted, and the reason is carried on the result instead of silently
+	// losing the tail. Set together with MarkerOmitted.
+	GapReasonCaptureLimitTooSmall = "capture_limit_too_small"
+	// GapReasonBudgetExceeded is reserved for the queue admission budget
+	// degradation path; the normalizer never sets it today.
+	GapReasonBudgetExceeded = "budget_exceeded"
+)
 
 // CanonicalItem is one ordered top-level message/item of a normalized request.
 // Hmac is the keyed digest of the item's content layer (all fields except the
@@ -180,46 +200,71 @@ func NormalizeRequest(relayFormat string, req dto.Request, opts NormalizeOptions
 	return finishNormalize(items, hasGap, opts)
 }
 
+// measuredItem pairs one canonical item with the serialized payload size it
+// was charged. The full-fit check and the selection loop share one
+// marshaling pass per item, so no item is serialized twice (P0-B).
+type measuredItem struct {
+	item CanonicalItem
+	size int64
+}
+
 // finishNormalize applies the canonical byte cap and assembles the result.
-// The effective cap is min(captureLimit, maxRequestBytes). The selection
-// budget reserves the worst-case gap marker (MinCaptureEnvelopeBytes) inside
-// the cap, so an over-limit tail is always closed by an explicit gap marker
-// that stays structurally valid JSON — the marker is data, not silent loss,
-// and never competes with item selection for the last bytes.
+// The effective cap is min(captureLimit, maxRequestBytes). The full-fit check
+// runs first: content that fits the cap is kept whole, no matter how close it
+// sits to the boundary — the previous fixed-envelope reservation truncated
+// the (limit - envelope, limit] band that should have been kept (P0-B). Only
+// a capture that really exceeds the cap is truncated, and the truncation
+// closes with an explicit gap marker charged its exact serialized size: the
+// marker is data, not silent loss. Selection is head-first: the earliest
+// items are kept first. If the marker cannot sit next to the greedily
+// selected prefix, the prefix backtracks — the most recently selected item is
+// dropped back into the omitted tail (the marker then covers a larger range
+// while the selected byte total shrinks by a whole item) — until the marker
+// fits or the prefix is empty. A capture whose limit cannot hold even the
+// marker alone degrades with the reason surfaced on the result.
 func finishNormalize(items []CanonicalItem, protocolGap bool, opts NormalizeOptions) NormalizeResult {
 	limit := opts.CaptureLimit
 	if opts.MaxRequestBytes < limit {
 		limit = opts.MaxRequestBytes
 	}
-	envelope := opts.MinCaptureEnvelopeBytes
-	if envelope < 0 {
-		envelope = 0
-	}
-	if envelope > limit {
-		envelope = limit
-	}
-	selectionLimit := limit - envelope
-	res := NormalizeResult{ContentState: ContentStateFull}
+	measured := make([]measuredItem, 0, len(items))
 	var total int64
-	var i int
-	for ; i < len(items); i++ {
-		payload, err := common.Marshal(items[i])
+	for _, it := range items {
+		payload, err := common.Marshal(it)
 		if err != nil {
 			return NormalizeResult{ContentState: ContentStateMetadataOnly}
 		}
-		if total+int64(len(payload)) > selectionLimit {
-			break
-		}
-		res.Items = append(res.Items, items[i])
+		measured = append(measured, measuredItem{item: it, size: int64(len(payload))})
 		total += int64(len(payload))
 	}
-	if i < len(items) {
-		res.ContentState = ContentStateGap
-		res.OmittedItems = len(items) - i
-		var droppedLogical int64
-		for j := i; j < len(items); j++ {
-			droppedLogical += items[j].LogicalBytes
+	res := NormalizeResult{ContentState: ContentStateFull}
+	if total <= limit {
+		res.Items = items
+		res.CanonicalBytes = total
+		if protocolGap {
+			res.ContentState = ContentStateGap
 		}
+		return res
+	}
+	res.ContentState = ContentStateGap
+	// Greedy head-first selection: keep the earliest items while they fit.
+	var selected int64
+	var i int
+	for ; i < len(measured); i++ {
+		if selected+measured[i].size > limit {
+			break
+		}
+		res.Items = append(res.Items, measured[i].item)
+		selected += measured[i].size
+	}
+	// Suffix sums of logical bytes give the dropped tail's size per cut in
+	// constant time per backtrack step.
+	suffixLogical := make([]int64, len(measured)+1)
+	for j := len(measured) - 1; j >= 0; j-- {
+		suffixLogical[j] = suffixLogical[j+1] + measured[j].item.LogicalBytes
+	}
+	markerFit := false
+	for i < len(measured) { // i = first omitted item
 		// The marker's digest is its own content digest, never the digest of a
 		// dropped item: T2.3 dedups content objects on (session, digest), so a
 		// marker keyed by a real item's digest would silently collide with
@@ -227,19 +272,41 @@ func finishNormalize(items []CanonicalItem, protocolGap bool, opts NormalizeOpti
 		// would disappear from reconstruction — or replace the real item.
 		gap := CanonicalItem{
 			Kind:         CanonicalKindGap,
-			LogicalBytes: droppedLogical,
+			LogicalBytes: suffixLogical[i],
 			Truncated:    true,
 		}
 		gap.Hmac = withHmac(gap, opts).Hmac
-		if gapPayload, err := common.Marshal(gap); err == nil && total+int64(len(gapPayload)) <= limit {
+		if gapPayload, err := common.Marshal(gap); err == nil && selected+int64(len(gapPayload)) <= limit {
+			// The marker is charged its exact serialized size; the prefix plus
+			// the marker both stay.
 			res.Items = append(res.Items, gap)
-			total += int64(len(gapPayload))
+			selected += int64(len(gapPayload))
+			markerFit = true
+			break
 		}
+		// The marker does not fit next to the current prefix: drop the most
+		// recently selected item into the omitted tail and retry with the
+		// enlarged gap.
+		if i == 0 {
+			break // nothing left to drop; even the marker alone cannot fit
+		}
+		i--
+		selected -= measured[i].size
+		res.Items = res.Items[:len(res.Items)-1]
 	}
+	res.OmittedItems = len(measured) - i
+	if !markerFit {
+		// Out-of-band degenerate capture: the limit cannot hold even the gap
+		// marker alone. Surface the reason instead of silently returning an
+		// empty capture — ContentStateGap still lands, so turn identity
+		// tracking is unaffected.
+		res.GapReason = GapReasonCaptureLimitTooSmall
+		res.MarkerOmitted = true
+	}
+	res.CanonicalBytes = selected
 	if protocolGap {
 		res.ContentState = ContentStateGap
 	}
-	res.CanonicalBytes = total
 	return res
 }
 
