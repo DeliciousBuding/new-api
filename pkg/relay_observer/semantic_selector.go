@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"reflect"
 	"sort"
 )
 
@@ -63,11 +64,12 @@ func DefaultSelectionPolicy(limit int64, buildGap GapBuilder) SelectionPolicy {
 // selection. It is embedded in the canonical gap item and therefore survives
 // persistence and reconstruction without a database schema change.
 type GapInfo struct {
-	Position        string `json:"position"`
-	Reason          string `json:"reason"`
-	OmittedItems    int    `json:"omitted_items"`
-	LogicalBytes    int64  `json:"logical_bytes"`
-	SourceTruncated bool   `json:"source_truncated,omitempty"`
+	Position        string              `json:"position"`
+	Reason          string              `json:"reason"`
+	OmittedItems    int                 `json:"omitted_items"`
+	LogicalBytes    int64               `json:"logical_bytes"`
+	SourceTruncated bool                `json:"source_truncated,omitempty"`
+	Oversized       []OversizedUnitInfo `json:"oversized_units,omitempty"`
 }
 
 type OversizedUnitInfo struct {
@@ -242,7 +244,7 @@ func SelectEvidence(units []SemanticUnit, policy SelectionPolicy) (SelectionResu
 	if latestOversized {
 		gapReason = GapReasonOversized
 	}
-	gap, firstOmittedBlock, lastOmittedBlock, err := gapForSelection(blocks, selected, len(stream.items), gapReason)
+	gap, firstOmittedBlock, lastOmittedBlock, err := gapForSelection(blocks, selected, len(stream.items), gapReason, res.Oversized)
 	if err != nil {
 		return SelectionResult{}, err
 	}
@@ -273,7 +275,7 @@ func SelectEvidence(units []SemanticUnit, policy SelectionPolicy) (SelectionResu
 		}
 		selected[dropBlock] = false
 		selectedBytes -= blocks[dropBlock].CanonicalBytes
-		gap, firstOmittedBlock, lastOmittedBlock, err = gapForSelection(blocks, selected, len(stream.items), gapReason)
+		gap, firstOmittedBlock, lastOmittedBlock, err = gapForSelection(blocks, selected, len(stream.items), gapReason, res.Oversized)
 		if err != nil {
 			return SelectionResult{}, err
 		}
@@ -290,6 +292,7 @@ func SelectEvidence(units []SemanticUnit, policy SelectionPolicy) (SelectionResu
 			OmittedItems:    len(stream.items),
 			LogicalBytes:    stream.totalLogicalBytes,
 			SourceTruncated: stream.sourceTruncated,
+			Oversized:       cloneOversizedUnits(res.Oversized),
 		}
 		return res, nil
 	}
@@ -427,11 +430,11 @@ func anchorEligible(unit SemanticUnit, start int) bool {
 	return unit.Kind == SemanticUnitAnchor || isSystemDeveloperMessage(&unit)
 }
 
-func gapForSelection(blocks []selectionBlock, selected []bool, itemCount int, reason string) (GapInfo, int, int, error) {
+func gapForSelection(blocks []selectionBlock, selected []bool, itemCount int, reason string, oversized []OversizedUnitInfo) (GapInfo, int, int, error) {
 	first, last := -1, -1
 	runs := 0
 	inRun := false
-	gap := GapInfo{Reason: reason}
+	gap := GapInfo{Reason: reason, Oversized: cloneOversizedUnits(oversized)}
 	for blockIndex, block := range blocks {
 		if selected[blockIndex] {
 			inRun = false
@@ -471,7 +474,7 @@ func buildAndMeasureGap(build GapBuilder, gap GapInfo) (CanonicalItem, int64, er
 	if err != nil {
 		return CanonicalItem{}, 0, fmt.Errorf("semantic selector: build gap: %w", err)
 	}
-	if marker.Kind != CanonicalKindGap || marker.Gap == nil || *marker.Gap != gap {
+	if marker.Kind != CanonicalKindGap || marker.Gap == nil || !reflect.DeepEqual(*marker.Gap, gap) {
 		return CanonicalItem{}, 0, fmt.Errorf("semantic selector: gap builder returned an invalid marker")
 	}
 	digest, decodeErr := hex.DecodeString(marker.Hmac)
@@ -490,6 +493,7 @@ func buildAndMeasureGap(build GapBuilder, gap GapInfo) (CanonicalItem, int64, er
 // change the selected result.
 func GapMarker(gap GapInfo) CanonicalItem {
 	info := gap
+	info.Oversized = cloneOversizedUnits(gap.Oversized)
 	return CanonicalItem{
 		Kind:         CanonicalKindGap,
 		LogicalBytes: gap.LogicalBytes,
@@ -511,6 +515,18 @@ func appendOversized(res *SelectionResult, recorded map[int]bool, unitIndex int,
 		SourceTruncated: unit.SourceTruncated,
 		Reason:          reason,
 	})
+}
+
+func cloneOversizedUnits(units []OversizedUnitInfo) []OversizedUnitInfo {
+	if len(units) == 0 {
+		return nil
+	}
+	cloned := make([]OversizedUnitInfo, len(units))
+	copy(cloned, units)
+	for i := range cloned {
+		cloned[i].CallIDs = append([]string(nil), cloned[i].CallIDs...)
+	}
+	return cloned
 }
 
 func countUnitItems(units []SemanticUnit) int {

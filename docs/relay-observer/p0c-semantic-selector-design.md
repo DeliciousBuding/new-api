@@ -154,6 +154,7 @@ type GapInfo struct {
     OmittedItems    int    `json:"omitted_items"`
     LogicalBytes    int64  `json:"logical_bytes"`
     SourceTruncated bool   `json:"source_truncated,omitempty"`
+    Oversized       []OversizedUnitInfo `json:"oversized_units,omitempty"`
 }
 
 type CanonicalItem struct {
@@ -162,7 +163,7 @@ type CanonicalItem struct {
 }
 ```
 
-`GapInfo` 直接嵌入普通 canonical gap item；content-object 与 context 表继续保存原有 canonical JSON/digest，不新增表、列或 context 类型。非 gap item 因 `omitempty` 保持原 JSON 形状与 digest 语义。
+`GapInfo` 直接嵌入普通 canonical gap item；content-object 与 context 表继续保存原有 canonical JSON/digest，不新增表、列或 context 类型。非 gap item 因 `omitempty` 保持原 JSON 形状与 digest 语义。`oversized_units` 只在超大单元/锚被整体省略时出现，使 kind、call IDs、logical/canonical bytes、source-truncated 与 reason 跟随 marker 一起 HMAC、持久化和重建，而不是仅停留在选择器内存结果中。
 `reason` 枚举：
 - `capture_budget` —— Observer 因预算省略（选择器主动裁）；
 - `capture_limit_too_small` —— 预算连最小 gap marker 都放不下（§5.1），items 为空，仅含 GapInfo 解释；

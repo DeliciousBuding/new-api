@@ -81,6 +81,19 @@ func gapKindCount(items []CanonicalItem) int {
 	return n
 }
 
+func requireGapItem(t *testing.T, items []CanonicalItem) CanonicalItem {
+	t.Helper()
+	var gaps []CanonicalItem
+	for _, item := range items {
+		if item.Kind == CanonicalKindGap {
+			gaps = append(gaps, item)
+		}
+	}
+	require.Len(t, gaps, 1)
+	require.NotNil(t, gaps[0].Gap)
+	return gaps[0]
+}
+
 // assertSelectionInvariants locks the frozen selection rules for any input.
 func assertSelectionInvariants(t *testing.T, units []SemanticUnit, limit int64, res SelectionResult, err error) {
 	t.Helper()
@@ -739,6 +752,9 @@ func TestSelectOversizedLatestUnit(t *testing.T) {
 	assert.Equal(t, GapReasonOversized, res.Gap.Reason)
 	assert.Equal(t, 2, res.Gap.OmittedItems)
 	assert.Equal(t, int64(12200), res.Gap.LogicalBytes)
+	assert.Equal(t, res.Oversized, res.Gap.Oversized)
+	marker := requireGapItem(t, res.Items)
+	assert.Equal(t, res.Oversized, marker.Gap.Oversized)
 	assert.LessOrEqual(t, res.TotalBytes, limit)
 	assertSelectionInvariants(t, units, limit, res, err)
 }
@@ -760,6 +776,9 @@ func TestSelectOversizedLatestOnlyUnit(t *testing.T) {
 	assert.Equal(t, OversizedReasonUnit, res.Oversized[0].Reason)
 	require.NotNil(t, res.Gap)
 	assert.Equal(t, GapPositionHead, res.Gap.Position, "a gap covering the whole stream is head")
+	assert.Equal(t, res.Oversized, res.Gap.Oversized)
+	marker := requireGapItem(t, res.Items)
+	assert.Equal(t, res.Oversized, marker.Gap.Oversized)
 	assert.LessOrEqual(t, res.TotalBytes, limit)
 	assertSelectionInvariants(t, units, limit, res, err)
 }
@@ -782,6 +801,9 @@ func TestSelectAnchorBudgetCap(t *testing.T) {
 	assert.Equal(t, OversizedReasonAnchor, res.Oversized[0].Reason)
 	assert.Equal(t, SemanticUnitAnchor, res.Oversized[0].Kind)
 	assert.Equal(t, int64(23000), res.Oversized[0].LogicalBytes)
+	assert.Equal(t, res.Oversized, res.Gap.Oversized)
+	marker := requireGapItem(t, res.Items)
+	assert.Equal(t, res.Oversized, marker.Gap.Oversized)
 	assert.LessOrEqual(t, res.TotalBytes, limit)
 	assertSelectionInvariants(t, units, limit, res, err)
 
@@ -855,12 +877,20 @@ func TestSelectDegenerateLimit(t *testing.T) {
 }
 
 func TestGapMarkerShape(t *testing.T) {
+	oversized := []OversizedUnitInfo{{
+		Kind:           SemanticUnitToolExchange,
+		CallIDs:        []string{"call_A"},
+		LogicalBytes:   12000,
+		CanonicalBytes: 12100,
+		Reason:         OversizedReasonUnit,
+	}}
 	info := GapInfo{
 		Position:        GapPositionMiddle,
 		Reason:          GapReasonBudget,
 		OmittedItems:    3,
 		LogicalBytes:    12345,
 		SourceTruncated: true,
+		Oversized:       oversized,
 	}
 	marker := GapMarker(info)
 	assert.Equal(t, CanonicalKindGap, marker.Kind)
@@ -869,6 +899,10 @@ func TestGapMarkerShape(t *testing.T) {
 	assert.Empty(t, marker.Hmac)
 	require.NotNil(t, marker.Gap)
 	assert.Equal(t, info, *marker.Gap)
+	oversized[0].CallIDs[0] = "mutated"
+	oversized[0].Reason = "mutated"
+	assert.Equal(t, []string{"call_A"}, marker.Gap.Oversized[0].CallIDs)
+	assert.Equal(t, OversizedReasonUnit, marker.Gap.Oversized[0].Reason)
 }
 
 func TestSelectMeasuresFinalStructuredGapMarker(t *testing.T) {
