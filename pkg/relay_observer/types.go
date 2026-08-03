@@ -194,8 +194,8 @@ type Status struct {
 	// marker or metadata-only state.
 	ContentGapsTotal int64
 
-	// RecentVolume counts events accepted in the most recent fixed window
-	// (one second); it is maintained by the runtime and reset per window.
+	// RecentVolume counts events accepted in the current wall-clock second.
+	// The packed runtime bucket expires by timestamp, independent of flushing.
 	RecentVolume int64
 
 	// LastRetentionPass is the completion time of the most recent retention

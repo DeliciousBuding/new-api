@@ -270,6 +270,31 @@ func waitNotify(t *testing.T, ch <-chan struct{}) {
 	}
 }
 
+// TestRecentVolumeUsesFixedSecondBucket locks the status contract: recent
+// volume is a real one-second admission bucket and is independent of the
+// configurable worker flush interval. Advancing the fake clock across the
+// second boundary expires the old count even when no flush timer fires.
+func TestRecentVolumeUsesFixedSecondBucket(t *testing.T) {
+	store := &scriptedStore{writeNotify: make(chan struct{}, 16)}
+	d, clk := newTestDispatcher(t, store, func(c *Config) {
+		c.BatchSize = 16
+		c.FlushInterval = MaxFlushInterval
+	})
+
+	for i := 0; i < 3; i++ {
+		require.True(t, d.TryEnqueue(sampleEventPtr(), 1))
+	}
+	assert.Equal(t, int64(3), d.Status().RecentVolume)
+
+	clk.advance(999 * time.Millisecond)
+	assert.Equal(t, int64(3), d.Status().RecentVolume)
+	clk.advance(time.Millisecond)
+	assert.Zero(t, d.Status().RecentVolume)
+
+	require.True(t, d.TryEnqueue(sampleEventPtr(), 1))
+	assert.Equal(t, int64(1), d.Status().RecentVolume)
+}
+
 // TestTryEnqueueRejectsInvalidReservation locks the admission rejects: a
 // negative reservation, a reservation above MaxRequestBytes, and a nil event
 // are all dropped without touching the queue or the byte budget.
