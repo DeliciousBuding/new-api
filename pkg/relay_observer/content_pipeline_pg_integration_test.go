@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -400,4 +401,345 @@ func TestIntegrationSessionOnlyAppendMetadataOnly(t *testing.T) {
 	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_contexts WHERE session_id = $1`, sid).Scan(&contexts))
 	assert.Zero(t, objects)
 	assert.Zero(t, contexts)
+}
+
+// --- PR #14: exactly-once claim for session-only appends ---
+
+// insertAppendFixture seeds one session, its codex_cli alias binding (user id
+// 1, key version 1 — the real identity-chain lookup parameters) and one
+// unbound observer_turns row for turnID, returning the session id. The
+// binding digest is digestA.
+func insertAppendFixture(t *testing.T, db *sql.DB, scope string, lastSeen time.Time, turnID uuid.UUID) string {
+	t.Helper()
+	sid := insertSessionRow(t, db, scope, lastSeen)
+	_, err := db.Exec(`INSERT INTO observer_session_aliases (node_scope, user_id, key_version, provider, source, alias_digest, session_id, first_seen, last_seen)
+		VALUES ($1, 1, 1, 'codex_cli', 'header', $2, $3, now(), now())`, scope, digestA, sid)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO observer_turns (id, node_scope, event_id, occurred_at) VALUES ($1, $2, $3, now())`,
+		turnID.String(), scope, "exactly-once")
+	require.NoError(t, err)
+	return sid
+}
+
+// exactlyOnceInput builds the ContentInput of the exactly-once suite: the
+// codex_cli alias matching the fixture binding, and either the given items
+// (content-bearing) or none (session-only).
+func exactlyOnceInput(scope string, turnID uuid.UUID, state string, items []CanonicalItem) ContentInput {
+	return ContentInput{
+		NodeScope:    scope,
+		UserID:       1,
+		Aliases:      []Alias{{Version: 1, Digest: digestAHex, Scope: ScopeCodexCLI, Source: SourceTurnThread}},
+		TurnID:       turnID,
+		Items:        items,
+		ContentState: state,
+	}
+}
+
+// sessionCounts reads one session's (turn_count, gap_count).
+func sessionCounts(t *testing.T, db *sql.DB, sid string) (int64, int64) {
+	t.Helper()
+	var turns, gaps int64
+	require.NoError(t, db.QueryRow(`SELECT turn_count, gap_count FROM observer_sessions WHERE id = $1`, sid).Scan(&turns, &gaps))
+	return turns, gaps
+}
+
+// TestIntegrationSessionOnlyAppendExactlyOnceGap is scenario 1: the same gap
+// session-only turn appended twice sequentially — the claim makes the replay
+// a no-op, so turn_count=1 and gap_count=1 (before the fix the second append
+// bumped both again).
+func TestIntegrationSessionOnlyAppendExactlyOnceGap(t *testing.T) {
+	dsn := integrationDSN(t)
+	store := resetObserverSchema(t, dsn)
+	defer store.Close(context.Background())
+	cp, ok := store.(ContentPersistence)
+	require.True(t, ok)
+	db := openFixturePool(t, dsn)
+
+	scope := uniqueScope("t53-gap")
+	turnID := uuid.New()
+	sid := insertAppendFixture(t, db, scope, time.Now(), turnID)
+	in := exactlyOnceInput(scope, turnID, ContentStateGap, nil)
+
+	require.NoError(t, cp.AppendTurns(context.Background(), []ContentInput{in}))
+	require.NoError(t, cp.AppendTurns(context.Background(), []ContentInput{in}))
+
+	turns, gaps := sessionCounts(t, db, sid)
+	assert.Equal(t, int64(1), turns, "the replayed gap turn must count exactly once")
+	assert.Equal(t, int64(1), gaps)
+	var bound bool
+	require.NoError(t, db.QueryRow(`SELECT session_id = $1 FROM observer_turns WHERE id = $2`, sid, turnID.String()).Scan(&bound))
+	assert.True(t, bound, "the turn must be bound to the session")
+}
+
+// TestIntegrationSessionOnlyAppendExactlyOnceMetadataOnly is scenario 2: the
+// same metadata-only turn appended twice sequentially — one turn, no gaps.
+func TestIntegrationSessionOnlyAppendExactlyOnceMetadataOnly(t *testing.T) {
+	dsn := integrationDSN(t)
+	store := resetObserverSchema(t, dsn)
+	defer store.Close(context.Background())
+	cp, ok := store.(ContentPersistence)
+	require.True(t, ok)
+	db := openFixturePool(t, dsn)
+
+	scope := uniqueScope("t53-meta")
+	turnID := uuid.New()
+	sid := insertAppendFixture(t, db, scope, time.Now(), turnID)
+	in := exactlyOnceInput(scope, turnID, ContentStateMetadataOnly, nil)
+
+	require.NoError(t, cp.AppendTurns(context.Background(), []ContentInput{in}))
+	require.NoError(t, cp.AppendTurns(context.Background(), []ContentInput{in}))
+
+	turns, gaps := sessionCounts(t, db, sid)
+	assert.Equal(t, int64(1), turns, "the replayed metadata-only turn must count exactly once")
+	assert.Equal(t, int64(0), gaps, "a metadata-only outcome is not a capture gap")
+}
+
+// TestIntegrationSessionOnlyAppendExactlyOnceConcurrent is scenario 3: the
+// same session-only turn appended concurrently from two connections. Both
+// calls must succeed — the session row lock serializes them, the second
+// claim sees 0 affected rows and no-ops — and the counters advance once.
+func TestIntegrationSessionOnlyAppendExactlyOnceConcurrent(t *testing.T) {
+	dsn := integrationDSN(t)
+	store := resetObserverSchema(t, dsn)
+	defer store.Close(context.Background())
+	cp, ok := store.(ContentPersistence)
+	require.True(t, ok)
+	db := openFixturePool(t, dsn)
+
+	scope := uniqueScope("t53-race")
+	turnID := uuid.New()
+	sid := insertAppendFixture(t, db, scope, time.Now(), turnID)
+	in := exactlyOnceInput(scope, turnID, ContentStateGap, nil)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = cp.AppendTurns(context.Background(), []ContentInput{in})
+		}(i)
+	}
+	wg.Wait()
+	require.NoError(t, errs[0], "both racing appends must succeed")
+	require.NoError(t, errs[1], "both racing appends must succeed")
+
+	turns, gaps := sessionCounts(t, db, sid)
+	assert.Equal(t, int64(1), turns, "the racing appends must count exactly once")
+	assert.Equal(t, int64(1), gaps)
+	var bound bool
+	require.NoError(t, db.QueryRow(`SELECT session_id = $1 FROM observer_turns WHERE id = $2`, sid, turnID.String()).Scan(&bound))
+	assert.True(t, bound)
+}
+
+// TestIntegrationSessionOnlyAppendExactlyOnceRollbackRetry is scenario 4: the
+// first append transaction fails after the claim (the test hook cancels the
+// context inside the transaction, so the counter bump aborts) and rolls back
+// — the claim binding disappears with it — and the retry claims fresh and
+// counts exactly once.
+func TestIntegrationSessionOnlyAppendExactlyOnceRollbackRetry(t *testing.T) {
+	dsn := integrationDSN(t)
+	store := resetObserverSchema(t, dsn)
+	defer store.Close(context.Background())
+	cp, ok := store.(ContentPersistence)
+	require.True(t, ok)
+	db := openFixturePool(t, dsn)
+
+	scope := uniqueScope("t53-retry")
+	turnID := uuid.New()
+	sid := insertAppendFixture(t, db, scope, time.Now(), turnID)
+	in := exactlyOnceInput(scope, turnID, ContentStateGap, nil)
+
+	// The hook runs inside the append transaction after the claim while the
+	// session row lock is held; canceling the append context fails the next
+	// statement (the counter bump) and database/sql rolls the transaction
+	// back, undoing the claim.
+	ctx, cancel := context.WithCancel(context.Background())
+	appendHook = func() { cancel() }
+	t.Cleanup(func() { appendHook = nil })
+
+	err := cp.AppendTurns(ctx, []ContentInput{in})
+	require.Error(t, err, "the canceled context must abort the append")
+
+	// The rolled-back transaction left nothing durable: the turn is still
+	// unbound and the counters untouched.
+	require.Eventually(t, func() bool {
+		var n int
+		require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_turns WHERE id = $1 AND session_id IS NULL`, turnID.String()).Scan(&n))
+		return n == 1
+	}, 5*time.Second, 10*time.Millisecond)
+
+	// The retry with a fresh context claims fresh and counts exactly once.
+	require.NoError(t, cp.AppendTurns(context.Background(), []ContentInput{in}))
+	turns, gaps := sessionCounts(t, db, sid)
+	assert.Equal(t, int64(1), turns, "the retry must count exactly once")
+	assert.Equal(t, int64(1), gaps)
+}
+
+// TestIntegrationSessionOnlyAppendExactlyOnceContentReplay is scenario 5: a
+// content-bearing turn replayed lands exactly one context row, one object,
+// and one counter increment — the claim gates the content path too.
+func TestIntegrationSessionOnlyAppendExactlyOnceContentReplay(t *testing.T) {
+	dsn := integrationDSN(t)
+	store := resetObserverSchema(t, dsn)
+	defer store.Close(context.Background())
+	cp, ok := store.(ContentPersistence)
+	require.True(t, ok)
+	db := openFixturePool(t, dsn)
+
+	scope := uniqueScope("t53-content")
+	turnID := uuid.New()
+	sid := insertAppendFixture(t, db, scope, time.Now(), turnID)
+	in := exactlyOnceInput(scope, turnID, ContentStateFull, []CanonicalItem{contentItemWith(t, "exactly-once")})
+
+	require.NoError(t, cp.AppendTurns(context.Background(), []ContentInput{in}))
+	require.NoError(t, cp.AppendTurns(context.Background(), []ContentInput{in}))
+
+	var contexts int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_contexts WHERE turn_id = $1`, turnID.String()).Scan(&contexts))
+	assert.Equal(t, 1, contexts, "the replay must not duplicate the context row")
+	turns, gaps := sessionCounts(t, db, sid)
+	assert.Equal(t, int64(1), turns, "the replay must count exactly once")
+	assert.Equal(t, int64(0), gaps)
+	rec, err := cp.ReconstructTurn(context.Background(), uuid.MustParse(sid), turnID, testHMACKey)
+	require.NoError(t, err)
+	require.Len(t, rec.Items, 1)
+	assert.Equal(t, "exactly-once", rec.Items[0].Content[0].Text)
+}
+
+// --- PR #14: T3 end-to-end append vs retention concurrency ---
+
+// TestIntegrationAppendVsRetentionEndToEndScenarioA is the true end-to-end
+// scenario A of the T3 lock-order contract, calling the production methods on
+// two connections: AppendTurns has acquired the session row lock (the
+// appendHook pauses it after the claim), DeleteSessionRetention blocks
+// behind it, and after the append commits (refreshing last_seen), the
+// retention re-check sees the fresh row and no-ops — the session survives
+// with exactly one turn.
+func TestIntegrationAppendVsRetentionEndToEndScenarioA(t *testing.T) {
+	dsn := integrationDSN(t)
+	store := resetObserverSchema(t, dsn)
+	defer store.Close(context.Background())
+	cp, ok := store.(ContentPersistence)
+	require.True(t, ok)
+	rs, ok := store.(RetentionStore)
+	require.True(t, ok)
+	db := openFixturePool(t, dsn)
+
+	scope := uniqueScope("t53-scenario-a")
+	cutoff := time.Now().Add(-30 * 24 * time.Hour)
+	turnID := uuid.New()
+	sid := insertAppendFixture(t, db, scope, time.Now().Add(-31*24*time.Hour), turnID)
+	in := exactlyOnceInput(scope, turnID, ContentStateGap, nil)
+
+	// Hold the append inside its transaction, after the claim, while it owns
+	// the session row lock.
+	appendLocked := make(chan struct{})
+	release := make(chan struct{})
+	appendHook = func() {
+		close(appendLocked)
+		<-release
+	}
+	t.Cleanup(func() { appendHook = nil })
+
+	appendDone := make(chan error, 1)
+	go func() { appendDone <- cp.AppendTurns(context.Background(), []ContentInput{in}) }()
+	<-appendLocked
+
+	// The retention delete must block on the session row lock held by the
+	// append.
+	retDone := make(chan error, 1)
+	go func() { retDone <- rs.DeleteSessionRetention(context.Background(), uuid.MustParse(sid), cutoff) }()
+	select {
+	case err := <-retDone:
+		t.Fatalf("retention finished while the append held the session lock: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// Release the append: it bumps last_seen to now and commits; the retention
+	// delete unblocks, re-checks the cutoff, and no-ops.
+	close(release)
+	require.NoError(t, <-appendDone, "the append must complete after release")
+	select {
+	case err := <-retDone:
+		require.NoError(t, err, "retention must complete without error after the append commits")
+	case <-time.After(5 * time.Second):
+		t.Fatal("retention stayed blocked after the append committed")
+	}
+
+	// The reactivated session survived retention with exactly one turn.
+	turns, gaps := sessionCounts(t, db, sid)
+	assert.Equal(t, int64(1), turns)
+	assert.Equal(t, int64(1), gaps)
+	var bound bool
+	require.NoError(t, db.QueryRow(`SELECT session_id = $1 FROM observer_turns WHERE id = $2`, sid, turnID.String()).Scan(&bound))
+	assert.True(t, bound)
+}
+
+// TestIntegrationAppendVsRetentionEndToEndScenarioB is the true end-to-end
+// scenario B of the T3 lock-order contract: DeleteSessionRetention has
+// acquired the session row lock (the retentionHook pauses it after the
+// lock and the last_seen re-check), AppendTurns blocks on the alias lookup,
+// and after the retention deletes the session and commits, the append
+// unblocks, observes the session is gone, and creates a complete fresh
+// session — claim, content context, and counters.
+func TestIntegrationAppendVsRetentionEndToEndScenarioB(t *testing.T) {
+	dsn := integrationDSN(t)
+	store := resetObserverSchema(t, dsn)
+	defer store.Close(context.Background())
+	cp, ok := store.(ContentPersistence)
+	require.True(t, ok)
+	rs, ok := store.(RetentionStore)
+	require.True(t, ok)
+	db := openFixturePool(t, dsn)
+
+	scope := uniqueScope("t53-scenario-b")
+	cutoff := time.Now().Add(-30 * 24 * time.Hour)
+	turnID := uuid.New()
+	oldSid := insertAppendFixture(t, db, scope, time.Now().Add(-31*24*time.Hour), turnID)
+	in := exactlyOnceInput(scope, turnID, ContentStateFull, []CanonicalItem{contentItemWith(t, "fresh-session")})
+
+	// Hold the retention inside its transaction, after the session lock and
+	// the last_seen re-check, before any delete.
+	retentionLocked := make(chan struct{})
+	release := make(chan struct{})
+	retentionHook = func() {
+		close(retentionLocked)
+		<-release
+	}
+	t.Cleanup(func() { retentionHook = nil })
+
+	retDone := make(chan error, 1)
+	go func() { retDone <- rs.DeleteSessionRetention(context.Background(), uuid.MustParse(oldSid), cutoff) }()
+	<-retentionLocked
+
+	// The append must block on the alias lookup (FOR UPDATE OF s).
+	appendDone := make(chan error, 1)
+	go func() { appendDone <- cp.AppendTurns(context.Background(), []ContentInput{in}) }()
+	select {
+	case err := <-appendDone:
+		t.Fatalf("append finished while retention held the session lock: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// Release retention: it deletes the expired session and commits; the
+	// append unblocks, sees the session is gone, and recreates it.
+	close(release)
+	require.NoError(t, <-retDone, "retention must complete after release")
+	require.NoError(t, <-appendDone, "the append must complete once the session lock is free")
+
+	// The old session is gone; the append created a fresh session and bound
+	// the turn, the content, and the counters to it.
+	var oldCount int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_sessions WHERE id = $1`, oldSid).Scan(&oldCount))
+	assert.Zero(t, oldCount, "the expired session must be deleted")
+	var newSid string
+	require.NoError(t, db.QueryRow(`SELECT session_id::text FROM observer_turns WHERE id = $1`, turnID.String()).Scan(&newSid))
+	assert.NotEqual(t, oldSid, newSid, "the append must create a fresh session, never resurrect the deleted one")
+	turns, gaps := sessionCounts(t, db, newSid)
+	assert.Equal(t, int64(1), turns, "the fresh session counts the turn exactly once")
+	assert.Equal(t, int64(0), gaps)
+	var contexts int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_contexts WHERE turn_id = $1`, turnID.String()).Scan(&contexts))
+	assert.Equal(t, 1, contexts, "the fresh session carries the appended content")
 }

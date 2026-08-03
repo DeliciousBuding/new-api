@@ -783,6 +783,7 @@ func deleteSessionRetentionTx(ctx context.Context, tx contentTx, sessionID uuid.
 		// delete is a no-op. The locked row is released by the commit/rollback.
 		return nil
 	}
+	runRetentionHook()
 	if _, err := tx.Exec(ctx, `DELETE FROM observer_content_objects WHERE session_id = $1`, sessionID.String()); err != nil {
 		return fmt.Errorf("relayobserver: delete session retention: delete content: %w", err)
 	}

@@ -278,9 +278,15 @@ func TestIntegrationQueryTurnContext(t *testing.T) {
 			{Kind: "text", Role: "user", Content: []CanonicalPart{{Type: "text", Text: "hello query"}}, LogicalBytes: 11, Hmac: hmac},
 		},
 	}
+	// The append claim gates on the metadata turn row: the production flush
+	// always writes it before the content append, so the fixture seeds it the
+	// same way (the claim binds the pre-seeded row, never a phantom).
+	db := openFixturePool(t, dsn)
+	_, err := db.Exec(`INSERT INTO observer_turns (id, node_scope, event_id, occurred_at) VALUES ($1, $2, $3, now())`,
+		turnID.String(), scope, "query-ctx")
+	require.NoError(t, err)
 	require.NoError(t, store.(ContentPersistence).AppendTurns(context.Background(), []ContentInput{in}))
 
-	db := openFixturePool(t, dsn)
 	var sidText string
 	require.NoError(t, db.QueryRow(`SELECT session_id::text FROM observer_contexts WHERE turn_id = $1`, turnID.String()).Scan(&sidText))
 	sid := uuid.MustParse(sidText)
