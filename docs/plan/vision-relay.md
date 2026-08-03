@@ -586,4 +586,46 @@ P1×4：快照深拷贝（防默认配置污染+竞态）、出站 marker 接线
 
 ### 21.9 最终执行顺序（终审裁决）
 
-1. sidecall_secret 改名 ✅ → 2. sgp2 轮换旧 secret（T1 前）→ 3. 文档计划态 ✅ → 4. T1 内部端口 ✅ → 5. T2a/b/c 拆分 ✅ → 6. 同步最新 main → 7. CI 重跑 → 8. 最终候选 SHA 构建镜像 → 9. sgp2 T1→T3→T2→T4→T5→T6 → 10. 记录最终 SHA+digest → 11. PR 转 Ready → 12. 合并 → 13. **HK3 只部署 sgp2 测过的同一 digest**
+1. sidecall_secret 改名 ✅ → 2. sgp2 轮换旧 secret（T1 前）✅ → 3. 文档计划态 ✅ → 4. T1 内部端口 ✅ → 5. T2a/b/c 拆分 ✅ → 6. 同步最新 main ✅ → 7. CI 重跑 ✅ → 8. 最终候选 SHA 构建镜像 ✅（vision-relay-candidate, digest 3022b540）→ 9. sgp2 T1→T3→T2→T4 ✅（T5 执行中）→ 10. 记录最终 SHA+digest → 11. PR 转 Ready → 12. 合并 → 13. **HK3 只部署 sgp2 测过的同一 digest**
+
+## 22. sgp2 补测执行记录（2026-08-03，T1-T5 执行）
+
+### 22.1 测试环境最终配置（observer-test）
+
+```text
+vision_relay.enabled         = true
+vision_relay.target_models   = ["deepseek*"]
+vision_relay.models          = ["gemma-4-31b"]
+vision_relay.base_url        = http://127.0.0.1:3000（容器内自回环；T4 故障场景用 golang mock 容器 mock500/mockhang/mocknormal@observer-test_edge 网络）
+vision_relay.api_key         = sk-b4f354…（vision-svc-token，独立账户 user 3 quota 1M，model_limits=gemma-4-31b）
+vision_relay.sidecall_secret = 3f912a…（48 hex，T2c 后恢复）
+ModelRatio                  = {"deepseek-v4-flash": 1.0, "gemma-4-31b": 1.0}（前置补配）
+渠道 1 HK3 NewAPI Test（deepseek）· 渠道 2 Gemma HK3 (vision inner)（gemma → api.tokendancelab.com）
+```
+
+### 22.2 结果矩阵
+
+| # | 场景 | 结果 | 证据 |
+|---|------|------|------|
+| T1 | 自回环双格式 | ✅ | Claude 3.99s "red" / OpenAI 2.92s "blue"；1 outer deepseek + 1 inner gemma（channel 2, vision-svc-token, Go client, 127.0.0.1 回环）+ 0 第三层；outer vision_calls=1；inner 无 Enhance 日志（marker 生效）；消费日志可区分 |
+| T3 | 计费双账户 | ✅ | 外部 token -169（deepseek 133+36，含描述注入 prompt）/ vision-svc -419（gemma 403+16）；logs 表一次图片请求恰 2 条（58/59 等）；无交叉 |
+| T2a | 合法 marker | ✅ | target_models 临时含 gemma*；inner gemma 命中但 marker 校验通过 → bypass 无 Enhance；无第三层（消费 2 条） |
+| T2b | 防伪 | ✅ | 旧字面 "1"/随机 vr:ts:deadbeef/过期（HMAC 正确但 ts-10min 超窗）全拒绝，Enhance 照常（每请求恰 1 条 vision 日志） |
+| T2c | 防御纵深 | ✅ | secret 置空 + gemma 不在 target_models → sidecall 无 marker → inner 策略 no-op → 无递归 |
+| T4-S1 | 正常 1/2/4/8/16×20 | ✅ | 600/600 ok；p50 1.7-3.0s；vision_calls=1/请求；消费 2 条/请求 |
+| T4-S2 | vision 401 | ✅ | api_key 错配；620/620 ok（占位降级）；vision_calls=1 全有界（401 秒失败无重试无 fallback）；elapsed 0-1ms |
+| T4-S3 | provider 5xx | ✅ | base_url→mock500；620/620 ok；fallback_count=1（单模型链尝试后占位） |
+| T4-S4 | 15s 超时 | ✅ | base_url→mockhang（30s sleep）；155/155 ok；elapsed_ms 精确 15000-15001；vision_calls=2=超时后预算内 transport retry 被 ctx 拦截（设计内，P2-6 语义） |
+| T4-S5 | 6 图 + 并发 | ✅ | 70/70 ok；6 图全部占位时 vision_calls=6、fallback_count=6（HK3 上游 503 期间）；mock 正常路径 images_success=6、vision_calls=6、fallback_count=0 |
+| T5 | 长稳 30min | ⏳ 执行中 | mock 路径（绕开 HK3 上游）；全 200；RSS ~32MiB 稳定 |
+
+### 22.3 重要发现：HK3 Cerebras 渠道被压测打爆（2026-08-03 15:10）
+
+- **事件**：T4-S5 六图压测（70 请求 × 6 图 = 420 次 gemma sidecall → HK3 → Cerebras）触发 Cerebras 上游 429（"Requests per minute limit exceeded"）→ **HK3 自动禁用全部 29 条 Cerebras 渠道（status=3）**。
+- **影响**：gemma-4-31b 在 HK3 仅剩 Ollama welfare #8264（group=Ollama）；vision token #480（group=auto）→ auto 分组（默认含 default）无 gemma 渠道 → 503 "分组 auto 下模型 gemma-4-31b 无可用渠道"。**HK3 上 Cerebras 系模型（gemma-4/gpt-oss-120b 等）当前全部不可用**。
+- **处置**：渠道恢复待用户决策（HK3 冻结期零变更）；后续压测改 mock 容器隔离（observer-test_edge 网络，宿主 8899 被 UFW 拦不可达是容器间直连的根因）。
+- **HK3 部署影响**：§20.3 前置"gemma 渠道健康检查"**不满足**；放量时 sidecall 并发（call gate 8）对 Cerebras RPM 限流的影响需重新评估（420 请求/分钟级即触发 429）。
+
+### 22.4 设置 UI（用户要求，2026-08-03）
+
+模型设置页新增 **Vision Relay 独立模块**（a5ceda30d）：`web/src/features/system-settings/models/vision-relay-settings-card.tsx` + section-registry + ModelSettings 类型/默认值。字段：enabled 开关、target_models/models（JSON 数组编辑器）、base_url、api_key/sidecall_secret（敏感键：后端不显示现有值，留空=不修改，照 ionet 模式）、prompt、timeout_sec。**阶段 1 不再是无 UI**。

@@ -74,7 +74,7 @@
 - **依赖方向**：`controller → service/vision_relay.go（Gin/RelayInfo/BodyStorage 事务+错误映射）→ pkg/vision_relay（核心包无 NewAPI 运行时层依赖，仅依赖 common 基础 JSON wrapper、x/image、gjson/sjson；禁止依赖 controller/service/model/setting/relay/Gin/RelayInfo）`
 - **禁止修改**（阶段 1）：`relay/**`、`relaykit/**`、`common/body_storage.go`、`constant/context_key.go`、`model/option.go`、`controller/option.go`、`main.go`、`web/**`
 - **配置**：注册名 `vision_relay`（DB keys `vision_relay.*`，JSON 数组字段）；安全限制为包内常量（MaxImages=6/MaxDecodedBytes=15MB/MaxPixels=12M/并发 2/解码闸 2/调用闸 8）
-- **状态**：v0.2.1 设计 → v0.2.2 Stabilization → issue #11 收口 + PR #12 draft（feat/vision-relay-merge，diff 仅允许文件）——**PR #12 CI（Backend+Frontend）已通过**；终审/团队审查修复已完成（sidecall_secret 防泄露、A6 敏感词、出站 marker 接线、请求级熔断、严格解析）；**sgp2 T1-T5（自回环/计费/并发/长稳）待执行**；最终生产候选镜像待 T1-T5 通过后从最终 SHA 生成。HK3 冻结（完整矩阵通过前零变更）
+- **状态**：v0.2.1 设计 → v0.2.2 Stabilization → issue #11 收口 + PR #12 draft（feat/vision-relay-merge，diff 仅允许文件）——**PR #12 CI（Backend+Frontend）已通过**；终审/团队审查修复已完成（sidecall_secret 防泄露、A6 敏感词、出站 marker 接线、请求级熔断、严格解析）；**设置 UI 已交付**（模型设置页 Vision Relay 独立模块卡片，a5ceda30d，含开关 + 全配置项，api_key/sidecall_secret 敏感键留空不修改）；**sgp2 T1-T4 已通过**（自回环双格式/计费双账户/marker 三场景/并发五场景）；**T5 长稳执行中**；**HK3 部署前置阻塞**：Cerebras 29 渠道被 S5 压测 429 打爆 auto-disable（2026-08-03 15:10，待用户决策恢复），gemma 上游当前不可用；最终生产候选镜像待 T1-T6 全过后从最终 SHA 生成。HK3 冻结（完整矩阵通过前零变更）
 - **上游等价**：核心可独立评估（核心包无 NewAPI 运行时层依赖——仅 common JSON wrapper，未来可上游化）
 
 ## 2. Relay Observability 接缝收缩方案（W0 设计）
