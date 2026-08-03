@@ -32,6 +32,16 @@ const BRAND_ICONS: Partial<Record<ClientProfile, string>> = {
   roo_code: 'RooCode.Color',
   copilot: 'Copilot.Color',
   gemini_cli: 'GeminiCLI.Color',
+  gemini_sdk: 'Gemini.Color',
+  qoder: 'Qoder.Color',
+  langchain: 'LangChain.Color',
+  llama_index: 'LlamaIndex.Color',
+  mistral_sdk: 'Mistral.Color',
+  cohere_sdk: 'Cohere.Color',
+  // Grok/MCP 无 Color 变体（仅 mono），'Grok.Color' 经 getLobeIcon 静默降级为
+  // mono 标志，与 model-badge 的 Grok 用法保持一致。
+  grok: 'Grok.Color',
+  mcp_sdk: 'MCP',
   perplexity: 'Perplexity.Color',
   poe: 'Poe.Color',
   openrouter: 'OpenRouter.Color',
@@ -59,6 +69,8 @@ const FALLBACK_ICONS: Partial<
   continue: Braces,
   zed: Braces,
   codex_browser: Globe,
+  litellm: Repeat,
+  ai_sdk: Braces,
   http_client: Braces,
 }
 

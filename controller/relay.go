@@ -193,6 +193,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
+		service.ObserveTurnAttemptBegin(c)
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
@@ -228,6 +229,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = relayHandler(c, relayInfo)
 		}
 
+		service.ObserveTurnAttemptEnd(c, relayInfo, channel.Id, newAPIError)
 		if newAPIError == nil {
 			relayInfo.LastError = nil
 			return
@@ -252,6 +254,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		gopool.Go(func() {
 			perfmetrics.RecordRelaySample(relayInfo, false, 0)
 		})
+		service.ObserveTurnFailure(c, relayInfo)
 	}
 }
 

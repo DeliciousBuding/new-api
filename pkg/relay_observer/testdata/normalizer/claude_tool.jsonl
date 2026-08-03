@@ -1,0 +1,2 @@
+{"kind":"message","role":"user","content":[{"type":"tool_result","result":{"tool_call_id":"toolu_1","output":[{"type":"text","text":"result text"}]}}],"logical_bytes":123,"hmac":"e0ff8005a6c33ba73f330f10d83977218e71cfe00c2096d155f7a303e15ed389"}
+{"kind":"message","role":"assistant","content":[{"type":"tool_call","call":{"id":"toolu_1","name":"get_weather","arguments":{"city":"tokyo"}}}],"logical_bytes":113,"hmac":"3d7e3da9eaeeb3fda2cbbc50b48e508e71f23d74d99a50ce76e5785d0cc29469"}

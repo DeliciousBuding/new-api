@@ -115,6 +115,17 @@ export type ClientProfile =
   | 'codex_vscode'
   | 'codex_browser'
   | 'gemini_cli'
+  | 'gemini_sdk'
+  | 'qoder'
+  | 'langchain'
+  | 'llama_index'
+  | 'grok'
+  | 'mcp_sdk'
+  | 'automation'
+  | 'mistral_sdk'
+  | 'litellm'
+  | 'cohere_sdk'
+  | 'ai_sdk'
   | 'perplexity'
   | 'poe'
   | 'openrouter'
@@ -203,6 +214,9 @@ export interface LogOtherData {
     // Client fingerprint hint (UA/header profile). Admin-only, nested under
     // admin_info so user-facing paths strip it with the whole object.
     client_profile?: ClientProfile
+    // Raw User-Agent string the profile was derived from. Admin-only, same
+    // visibility rules as client_profile.
+    client_ua?: string
   }
   // Language-independent operation descriptor (audit/login logs).
   // Frontend renders localized content from action + params via i18n templates.

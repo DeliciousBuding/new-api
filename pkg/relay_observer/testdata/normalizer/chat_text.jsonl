@@ -1,0 +1,4 @@
+{"kind":"message","role":"system","content":[{"type":"text","text":"you are a helpful bot"}],"logical_bytes":51,"hmac":"30990794c34b3a20121cb326e95bc51177917fec2e69e5b09d08f18f40ff9b14"}
+{"kind":"message","role":"user","content":[{"type":"text","text":"hello there"}],"logical_bytes":39,"hmac":"94f3415e0bf137bd811742539982d41a4e0d3cbe2c855eef6e9c3d4048221a80"}
+{"kind":"message","role":"assistant","content":[{"type":"text","text":"hi back"}],"logical_bytes":65,"hmac":"cabc2827eb2ee2d9206251815d60d67ea76bf26288463ac5347a672fd288f56b"}
+{"kind":"message","role":"tool","tool_call_id":"call_1","content":[{"type":"text","text":"42"}],"logical_bytes":54,"hmac":"05860c63f530c62d181afcd26cd5b7b92e22b25558a9b48d48df11fe19ba0f34"}

@@ -1,0 +1,34 @@
+{
+  "_meta": {
+    "name": "codex-small",
+    "desc": "Codex CLI single-turn request: responses-format body with the X-Codex-Turn-Metadata header (thread_id + session_id) and Originator. All ids are synthetic.",
+    "raw_body_bytes": 182,
+    "capture_limit": 182,
+    "scope_expect": "codex_cli",
+    "sources_expect": [
+      "turn_thread",
+      "turn_session"
+    ]
+  },
+  "headers": {
+    "Originator": "codex_cli_fixture_1.0.0",
+    "X-Codex-Turn-Metadata": "{\"thread_id\":\"fx-thread-0001\",\"session_id\":\"fx-session-0001\",\"turn\":\"fx-turn-0001\"}",
+    "User-Agent": "codex_cli/1.0.0"
+  },
+  "body": {
+    "model": "gpt-5-fixture",
+    "instructions": "Answer briefly.",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "fx user message one"
+          }
+        ]
+      }
+    ],
+    "prompt_cache_key": "fx-cache-0001"
+  }
+}

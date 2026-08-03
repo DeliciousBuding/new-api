@@ -1,0 +1,27 @@
+{
+  "_meta": {
+    "name": "boundary-below-gap-marker",
+    "desc": "P0-B below-marker fixture (claude format): the capture budget is smaller than the serialized gap marker itself, so even a truncated capture closes without a marker and the turn stays reconstructible as metadata plus an omitted count. Synthetic ids only.",
+    "format": "claude",
+    "raw_body_bytes": 141,
+    "capture_limit": 16,
+    "scope_expect": "claude_cli",
+    "sources_expect": [
+      "claude_session_header"
+    ]
+  },
+  "headers": {
+    "X-App": "cli",
+    "X-Claude-Code-Session-Id": "fx-claude-session-0003"
+  },
+  "body": {
+    "model": "claude-sonnet-fixture",
+    "system": "You are a fixture.",
+    "messages": [
+      {
+        "role": "user",
+        "content": "fx tiny capture below the gap marker"
+      }
+    ]
+  }
+}
