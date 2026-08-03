@@ -63,10 +63,13 @@ type SemanticUnit struct {
 	// call-part IDs plus result-referenced IDs. For a paired unit this is
 	// exactly the component's call IDs; for an orphan result it is the missing
 	// call ID the result references.
-	CallIDs         []string
-	Anchor          bool
-	SourceTruncated bool
-	Orphan          bool
+	CallIDs []string
+	// UnmatchedResultIDs records result references for which this component
+	// contains no declaring call, including partially orphaned result items.
+	UnmatchedResultIDs []string
+	Anchor             bool
+	SourceTruncated    bool
+	Orphan             bool
 }
 
 // codexTruncationMarker is the prefix Codex prepends to tool output it
@@ -111,31 +114,30 @@ func BuildSemanticUnits(items []CanonicalItem) ([]SemanticUnit, error) {
 		}
 	}
 
-	// Group by root.
+	// Group by root, then order components by their earliest original item.
+	// A union-find root is an implementation detail and is not guaranteed to be
+	// the component's minimum index when rank-based union is used.
 	rootToComp := make(map[int]*component, n)
 	for i := range items {
 		r := uf.find(i)
 		comp, ok := rootToComp[r]
 		if !ok {
-			comp = &component{root: r}
+			comp = &component{}
 			rootToComp[r] = comp
 		}
 		comp.itemIndexes = append(comp.itemIndexes, i)
-		comp.callIDs = append(comp.callIDs, cls[i].callIDs...)
-		comp.resultIDs = append(comp.resultIDs, cls[i].resultIDs...)
-		comp.declaresCall = comp.declaresCall || len(cls[i].callIDs) > 0
 	}
-
-	// Build units in protocol order.
-	roots := make([]int, 0, len(rootToComp))
-	for r := range rootToComp {
-		roots = append(roots, r)
-	}
-	sort.Ints(roots)
-	units := make([]SemanticUnit, 0, len(roots))
-	for _, r := range roots {
-		comp := rootToComp[r]
+	components := make([]*component, 0, len(rootToComp))
+	for _, comp := range rootToComp {
 		sort.Ints(comp.itemIndexes)
+		components = append(components, comp)
+	}
+	sort.Slice(components, func(i, j int) bool {
+		return components[i].itemIndexes[0] < components[j].itemIndexes[0]
+	})
+
+	units := make([]SemanticUnit, 0, len(components))
+	for _, comp := range components {
 		u, err := finalizeUnit(comp, items, cls)
 		if err != nil {
 			return nil, err
@@ -190,11 +192,7 @@ func classifyItem(it CanonicalItem) itemClass {
 
 // component is the union-find connected component of a unit.
 type component struct {
-	root         int
-	itemIndexes  []int
-	callIDs      []string
-	resultIDs    []string
-	declaresCall bool
+	itemIndexes []int
 }
 
 // itemUF is a union-find over canonical item indexes.
@@ -260,7 +258,7 @@ func finalizeUnit(comp *component, items []CanonicalItem, cls []itemClass) (Sema
 		Items:       make([]CanonicalItem, 0, len(comp.itemIndexes)),
 		ItemIndexes: append([]int(nil), comp.itemIndexes...),
 	}
-	var ids []string
+	var declaredIDs, resultIDs []string
 	for _, idx := range comp.itemIndexes {
 		it := items[idx]
 		u.Items = append(u.Items, it)
@@ -273,14 +271,21 @@ func finalizeUnit(comp *component, items []CanonicalItem, cls []itemClass) (Sema
 		if itemSourceTruncated(it) {
 			u.SourceTruncated = true
 		}
-		ids = append(ids, cls[idx].callIDs...)
-		ids = append(ids, cls[idx].resultIDs...)
+		if cls[idx].kind == SemanticUnitToolExchange {
+			u.Kind = SemanticUnitToolExchange
+		}
+		declaredIDs = append(declaredIDs, cls[idx].callIDs...)
+		resultIDs = append(resultIDs, cls[idx].resultIDs...)
 	}
-	u.CallIDs = sortedUnique(ids)
-	// A component that carries results but never declared a call is an orphan.
-	if !comp.declaresCall && len(comp.resultIDs) > 0 {
-		u.Orphan = true
+	declaredIDs = sortedUnique(declaredIDs)
+	resultIDs = sortedUnique(resultIDs)
+	u.CallIDs = sortedUnique(append(append([]string(nil), declaredIDs...), resultIDs...))
+	for _, id := range resultIDs {
+		if !containsSortedID(declaredIDs, id) {
+			u.UnmatchedResultIDs = append(u.UnmatchedResultIDs, id)
+		}
 	}
+	u.Orphan = len(u.UnmatchedResultIDs) > 0
 	return u, nil
 }
 
@@ -307,16 +312,6 @@ func isSystemDeveloperMessage(u *SemanticUnit) bool {
 	}
 	for _, it := range u.Items {
 		if it.Role == "system" || it.Role == "developer" {
-			return true
-		}
-	}
-	return false
-}
-
-// isUserMessage reports whether a message unit is a user instruction.
-func isUserMessage(u *SemanticUnit) bool {
-	for _, it := range u.Items {
-		if it.Role == "user" {
 			return true
 		}
 	}
@@ -363,4 +358,9 @@ func sortedUnique(ids []string) []string {
 		prev = id
 	}
 	return uniq
+}
+
+func containsSortedID(ids []string, want string) bool {
+	i := sort.SearchStrings(ids, want)
+	return i < len(ids) && ids[i] == want
 }

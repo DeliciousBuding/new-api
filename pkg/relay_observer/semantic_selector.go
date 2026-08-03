@@ -1,122 +1,75 @@
 package relayobserver
 
 import (
+	"encoding/hex"
 	"fmt"
-
-	"github.com/QuantumNous/new-api/common"
+	"math"
+	"sort"
 )
 
-// This file implements the semantic evidence selector (P0-C, PR #17A): the
-// pure budget decision that turns semantic units into the canonical stream a
-// truncated capture will persist. It never writes storage, never touches
-// configuration, and never modifies the normalizer.
+// This file implements the semantic evidence selector (P0-C, PR #17A).
+// The selector stays inside the relay observer package and has no storage,
+// HTTP, service, or database dependencies.
 //
-// Selection policy (audited, frozen):
-//
-//  1. Exact measurement first: if the full canonical total fits the limit, the
-//     whole stream is returned with zero truncation (Gap = nil).
-//  2. Anchor budget is an upper bound, not a reservation (D4): the selector
-//     first selects anchors within their capped share, then ALL remaining
-//     budget goes to the tail. If no anchor fits, the tail gets the full
-//     limit. ("最新证据优先": the tail always gets the majority share.)
-//  3. Anchor selection uses a continuous-prefix strategy (D7): only
-//     system/developer directives at the head of the stream are eligible;
-//     compact summaries are eligible only at unit index 0; the latest user
-//     instruction is NOT an anchor candidate (it is naturally retained by the
-//     tail). This ensures exactly one gap interval.
-//  4. The tail is selected from the newest unit backward as a contiguous
-//     suffix of whole units.
-//  5. The gap marker's real serialized size (via SelectionPolicy.MeasureGap)
-//     is re-checked against the limit and the selection rolls back from the
-//     tail's oldest end (then anchors in reverse priority) until the
-//     assembled stream fits. The budget is never exceeded (D1).
-//  6. The newest unit alone larger than the limit is never split and never
-//     forces an empty selection: it is excluded, recorded in Oversized
-//     (reason oversized_semantic_unit), and carried by the gap. An anchor
-//     unit larger than the anchor budget is likewise omitted and recorded
-//     (reason oversized_anchor).
-//  7. Degenerate limit: when the limit cannot even hold the gap marker, the
-//     marker is dropped and Gap is set with Reason=capture_limit_too_small
-//     (D2). TotalBytes = 0. The integration layer's envelope reservation
-//     (MinCaptureEnvelopeBytes) keeps production limits out of this regime.
-//  8. Assembly uses global item indexes (D5), not unit flattening, so the
-//     output Items are in strict protocol order.
+// A semantic unit may contain non-adjacent protocol items when a tool call and
+// result are paired by ID. A single-gap output cannot safely cut through such
+// a span. The selector therefore derives internal selection blocks by merging
+// overlapping unit spans. Block boundaries are exactly the safe protocol cut
+// points: selecting whole blocks preserves tool atomicity, original item order,
+// and the v1 layout of a continuous prefix, one gap, and a continuous suffix.
 
-// DefaultAnchorRatio is the fraction of the limit reserved for anchors.
-// 0.25 = 1/4. This is a float for policy configurability; the selector uses
-// integer math.
 const DefaultAnchorRatio = 0.25
-
-// DefaultAnchorCap is the hard byte cap of the anchor share (8 KiB).
 const DefaultAnchorCap = 8 * 1024
 
-// Gap positions.
 const (
 	GapPositionHead   = "head"
 	GapPositionMiddle = "middle"
 	GapPositionTail   = "tail"
 )
 
-// Gap reasons.
 const (
-	GapReasonBudget        = "budget_exceeded"
+	GapReasonBudget        = "capture_budget"
 	GapReasonOversized     = "oversized_semantic_unit"
 	GapReasonLimitTooSmall = "capture_limit_too_small"
 )
 
-// Oversized reasons.
 const (
 	OversizedReasonUnit   = "oversized_semantic_unit"
 	OversizedReasonAnchor = "oversized_anchor"
 )
 
-// SelectionPolicy carries the tunable parameters and the gap measurement
-// callback for one evidence selection. The selector is a pure function; the
-// policy is the only source of variability.
+// GapBuilder returns the final canonical gap item, including its keyed HMAC.
+// SelectEvidence measures the returned item itself, so callers cannot provide a
+// stale or hand-written byte estimate.
+type GapBuilder func(GapInfo) (CanonicalItem, error)
+
 type SelectionPolicy struct {
-	// Limit is the byte budget for the assembled stream (items + gap marker).
-	Limit int64
-	// AnchorRatio is the fraction of Limit reserved for anchors (e.g. 0.25).
+	Limit       int64
 	AnchorRatio float64
-	// AnchorCap is the hard byte cap of the anchor share.
-	AnchorCap int64
-	// MeasureGap serializes a gap marker and returns the item, its marshaled
-	// size, and any error. The integration layer provides the real
-	// implementation (withHmac); tests use a synthetic 64-byte placeholder.
-	MeasureGap func(GapInfo) (CanonicalItem, int64, error)
+	AnchorCap   int64
+	BuildGap    GapBuilder
 }
 
-// DefaultSelectionPolicy returns a SelectionPolicy with the standard defaults
-// and a gap marker that returns an empty-HMAC gap (the HMAC placeholder is
-// the caller's responsibility).
-func DefaultSelectionPolicy(limit int64) SelectionPolicy {
+func DefaultSelectionPolicy(limit int64, buildGap GapBuilder) SelectionPolicy {
 	return SelectionPolicy{
 		Limit:       limit,
 		AnchorRatio: DefaultAnchorRatio,
 		AnchorCap:   DefaultAnchorCap,
-		MeasureGap:  defaultMeasureGap,
+		BuildGap:    buildGap,
 	}
 }
 
-func defaultMeasureGap(g GapInfo) (CanonicalItem, int64, error) {
-	it := CanonicalItem{Kind: CanonicalKindGap, LogicalBytes: g.LogicalBytes, Truncated: true}
-	payload, err := common.Marshal(it)
-	if err != nil {
-		return it, 0, err
-	}
-	return it, int64(len(payload)), nil
-}
-
-// GapInfo describes the single omitted interval of a truncated selection.
+// GapInfo describes the single omitted protocol interval of a truncated
+// selection. It is embedded in the canonical gap item and therefore survives
+// persistence and reconstruction without a database schema change.
 type GapInfo struct {
-	Position        string `json:"position"` // head | middle | tail
+	Position        string `json:"position"`
 	Reason          string `json:"reason"`
 	OmittedItems    int    `json:"omitted_items"`
 	LogicalBytes    int64  `json:"logical_bytes"`
 	SourceTruncated bool   `json:"source_truncated,omitempty"`
 }
 
-// OversizedUnitInfo records a unit the selection had to exclude whole.
 type OversizedUnitInfo struct {
 	Kind            SemanticUnitKind `json:"kind"`
 	CallIDs         []string         `json:"call_ids,omitempty"`
@@ -126,13 +79,6 @@ type OversizedUnitInfo struct {
 	Reason          string           `json:"reason"`
 }
 
-// SelectionResult is the outcome of one evidence selection.
-// Items holds the retained canonical items in strict protocol order (by
-// global item index, not unit flattening). When Gap is non-nil, the gap
-// marker is already embedded in Items at the correct position. TotalBytes
-// is the marshaled size of Items and never exceeds the policy limit.
-// TotalBytes == 0 is valid only for a degenerate limit (Gap != nil,
-// Reason=capture_limit_too_small) or for an empty input stream.
 type SelectionResult struct {
 	Items      []CanonicalItem
 	Gap        *GapInfo
@@ -140,266 +86,437 @@ type SelectionResult struct {
 	TotalBytes int64
 }
 
-// SelectEvidence selects evidence from semantic units under a policy.
-// Deterministic: identical units and policy always yield the same result.
+type indexedSemanticStream struct {
+	items             []CanonicalItem
+	itemToUnit        []int
+	unitBytes         []int64
+	unitStarts        []int
+	unitEnds          []int
+	totalBytes        int64
+	totalLogicalBytes int64
+	sourceTruncated   bool
+}
+
+type selectionBlock struct {
+	Start           int
+	End             int
+	UnitIndexes     []int
+	CanonicalBytes  int64
+	LogicalBytes    int64
+	SourceTruncated bool
+	Anchor          bool
+}
+
+type unitSpan struct {
+	Unit  int
+	Start int
+	End   int
+}
+
+// SelectEvidence selects a deterministic canonical subsequence under policy.
+// Full-fit requests return the exact original item order. Truncated requests
+// retain whole safe-cut blocks and contain at most one structured gap marker.
 func SelectEvidence(units []SemanticUnit, policy SelectionPolicy) (SelectionResult, error) {
 	var res SelectionResult
-	n := len(units)
-	if n == 0 {
+	if len(units) == 0 {
 		return res, nil
+	}
+
+	stream, err := indexSemanticStream(units)
+	if err != nil {
+		return SelectionResult{}, err
 	}
 	limit := policy.Limit
 	if limit < 0 {
 		limit = 0
 	}
-
-	// Step 1: exact full measurement.
-	var total int64
-	for i := range units {
-		total += units[i].CanonicalBytes
-	}
-
-	// Step 2: full fit — zero truncation.
-	if total <= limit {
-		items := make([]CanonicalItem, 0, countUnitItems(units))
-		// Global index assembly (D5).
-		for i := range units {
-			items = append(items, units[i].Items...)
-		}
-		res.Items = items
-		res.TotalBytes = total
+	if stream.totalBytes <= limit {
+		res.Items = append([]CanonicalItem(nil), stream.items...)
+		res.TotalBytes = stream.totalBytes
 		return res, nil
 	}
-
-	// Step 3a: anchor budget as an upper bound (D4). Compute anchor budget,
-	// then the tail gets the rest.
-	anchorBudget := int64(float64(limit) * policy.AnchorRatio)
-	if anchorBudget > policy.AnchorCap {
-		anchorBudget = policy.AnchorCap
-	}
-	if anchorBudget < 0 {
-		anchorBudget = 0
+	if policy.BuildGap == nil {
+		return SelectionResult{}, fmt.Errorf("semantic selector: gap builder is required for truncation")
 	}
 
-	// Step 3b: the newest unit alone over the limit is never split.
-	excluded := make([]bool, n)
-	if units[n-1].CanonicalBytes > limit {
-		res.Oversized = append(res.Oversized, oversizedInfo(units[n-1], OversizedReasonUnit))
-		excluded[n-1] = true
+	blocks, unitToBlock := buildSelectionBlocks(units, stream)
+	selected := make([]bool, len(blocks))
+	excluded := make([]bool, len(blocks))
+	recordedOversized := make(map[int]bool)
+
+	ratio := policy.AnchorRatio
+	if math.IsNaN(ratio) || ratio < 0 {
+		ratio = 0
+	}
+	if ratio > 1 {
+		ratio = 1
+	}
+	anchorCap := policy.AnchorCap
+	if anchorCap < 0 {
+		anchorCap = 0
+	}
+	anchorBudget := int64(float64(limit) * ratio)
+	if anchorBudget > anchorCap {
+		anchorBudget = anchorCap
 	}
 
-	// Step 3c: continuous-prefix anchor selection (D7). Only system/developer
-	// directives at the head of the stream (contiguous from index 0), and
-	// compact summaries at index 0. No latest-user anchor — the tail naturally
-	// retains it.
-	selected := make([]bool, n)
-	var anchorBytes int64
-	for i := 0; i < n; i++ {
-		if excluded[i] {
-			continue
-		}
-		u := units[i]
-		// Anchor eligible: system/developer type at head of stream, or
-		// compact summary at index 0.
-		eligible := false
-		if u.Kind == SemanticUnitAnchor || isSystemDeveloperMessage(&u) {
-			eligible = true
-		}
-		if u.Kind == SemanticUnitCompactSummary && i == 0 {
-			eligible = true
-		}
-		if !eligible {
-			break // stop at the first non-anchor — continuous prefix (D7)
-		}
-		if u.CanonicalBytes > anchorBudget {
-			// An oversized anchor cannot fit the anchor share. Recording it
-			// and continuing would create an anchor island inside the gap
-			// (D7 forbids a retained anchor between two omitted ranges), so
-			// the continuous prefix ends here.
-			res.Oversized = append(res.Oversized, oversizedInfo(u, OversizedReasonAnchor))
+	latestUnit := stream.itemToUnit[len(stream.items)-1]
+	latestBlock := unitToBlock[latestUnit]
+	latestOversized := stream.unitBytes[latestUnit] > limit
+	if latestOversized {
+		excluded[latestBlock] = true
+		appendOversized(&res, recordedOversized, latestUnit, units[latestUnit], stream.unitBytes[latestUnit], OversizedReasonUnit)
+	}
+
+	var selectedBytes int64
+	for i := 0; i < len(blocks); i++ {
+		block := blocks[i]
+		if excluded[i] || !block.Anchor {
 			break
 		}
-		if anchorBytes+u.CanonicalBytes > anchorBudget {
-			// The anchor share is exhausted: the prefix must stay continuous,
-			// so no later unit can be an anchor either.
+		if block.CanonicalBytes > anchorBudget-selectedBytes {
+			for _, unitIndex := range block.UnitIndexes {
+				if stream.unitBytes[unitIndex] > anchorBudget {
+					appendOversized(&res, recordedOversized, unitIndex, units[unitIndex], stream.unitBytes[unitIndex], OversizedReasonAnchor)
+				}
+			}
 			break
 		}
 		selected[i] = true
-		anchorBytes += u.CanonicalBytes
+		selectedBytes += block.CanonicalBytes
 	}
 
-	// Step 3d: tail selection from the newest unit backward. The full
-	// remaining budget (limit - anchorBytes) is available to the tail (D4).
-	tailBudget := limit - anchorBytes
-	var tailBytes int64
-	for i := n - 1; i >= 0; i-- {
-		if excluded[i] || selected[i] {
-			continue
+	if latestOversized {
+		// With an omitted newest block, a one-gap layout can only retain a
+		// continuous prefix. Extend the prefix as far as the content budget
+		// allows; marker rollback below reserves the final exact gap size.
+		for i := 0; i < latestBlock; i++ {
+			if excluded[i] {
+				break
+			}
+			if selected[i] {
+				continue
+			}
+			if i > 0 && !selected[i-1] {
+				break
+			}
+			if blocks[i].CanonicalBytes > limit-selectedBytes {
+				break
+			}
+			selected[i] = true
+			selectedBytes += blocks[i].CanonicalBytes
 		}
-		u := units[i]
-		if u.CanonicalBytes > tailBudget-tailBytes {
-			break
-		}
-		selected[i] = true
-		tailBytes += u.CanonicalBytes
-	}
-
-	// Step 3e: build the gap info over the omitted interval. Excluded
-	// oversized units are also omitted evidence: they are recorded in
-	// Oversized AND carried by the gap (their bytes and item count appear
-	// here), so reconstruction sees the full extent of the loss.
-	firstOmitted, lastOmitted := -1, -1
-	gap := GapInfo{Reason: GapReasonBudget}
-	if excluded[n-1] {
-		gap.Reason = GapReasonOversized
-	}
-	for i := range units {
-		if selected[i] {
-			continue
-		}
-		if firstOmitted < 0 {
-			firstOmitted = i
-		}
-		lastOmitted = i
-		gap.OmittedItems += len(units[i].Items)
-		gap.LogicalBytes += units[i].LogicalBytes
-		if units[i].SourceTruncated {
-			gap.SourceTruncated = true
-		}
-	}
-	switch {
-	case firstOmitted == 0:
-		gap.Position = GapPositionHead
-	case lastOmitted == n-1:
-		gap.Position = GapPositionTail
-	default:
-		gap.Position = GapPositionMiddle
-	}
-
-	// Step 3f: measure the gap marker and re-validate (D1).
-	gapMarker, markerBytes, err := policy.MeasureGap(gap)
-	if err != nil {
-		return SelectionResult{}, fmt.Errorf("measure gap: %w", err)
-	}
-
-	selectedBytes := anchorBytes + tailBytes
-	for selectedBytes+markerBytes > limit {
-		dropped := false
-		// Drop the tail's oldest retained unit first.
-		if lastOmitted+1 < n {
-			for i := lastOmitted + 1; i < n; i++ {
+	} else {
+		// Anchors are optional. If they prevent the newest block from fitting,
+		// release them from the end of the prefix before selecting the tail.
+		newestBlock := len(blocks) - 1
+		for blocks[newestBlock].CanonicalBytes > limit-selectedBytes {
+			dropAnchor := -1
+			for i := newestBlock - 1; i >= 0; i-- {
 				if selected[i] {
-					selected[i] = false
-					selectedBytes -= units[i].CanonicalBytes
-					dropFromGap(&gap, &units[i], &firstOmitted, &lastOmitted, i)
-					gapMarker, markerBytes, err = policy.MeasureGap(gap)
-					if err != nil {
-						return SelectionResult{}, fmt.Errorf("measure gap (rollback): %w", err)
-					}
-					dropped = true
+					dropAnchor = i
 					break
 				}
 			}
-		}
-		if !dropped {
-			// Drop the last anchor (highest index).
-			for i := n - 1; i >= 0; i-- {
-				if selected[i] && (units[i].Kind == SemanticUnitAnchor || isSystemDeveloperMessage(&units[i]) || (units[i].Kind == SemanticUnitCompactSummary && i == 0)) {
-					selected[i] = false
-					selectedBytes -= units[i].CanonicalBytes
-					dropFromGap(&gap, &units[i], &firstOmitted, &lastOmitted, i)
-					gapMarker, markerBytes, err = policy.MeasureGap(gap)
-					if err != nil {
-						return SelectionResult{}, fmt.Errorf("measure gap (anchor rollback): %w", err)
-					}
-					dropped = true
-					break
-				}
+			if dropAnchor < 0 {
+				break
 			}
+			selected[dropAnchor] = false
+			selectedBytes -= blocks[dropAnchor].CanonicalBytes
 		}
-		if !dropped {
-			break
+
+		// Retain a continuous suffix from the newest safe block.
+		for i := newestBlock; i >= 0; i-- {
+			if selected[i] {
+				break
+			}
+			if excluded[i] || blocks[i].CanonicalBytes > limit-selectedBytes {
+				break
+			}
+			selected[i] = true
+			selectedBytes += blocks[i].CanonicalBytes
 		}
 	}
 
-	// Step 3g: degenerate limit (D2).
+	gapReason := GapReasonBudget
+	if latestOversized {
+		gapReason = GapReasonOversized
+	}
+	gap, firstOmittedBlock, lastOmittedBlock, err := gapForSelection(blocks, selected, len(stream.items), gapReason)
+	if err != nil {
+		return SelectionResult{}, err
+	}
+	gapMarker, markerBytes, err := buildAndMeasureGap(policy.BuildGap, gap)
+	if err != nil {
+		return SelectionResult{}, err
+	}
+
+	for selectedBytes+markerBytes > limit {
+		dropBlock := -1
+		suffixStart := lastOmittedBlock + 1
+		prefixEnd := firstOmittedBlock - 1
+		switch {
+		case suffixStart < len(blocks) && suffixStart+1 < len(blocks):
+			// More than one tail block remains: remove the oldest one while
+			// preserving the newest evidence.
+			dropBlock = suffixStart
+		case prefixEnd >= 0:
+			// Only the newest tail block remains (or there is no suffix).
+			// Release the optional prefix before sacrificing that block.
+			dropBlock = prefixEnd
+		case suffixStart < len(blocks):
+			// The marker and the sole newest block cannot coexist.
+			dropBlock = suffixStart
+		}
+		if dropBlock < 0 || !selected[dropBlock] {
+			break
+		}
+		selected[dropBlock] = false
+		selectedBytes -= blocks[dropBlock].CanonicalBytes
+		gap, firstOmittedBlock, lastOmittedBlock, err = gapForSelection(blocks, selected, len(stream.items), gapReason)
+		if err != nil {
+			return SelectionResult{}, err
+		}
+		gapMarker, markerBytes, err = buildAndMeasureGap(policy.BuildGap, gap)
+		if err != nil {
+			return SelectionResult{}, err
+		}
+	}
+
 	if selectedBytes+markerBytes > limit {
 		res.Gap = &GapInfo{
-			Position:     GapPositionHead,
-			Reason:       GapReasonLimitTooSmall,
-			OmittedItems: countUnitItems(units),
-			LogicalBytes: totalLogicalBytes(units),
+			Position:        GapPositionHead,
+			Reason:          GapReasonLimitTooSmall,
+			OmittedItems:    len(stream.items),
+			LogicalBytes:    stream.totalLogicalBytes,
+			SourceTruncated: stream.sourceTruncated,
 		}
 		return res, nil
 	}
 
-	// Step 4: assemble in strict protocol order (D5). The gap marker goes
-	// between the anchor part and the tail part: at the position of the
-	// first omitted unit. Items of each selected unit are in original
-	// protocol order (ItemIndexes are sorted), and units themselves are
-	// sorted by their first item index, so flattening selected units in
-	// unit order yields the global protocol order.
-	out := make([]CanonicalItem, 0, countUnitItems(units)+1)
-	for i := 0; i < n; i++ {
-		if i == firstOmitted {
+	selectedItems := make([]bool, len(stream.items))
+	for i, block := range blocks {
+		if !selected[i] {
+			continue
+		}
+		for itemIndex := block.Start; itemIndex <= block.End; itemIndex++ {
+			selectedItems[itemIndex] = true
+		}
+	}
+	firstOmittedItem := blocks[firstOmittedBlock].Start
+	out := make([]CanonicalItem, 0, len(stream.items)-gap.OmittedItems+1)
+	for itemIndex, item := range stream.items {
+		if itemIndex == firstOmittedItem {
 			out = append(out, gapMarker)
 		}
-		if selected[i] {
-			out = append(out, units[i].Items...)
+		if selectedItems[itemIndex] {
+			out = append(out, item)
 		}
 	}
 	res.Items = out
-	g := gap
-	res.Gap = &g
+	res.Gap = &gap
 	res.TotalBytes = selectedBytes + markerBytes
 	return res, nil
 }
 
-// GapMarker builds the canonical gap marker item from a GapInfo. The returned
-// item has no digest (Hmac is empty): the integration layer attaches the
-// keyed digest via its MeasureGap callback.
-func GapMarker(g GapInfo) CanonicalItem {
-	return CanonicalItem{Kind: CanonicalKindGap, LogicalBytes: g.LogicalBytes, Truncated: true}
+func indexSemanticStream(units []SemanticUnit) (indexedSemanticStream, error) {
+	var stream indexedSemanticStream
+	itemCount := countUnitItems(units)
+	if itemCount == 0 {
+		return stream, fmt.Errorf("semantic selector: units contain no items")
+	}
+	maxIndex := -1
+	for unitIndex := range units {
+		u := units[unitIndex]
+		if len(u.Items) == 0 || len(u.Items) != len(u.ItemIndexes) {
+			return stream, fmt.Errorf("semantic selector: unit %d has inconsistent items and indexes", unitIndex)
+		}
+		for _, itemIndex := range u.ItemIndexes {
+			if itemIndex < 0 {
+				return stream, fmt.Errorf("semantic selector: unit %d has negative item index %d", unitIndex, itemIndex)
+			}
+			if itemIndex > maxIndex {
+				maxIndex = itemIndex
+			}
+		}
+	}
+	if maxIndex+1 != itemCount {
+		return stream, fmt.Errorf("semantic selector: item indexes must form a dense zero-based stream")
+	}
+
+	stream.items = make([]CanonicalItem, itemCount)
+	stream.itemToUnit = make([]int, itemCount)
+	stream.unitBytes = make([]int64, len(units))
+	stream.unitStarts = make([]int, len(units))
+	stream.unitEnds = make([]int, len(units))
+	seen := make([]bool, itemCount)
+	for unitIndex := range units {
+		u := units[unitIndex]
+		start, end := itemCount, -1
+		for localIndex, itemIndex := range u.ItemIndexes {
+			if itemIndex >= itemCount || seen[itemIndex] {
+				return stream, fmt.Errorf("semantic selector: duplicate or out-of-range item index %d", itemIndex)
+			}
+			seen[itemIndex] = true
+			item := u.Items[localIndex]
+			itemBytes, err := canonicalBytesOf(item)
+			if err != nil {
+				return stream, fmt.Errorf("semantic selector: item %d: %w", itemIndex, err)
+			}
+			stream.items[itemIndex] = item
+			stream.itemToUnit[itemIndex] = unitIndex
+			stream.unitBytes[unitIndex] += itemBytes
+			stream.totalBytes += itemBytes
+			stream.totalLogicalBytes += item.LogicalBytes
+			stream.sourceTruncated = stream.sourceTruncated || itemSourceTruncated(item)
+			if itemIndex < start {
+				start = itemIndex
+			}
+			if itemIndex > end {
+				end = itemIndex
+			}
+		}
+		stream.unitStarts[unitIndex] = start
+		stream.unitEnds[unitIndex] = end
+	}
+	for itemIndex, ok := range seen {
+		if !ok {
+			return stream, fmt.Errorf("semantic selector: missing item index %d", itemIndex)
+		}
+	}
+	return stream, nil
 }
 
-// dropFromGap moves one retained unit into the omitted interval.
-func dropFromGap(gap *GapInfo, u *SemanticUnit, first, last *int, idx int) {
-	gap.OmittedItems += len(u.Items)
-	gap.LogicalBytes += u.LogicalBytes
-	if u.SourceTruncated {
-		gap.SourceTruncated = true
+func buildSelectionBlocks(units []SemanticUnit, stream indexedSemanticStream) ([]selectionBlock, []int) {
+	spans := make([]unitSpan, len(units))
+	for unitIndex := range units {
+		spans[unitIndex] = unitSpan{Unit: unitIndex, Start: stream.unitStarts[unitIndex], End: stream.unitEnds[unitIndex]}
 	}
-	if idx < *first || *first < 0 {
-		*first = idx
+	sort.Slice(spans, func(i, j int) bool {
+		if spans[i].Start != spans[j].Start {
+			return spans[i].Start < spans[j].Start
+		}
+		return spans[i].End < spans[j].End
+	})
+
+	blocks := make([]selectionBlock, 0, len(spans))
+	unitToBlock := make([]int, len(units))
+	for _, span := range spans {
+		if len(blocks) == 0 || span.Start > blocks[len(blocks)-1].End {
+			blocks = append(blocks, selectionBlock{Start: span.Start, End: span.End, Anchor: true})
+		}
+		blockIndex := len(blocks) - 1
+		block := &blocks[blockIndex]
+		if span.End > block.End {
+			block.End = span.End
+		}
+		block.UnitIndexes = append(block.UnitIndexes, span.Unit)
+		block.CanonicalBytes += stream.unitBytes[span.Unit]
+		block.LogicalBytes += units[span.Unit].LogicalBytes
+		block.SourceTruncated = block.SourceTruncated || units[span.Unit].SourceTruncated
+		block.Anchor = block.Anchor && anchorEligible(units[span.Unit], span.Start)
+		unitToBlock[span.Unit] = blockIndex
 	}
-	if idx > *last {
-		*last = idx
+	return blocks, unitToBlock
+}
+
+func anchorEligible(unit SemanticUnit, start int) bool {
+	if unit.Kind == SemanticUnitCompactSummary {
+		return start == 0
+	}
+	return unit.Kind == SemanticUnitAnchor || isSystemDeveloperMessage(&unit)
+}
+
+func gapForSelection(blocks []selectionBlock, selected []bool, itemCount int, reason string) (GapInfo, int, int, error) {
+	first, last := -1, -1
+	runs := 0
+	inRun := false
+	gap := GapInfo{Reason: reason}
+	for blockIndex, block := range blocks {
+		if selected[blockIndex] {
+			inRun = false
+			continue
+		}
+		if !inRun {
+			runs++
+			inRun = true
+		}
+		if first < 0 {
+			first = blockIndex
+		}
+		last = blockIndex
+		gap.OmittedItems += block.End - block.Start + 1
+		gap.LogicalBytes += block.LogicalBytes
+		gap.SourceTruncated = gap.SourceTruncated || block.SourceTruncated
+	}
+	if first < 0 {
+		return GapInfo{}, -1, -1, fmt.Errorf("semantic selector: truncated selection has no omitted block")
+	}
+	if runs != 1 {
+		return GapInfo{}, -1, -1, fmt.Errorf("semantic selector: selection produced %d omitted intervals", runs)
+	}
+	switch {
+	case blocks[first].Start == 0:
+		gap.Position = GapPositionHead
+	case blocks[last].End == itemCount-1:
+		gap.Position = GapPositionTail
+	default:
+		gap.Position = GapPositionMiddle
+	}
+	return gap, first, last, nil
+}
+
+func buildAndMeasureGap(build GapBuilder, gap GapInfo) (CanonicalItem, int64, error) {
+	marker, err := build(gap)
+	if err != nil {
+		return CanonicalItem{}, 0, fmt.Errorf("semantic selector: build gap: %w", err)
+	}
+	if marker.Kind != CanonicalKindGap || marker.Gap == nil || *marker.Gap != gap {
+		return CanonicalItem{}, 0, fmt.Errorf("semantic selector: gap builder returned an invalid marker")
+	}
+	digest, decodeErr := hex.DecodeString(marker.Hmac)
+	if decodeErr != nil || len(digest) != 32 {
+		return CanonicalItem{}, 0, fmt.Errorf("semantic selector: gap builder must attach a final SHA-256 HMAC")
+	}
+	markerBytes, err := canonicalBytesOf(marker)
+	if err != nil {
+		return CanonicalItem{}, 0, fmt.Errorf("semantic selector: measure gap: %w", err)
+	}
+	return marker, markerBytes, nil
+}
+
+// GapMarker builds the structured canonical marker before the caller attaches
+// the keyed HMAC. A copy of GapInfo is embedded so later caller mutation cannot
+// change the selected result.
+func GapMarker(gap GapInfo) CanonicalItem {
+	info := gap
+	return CanonicalItem{
+		Kind:         CanonicalKindGap,
+		LogicalBytes: gap.LogicalBytes,
+		Truncated:    true,
+		Gap:          &info,
 	}
 }
 
-func oversizedInfo(u SemanticUnit, reason string) OversizedUnitInfo {
-	return OversizedUnitInfo{
-		Kind:            u.Kind,
-		CallIDs:         u.CallIDs,
-		LogicalBytes:    u.LogicalBytes,
-		CanonicalBytes:  u.CanonicalBytes,
-		SourceTruncated: u.SourceTruncated,
+func appendOversized(res *SelectionResult, recorded map[int]bool, unitIndex int, unit SemanticUnit, canonicalBytes int64, reason string) {
+	if recorded[unitIndex] {
+		return
+	}
+	recorded[unitIndex] = true
+	res.Oversized = append(res.Oversized, OversizedUnitInfo{
+		Kind:            unit.Kind,
+		CallIDs:         append([]string(nil), unit.CallIDs...),
+		LogicalBytes:    unit.LogicalBytes,
+		CanonicalBytes:  canonicalBytes,
+		SourceTruncated: unit.SourceTruncated,
 		Reason:          reason,
-	}
+	})
 }
 
 func countUnitItems(units []SemanticUnit) int {
-	n := 0
+	count := 0
 	for i := range units {
-		n += len(units[i].Items)
+		count += len(units[i].Items)
 	}
-	return n
-}
-
-func totalLogicalBytes(units []SemanticUnit) int64 {
-	var t int64
-	for i := range units {
-		t += units[i].LogicalBytes
-	}
-	return t
+	return count
 }

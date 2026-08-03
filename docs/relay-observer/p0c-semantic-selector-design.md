@@ -104,13 +104,15 @@ ToolExchangeUnit {
 func BuildSemanticUnits(items []CanonicalItem) []SemanticUnit
 
 type SemanticUnit struct {
-    Kind            SemanticUnitKind
-    Items           []CanonicalItem
-    LogicalBytes    int64
-    CanonicalBytes  int64
-    CallIDs         []string
-    Anchor          bool
-    SourceTruncated bool
+    Kind               SemanticUnitKind
+    Items              []CanonicalItem
+    ItemIndexes        []int
+    LogicalBytes       int64
+    CanonicalBytes     int64
+    CallIDs            []string
+    UnmatchedResultIDs []string
+    Anchor             bool
+    SourceTruncated    bool
 }
 ```
 
@@ -118,25 +120,28 @@ type SemanticUnit struct {
 
 硬规则：
 - **tool call + result 原子化**（`tool_exchange`）：call 与 result 配对进同一 unit，按稳定 ID（codex `call_id` / claude `tool_use_id`），不靠邻接；
-- **多个并行 calls 按 ID 匹配**；无法匹配的孤立 result 仍保留但标记 `orphan`（unit 的 `CallIDs` 非空、pair 状态记录于内部字段，不丢弃证据）；
-- unit 内顺序保持协议原顺序；
+- **多个并行 calls 按 ID 匹配**；无法匹配的 result 引用写入 `UnmatchedResultIDs`，包括“同一 result 同时引用已匹配 ID 与缺失 ID”的部分孤儿场景，不丢弃证据；
+- `ItemIndexes` 是原始 canonical 流位置的唯一权威；unit 按最小原始 index 排序，禁止按 union-find root 排序；
+- unit 内 `Items` 按原始 index 排序，但 selector 不得直接 flatten unit 来重建协议流；
 - 构建结果必须**确定性**（同输入恒同输出——决定性的分组与排序，供测试与 corpus benchmark 复用）。
 
 ### 阶段三 预算选择（新纯函数层）
 
 ```go
-func SelectEvidence(units []SemanticUnit, limit int64) SelectionResult
+func SelectEvidence(units []SemanticUnit, policy SelectionPolicy) (SelectionResult, error)
 ```
 
 算法顺序：
-1. **精确测量**完整 canonical 总量（unit.CanonicalBytes 求和）；
-2. `total <= limit` → **完整返回，零 gap**（核心目标第一分支）；
-3. `total > limit`：
-   a. 构造候选 anchor（§6 不变量 3 的候选集与优先级，受锚预算上限约束）；
-   b. **尾部倒序**选择完整 semantic units（unit 原子：要么整单元、要么进 gap；`tool_exchange` 绝不拆 call/result）；
-   c. 计算被省略区间（anchor + 已选尾部之外的 items 区间）；
-   d. 构造实际 gap（§4，`reason=capture_budget`，position 由区间位置定）；
-   e. **用 gap 真实序列化大小重新校验**（gap marker 本身进预算；若超限则收缩 anchor 或尾部，直到 gap 放得下；最坏情形走 §5 超大单元路径）。
+1. 按 `ItemIndexes` 重建并校验稠密的原始 canonical 流，逐 item 真实 marshal 计量；
+2. `total <= limit` → **按原始 index 原样完整返回，零 gap**（核心目标第一分支）；
+3. 将每个 semantic unit 映射为 `[min(ItemIndexes), max(ItemIndexes)]` span；对重叠/交错 span 做传递闭包，形成内部 `selectionBlock`。只有 block 边界是安全切分点——否则非邻接 call/result 会把一个逻辑 gap 分裂成两个物理缺口；
+4. `total > limit`：
+   a. 从头部连续安全块中选择候选 anchor，锚预算只是上限，不是保留配额；
+   b. 从最新安全块向前选择连续 tail；若 anchor 挤占了最新块，先释放 anchor，保证“最新证据优先”；
+   c. 被省略的 block 必须恰好形成一个连续区间，否则返回内部不变量错误；
+   d. 构造结构化 gap（§4，`reason=capture_budget`，position 按原始 item 区间计算）；
+   e. 调用 `GapBuilder` 生成已经附加最终 HMAC 的 marker，再由 selector 自己真实 marshal 计量；若超限，先移除最老 tail 块，再释放 anchor，最后才放弃唯一最新块；
+   f. 最终输出按原始 item index 组装，绝不 flatten semantic units。
 
 **明确写：不用固定 envelope 先减预算**（P0-B 的 `selectionBudget = limit - envelope` 只作 P0-B 阶段的最小 marker 兜底口径；P0-C 的校验以真实序列化大小回环，不预先扣一个固定常数）。
 
@@ -150,8 +155,14 @@ type GapInfo struct {
     LogicalBytes    int64  `json:"logical_bytes"`
     SourceTruncated bool   `json:"source_truncated,omitempty"`
 }
+
+type CanonicalItem struct {
+    // existing canonical fields...
+    Gap *GapInfo `json:"gap,omitempty"`
+}
 ```
 
+`GapInfo` 直接嵌入普通 canonical gap item；content-object 与 context 表继续保存原有 canonical JSON/digest，不新增表、列或 context 类型。非 gap item 因 `omitempty` 保持原 JSON 形状与 digest 语义。
 `reason` 枚举：
 - `capture_budget` —— Observer 因预算省略（选择器主动裁）；
 - `capture_limit_too_small` —— 预算连最小 gap marker 都放不下（§5.1），items 为空，仅含 GapInfo 解释；
@@ -203,8 +214,8 @@ type GapInfo struct {
    3. system/developer 指令（稳定锚，受锚预算上限约束；claude ~50-70K tokens 超限时放弃全量，依赖 digest dedup 跨请求恢复）；
    4. agent 任务/计划状态。
    锚预算上限：首版 = capture limit 的固定比例（建议 ≤ 1/4），corpus benchmark 校准；"稳定少量 anchor" 而非"保全部头部"。
-4. **tail 从语义单元倒序选择**：以 unit 为粒度从尾部向前，直到预算耗尽。
-5. **gap 唯一且位置明确**：每个输出最多一个 gap，`Position`（head | middle | tail）确定；anchor 在头、最新证据在尾时 gap 落在中间区间。v1 禁止"anchor → gap → anchor → gap → tail"的多段结构（见不变量 8）。
+4. **tail 从安全切分块倒序选择**：普通相邻 unit 各自形成 block；非邻接、重叠或交错 tool span 先做闭包合并，避免在 call/result 之间产生不可表达的第二个物理缺口。最新 block 的优先级高于可选 anchor。
+5. **gap 唯一且位置明确**：每个输出最多一个 gap，`Position`（head | middle | tail）按原始 canonical item 区间确定；marker 回退后必须重新计算。anchor 在头、最新证据在尾时 gap 落在中间区间。v1 禁止"anchor → gap → anchor → gap → tail"的多段结构（见不变量 8）。
 6. **session tracking 永远独立**：selector 零 items / 超大 unit / 协议不支持 / panic 均不影响身份绑定（session 解析在内容选择之外，独立路径保证）。
 7. **首版不改 schema**：输出普通 ordered canonical items（+ gap marker item），不做 prefix+suffix 双端 delta、不引入 schema v4、不新增 context 类型。**实现 PR 必须额外测 context storage amplification**——anchor + gap + tail 布局可能降低公共前缀命中（gap marker 内容随 omitted 变化，commonPrefix 在 marker 处断裂），须以 `suffix bytes / full bytes` 量化并记录基线。
 8. **v1 布局限制：连续 anchor prefix + 一个 middle gap + 连续 tail suffix，禁止中间 anchor islands**。具体：
@@ -234,12 +245,13 @@ session → content objects → head
 
 ### 8.1 context suffix 放大 / 公共前缀命中下降
 
-anchor + gap + tail 布局下，gap marker 内容随每轮 omitted 变化 → commonPrefix 在 marker 处断裂 → delta suffix 接近全量 → context 元数据放大（GPT 方案 A 已接受，`reservation-budget-findings.md` 同源）。v1 接受，以 corpus benchmark 量化：
+anchor + gap + tail 布局下，gap marker 内容随每轮 omitted 变化 → commonPrefix 在 marker 处断裂 → delta suffix 接近全量 → context 元数据放大（GPT 方案 A 已接受，`reservation-budget-findings.md` 同源）。v1 接受，以固定 benchmark 量化：
 - capture recall（最新消息保住率，接受标准）；
-- context storage amplification（suffix bytes / full bytes 比，**实现 PR 必测**，不变量 7）；
+- context storage amplification（suffix bytes / full bytes）；
 - content-object dedup ratio（跨 turn 复用率）；
 - common_prefix_count 分布。
-方案 B（prefix+suffix 双端 delta）记为 v2 候选，不在 v1 实现。
+
+实现基线（2026-08-03，20 轮全量回放合成 corpus，4 KiB capture limit，Windows amd64，`-benchtime=200x`）：`0.9184 suffix/full`，selector `~21.5 µs/op`。性能数值只作观察，不设机器相关门禁；`suffix/full` 是结构风险基线，后续布局变化必须重新记录。方案 B（prefix+suffix 双端 delta）记为 v2 候选，不在 v1 实现。
 
 ### 8.2 配对单元大小
 
@@ -253,20 +265,24 @@ anchor + gap + tail 布局下，gap marker 内容随每轮 omitted 变化 → co
 ## 9. 验收
 
 ```bash
-# 单元：语义分组 / 配对保护（按 ID 不靠邻接）/ tail 单元选择 / gap position / oversized unit / 预算回环校验
-go test ./pkg/relay_observer/ -run 'TestBuildSemanticUnits|TestSelectEvidence|TestGapPosition|TestOversizedUnit' -count=1
+# 单元：语义分组 / ID 配对 / 原始顺序 / 安全切分块 / gap position / oversized / 最终 HMAC 预算
+go test ./pkg/relay_observer/ -run 'TestBuildUnits|TestSelect|TestGapMarker' -count=1
 
-# corpus benchmark（固定 corpus：4 个 agent fixture + 合成滑动窗口；含 amplification 基线）
-go test ./pkg/relay_observer/ -bench 'BenchmarkSemanticSelector' -benchtime=200x
+# Linux race（selector 纯函数范围）
+go test -race ./pkg/relay_observer/ -run 'TestBuildUnits|TestSelect|TestGapMarker' -count=1
 
-# 集成（真实 PG）：tail 截断 + 重建 + 配对标注 + 死链检查
+# 固定滑动回放 benchmark + context suffix/full 基线
+go test ./pkg/relay_observer/ -run '^$' -bench '^BenchmarkSemanticSelector$' -benchtime=200x -count=1
+
+# 集成（17B 接线后）：tail 截断 + 重建 + 配对标注 + 死链检查
 go test -tags relay_observer_pg_integration ./pkg/relay_observer/ -run TestIntegrationSemanticSelector -count=1
 ```
 
 **接受标准**：
-- 最新 user 消息 + 其 tool 链 100% 保住（预算 ≥ 单元大小）；
-- gap marker 恒存在（任何截断输出都带 §4 结构）；
-- 重建无死链（配对被省略时孤儿标记明确，不产生悬空引用）。
+- 最新 user 消息及其所处安全切分块优先保留；预算足以容纳该 block + 最小最终 marker 时不得被可选 anchor 挤掉；
+- 任何可容纳 marker 的截断输出都带一个 §4 结构化 gap item；极小预算则 `Items=[]` 且 `SelectionResult.Gap.reason=capture_limit_too_small`；
+- full-fit 与截断输出中的非 gap items 都是原始 canonical 流的严格子序列；
+- 重建无死链（配对被省略时整体省略，部分孤儿 result 的缺失 ID 明确记录）。
 
 ## 10. 后续（不属本轮）
 

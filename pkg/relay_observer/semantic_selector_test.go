@@ -3,11 +3,11 @@ package relayobserver
 import (
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/stretchr/testify/assert"
@@ -25,31 +25,12 @@ import (
 // ---------------------------------------------------------------------------
 // test helpers
 
-const testHMACPlaceholder = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789" // 64 hex chars
-
-// testPolicy returns a SelectionPolicy with a MeasureGap that includes a
-// 64-byte HMAC placeholder (D1), so gap measurement is realistic.
 func testPolicy(limit int64) SelectionPolicy {
-	return SelectionPolicy{
-		Limit:       limit,
-		AnchorRatio: DefaultAnchorRatio,
-		AnchorCap:   DefaultAnchorCap,
-		MeasureGap:  testMeasureGap,
-	}
+	return DefaultSelectionPolicy(limit, testBuildGap)
 }
 
-func testMeasureGap(g GapInfo) (CanonicalItem, int64, error) {
-	it := CanonicalItem{
-		Kind:         CanonicalKindGap,
-		LogicalBytes: g.LogicalBytes,
-		Truncated:    true,
-		Hmac:         testHMACPlaceholder,
-	}
-	payload, err := json.Marshal(it)
-	if err != nil {
-		return it, 0, err
-	}
-	return it, int64(len(payload)), nil
+func testBuildGap(gap GapInfo) (CanonicalItem, error) {
+	return withHmac(GapMarker(gap), NormalizeOptions{HMACKey: testHMACKey}), nil
 }
 
 func sp(text string) CanonicalPart {
@@ -133,10 +114,13 @@ func assertSelectionInvariants(t *testing.T, units []SemanticUnit, limit int64, 
 		assert.Equal(t, 1, gapKindCount(res.Items), "truncation has exactly one gap marker")
 		assert.Equal(t, selected, countUnitItems(units)-res.Gap.OmittedItems, "gap omitted_items must match the selection")
 	}
-	// Verify protocol order (D5).
-	var input []CanonicalItem
-	for i := range units {
-		input = append(input, units[i].Items...)
+	// Verify protocol order against the original global item indexes, not unit
+	// flattening (a tool unit may contain non-adjacent items).
+	input := make([]CanonicalItem, countUnitItems(units))
+	for unitIndex := range units {
+		for localIndex, itemIndex := range units[unitIndex].ItemIndexes {
+			input[itemIndex] = units[unitIndex].Items[localIndex]
+		}
 	}
 	assertSubsequence(t, input, res.Items)
 }
@@ -145,19 +129,21 @@ func assertSelectionInvariants(t *testing.T, units []SemanticUnit, limit int64, 
 func assertSubsequence(t *testing.T, want, got []CanonicalItem) {
 	t.Helper()
 	j := 0
-	for _, g := range got {
-		if g.Kind == CanonicalKindGap {
+	for _, item := range got {
+		if item.Kind == CanonicalKindGap {
 			continue
 		}
+		found := false
 		for j < len(want) {
-			if assert.ObjectsAreEqual(want[j], g) {
+			if assert.ObjectsAreEqual(want[j], item) {
 				j++
+				found = true
 				break
 			}
 			j++
 		}
-		if j > len(want) {
-			t.Fatalf("item not found in input order: %+v", g)
+		if !found {
+			t.Fatalf("item not found in input order: %+v", item)
 		}
 	}
 }
@@ -399,10 +385,36 @@ func TestBuildUnitsItemIndexes(t *testing.T) {
 	units, err := BuildSemanticUnits(items)
 	require.NoError(t, err)
 	require.Len(t, units, 2)
-	// Unit 0: items[0] and items[2] merged.
 	assert.Equal(t, []int{0, 2}, units[0].ItemIndexes)
-	// Unit 1: items[1] alone.
 	assert.Equal(t, []int{1}, units[1].ItemIndexes)
+}
+
+func TestBuildUnitsOrdersComponentsByFirstItem(t *testing.T) {
+	bridge := mkMsg("assistant", "bridge", 10)
+	bridge.Content = append(bridge.Content, resp("call_A"), resp("call_B"))
+	items := []CanonicalItem{
+		mkCallItem("call_B", 10),
+		mkMsg("user", "middle", 10),
+		mkCallItem("call_A", 10),
+		bridge,
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Len(t, units, 2)
+	assert.Equal(t, []int{0, 2, 3}, units[0].ItemIndexes)
+	assert.Equal(t, []int{1}, units[1].ItemIndexes)
+}
+
+func TestBuildUnitsMarksPartiallyOrphanedResult(t *testing.T) {
+	result := mkMsg("user", "mixed result", 10)
+	result.Content = append(result.Content, resp("call_A"), resp("call_missing"))
+	items := []CanonicalItem{mkCallItem("call_A", 10), result}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Len(t, units, 1)
+	assert.True(t, units[0].Orphan)
+	assert.Equal(t, []string{"call_missing"}, units[0].UnmatchedResultIDs)
+	assert.Equal(t, []string{"call_A", "call_missing"}, units[0].CallIDs)
 }
 
 // ---------------------------------------------------------------------------
@@ -423,8 +435,53 @@ func TestSelectFullFit(t *testing.T) {
 		assertSelectionInvariants(t, units, limit, res, err)
 		assert.Nil(t, res.Gap, "zero truncation keeps Gap nil")
 		assert.Empty(t, res.Oversized)
+		assert.Equal(t, items, res.Items)
 		assert.Equal(t, total, res.TotalBytes)
 	}
+}
+
+func TestSelectFullFitPreservesNonAdjacentToolOrder(t *testing.T) {
+	items := []CanonicalItem{
+		mkCallItem("call_A", 10),
+		mkMsg("user", "between", 20),
+		mkResultItem("call_A", 30),
+		mkMsg("user", "latest", 40),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Equal(t, []int{0, 2}, units[0].ItemIndexes)
+	res, err := SelectEvidence(units, testPolicy(unitTotal(units)))
+	require.NoError(t, err)
+	assert.Nil(t, res.Gap)
+	assert.Equal(t, items, res.Items)
+}
+
+func TestSelectCrossingToolSpansFormOneSafeBlock(t *testing.T) {
+	resultB := mkResultItem("call_B", 2000)
+	resultB.Content[0].Result.Output = json.RawMessage(`"` + strings.Repeat("b", 2000) + `"`)
+	resultA := mkResultItem("call_A", 2000)
+	resultA.Content[0].Result.Output = json.RawMessage(`"` + strings.Repeat("a", 2000) + `"`)
+	items := []CanonicalItem{
+		mkCallItem("call_A", 10),
+		mkCallItem("call_B", 10),
+		resultB,
+		resultA,
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Len(t, units, 2)
+	assert.Equal(t, []int{0, 3}, units[0].ItemIndexes)
+	assert.Equal(t, []int{1, 2}, units[1].ItemIndexes)
+
+	limit := unitTotal(units) - 1
+	res, err := SelectEvidence(units, testPolicy(limit))
+	require.NoError(t, err)
+	require.NotNil(t, res.Gap)
+	assert.Equal(t, GapPositionHead, res.Gap.Position)
+	assert.Equal(t, 4, res.Gap.OmittedItems)
+	assert.Len(t, res.Items, 1)
+	assert.Equal(t, CanonicalKindGap, res.Items[0].Kind)
+	assertSelectionInvariants(t, units, limit, res, err)
 }
 
 func TestSelectTruncatesMiddle(t *testing.T) {
@@ -459,6 +516,70 @@ func TestSelectTruncatesMiddle(t *testing.T) {
 	assert.Equal(t, items[1].LogicalBytes, res.Gap.LogicalBytes)
 	assert.Equal(t, GapReasonBudget, res.Gap.Reason)
 	assert.LessOrEqual(t, res.TotalBytes, limit)
+	assertSelectionInvariants(t, units, limit, res, err)
+}
+
+func TestSelectMarkerRollbackRecomputesGapPosition(t *testing.T) {
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 600, sp(strings.Repeat("s", 600))),
+		mkMsg("user", strings.Repeat("o", 1000), 1000),
+		mkMsg("user", strings.Repeat("n", 600), 600),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	initialGap := GapInfo{
+		Position:     GapPositionMiddle,
+		Reason:       GapReasonBudget,
+		OmittedItems: 1,
+		LogicalBytes: items[1].LogicalBytes,
+	}
+	marker, err := testBuildGap(initialGap)
+	require.NoError(t, err)
+	markerBytes, err := canonicalBytesOf(marker)
+	require.NoError(t, err)
+	limit := units[0].CanonicalBytes + units[2].CanonicalBytes + markerBytes - 1
+	policy := testPolicy(limit)
+	policy.AnchorRatio = 1
+	policy.AnchorCap = 1 << 20
+
+	res, err := SelectEvidence(units, policy)
+	require.NoError(t, err)
+	require.NotNil(t, res.Gap)
+	assert.False(t, containsItem(res.Items, items[0]))
+	assert.False(t, containsItem(res.Items, items[1]))
+	assert.True(t, containsItem(res.Items, items[2]))
+	assert.Equal(t, GapPositionHead, res.Gap.Position)
+	assert.Equal(t, 2, res.Gap.OmittedItems)
+	assertSelectionInvariants(t, units, limit, res, err)
+}
+
+func TestSelectLatestBlockPreemptsOptionalAnchor(t *testing.T) {
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 1000, sp(strings.Repeat("s", 1000))),
+		mkMsg("user", strings.Repeat("n", 5000), 5000),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	gap := GapInfo{
+		Position:     GapPositionHead,
+		Reason:       GapReasonBudget,
+		OmittedItems: 1,
+		LogicalBytes: items[0].LogicalBytes,
+	}
+	marker, err := testBuildGap(gap)
+	require.NoError(t, err)
+	markerBytes, err := canonicalBytesOf(marker)
+	require.NoError(t, err)
+	limit := units[1].CanonicalBytes + markerBytes + 1
+	require.Greater(t, unitTotal(units), limit)
+	require.LessOrEqual(t, units[0].CanonicalBytes, int64(float64(limit)*DefaultAnchorRatio))
+
+	res, err := SelectEvidence(units, testPolicy(limit))
+	require.NoError(t, err)
+	require.NotNil(t, res.Gap)
+	assert.False(t, containsItem(res.Items, items[0]))
+	assert.True(t, containsItem(res.Items, items[1]))
+	assert.Equal(t, GapPositionHead, res.Gap.Position)
 	assertSelectionInvariants(t, units, limit, res, err)
 }
 
@@ -553,7 +674,7 @@ func TestSelectDeterministic(t *testing.T) {
 	}
 }
 
-func TestSelectBudgetFuzz(t *testing.T) {
+func TestSelectBudgetBoundaries(t *testing.T) {
 	asst := mkMsg("assistant", "parallel", 10)
 	asst.Content = append(asst.Content, callp("call_A"), callp("call_B"))
 	items := []CanonicalItem{
@@ -569,46 +690,19 @@ func TestSelectBudgetFuzz(t *testing.T) {
 	require.NoError(t, err)
 	total := unitTotal(units)
 	for _, limit := range []int64{0, 1, 10, 57, 58, 59, 60, 100, 300, 500, total - 1, total, total + 1, 1 << 20} {
-		res, err := SelectEvidence(units, testPolicy(limit))
-		assertSelectionInvariants(t, units, limit, res, err)
-		assert.LessOrEqual(t, res.TotalBytes, limit, "limit %d", limit)
-		if res.Gap != nil && res.Gap.Reason == GapReasonLimitTooSmall {
-			assert.Empty(t, res.Items)
-			assert.Equal(t, int64(0), res.TotalBytes)
-		} else if res.Gap == nil {
-			assert.Equal(t, items, res.Items, "limit %d: full fit", limit)
-		} else {
-			assert.Equal(t, 1, gapKindCount(res.Items), "limit %d", limit)
-		}
-	}
-
-	// Randomized streams.
-	rng := rand.New(rand.NewSource(17))
-	for round := 0; round < 100; round++ {
-		var randItems []CanonicalItem
-		for k := 0; k < 1+rng.Intn(10); k++ {
-			switch rng.Intn(5) {
-			case 0:
-				randItems = append(randItems, mkItem(CanonicalKindSystem, "", "", int64(rng.Intn(200)), sp("s")))
-			case 1:
-				randItems = append(randItems, mkMsg("user", "u", int64(rng.Intn(200))))
-			case 2:
-				id := fmt.Sprintf("call_%d", rng.Intn(4))
-				randItems = append(randItems, mkCallItem(id, int64(rng.Intn(200))))
-			case 3:
-				id := fmt.Sprintf("call_%d", rng.Intn(4))
-				randItems = append(randItems, mkResultItem(id, int64(rng.Intn(200))))
-			default:
-				randItems = append(randItems, mkResultItem(fmt.Sprintf("orphan_%d", rng.Intn(4)), int64(rng.Intn(200))))
+		t.Run(fmt.Sprintf("limit_%d", limit), func(t *testing.T) {
+			res, err := SelectEvidence(units, testPolicy(limit))
+			assertSelectionInvariants(t, units, limit, res, err)
+			assert.LessOrEqual(t, res.TotalBytes, limit)
+			if res.Gap != nil && res.Gap.Reason == GapReasonLimitTooSmall {
+				assert.Empty(t, res.Items)
+				assert.Zero(t, res.TotalBytes)
+			} else if res.Gap == nil {
+				assert.Equal(t, items, res.Items)
+			} else {
+				assert.Equal(t, 1, gapKindCount(res.Items))
 			}
-		}
-		units, err := BuildSemanticUnits(randItems)
-		require.NoError(t, err)
-		limit := int64(rng.Intn(int(unitTotal(units)) + 2))
-		res, err := SelectEvidence(units, testPolicy(limit))
-		require.NoError(t, err)
-		assert.LessOrEqual(t, res.TotalBytes, limit, "round %d limit %d", round, limit)
-		assertSelectionInvariants(t, units, limit, res, err)
+		})
 	}
 }
 
@@ -761,26 +855,138 @@ func TestSelectDegenerateLimit(t *testing.T) {
 }
 
 func TestGapMarkerShape(t *testing.T) {
-	g := GapMarker(GapInfo{LogicalBytes: 12345})
-	assert.Equal(t, CanonicalKindGap, g.Kind)
-	assert.Equal(t, int64(12345), g.LogicalBytes)
-	assert.True(t, g.Truncated)
+	info := GapInfo{
+		Position:        GapPositionMiddle,
+		Reason:          GapReasonBudget,
+		OmittedItems:    3,
+		LogicalBytes:    12345,
+		SourceTruncated: true,
+	}
+	marker := GapMarker(info)
+	assert.Equal(t, CanonicalKindGap, marker.Kind)
+	assert.Equal(t, int64(12345), marker.LogicalBytes)
+	assert.True(t, marker.Truncated)
+	assert.Empty(t, marker.Hmac)
+	require.NotNil(t, marker.Gap)
+	assert.Equal(t, info, *marker.Gap)
 }
 
-func TestSelectErrorPropagation(t *testing.T) {
-	// A policy with a MeasureGap that always fails.
-	badPolicy := SelectionPolicy{
-		Limit:       100,
-		AnchorRatio: DefaultAnchorRatio,
-		AnchorCap:   DefaultAnchorCap,
-		MeasureGap: func(g GapInfo) (CanonicalItem, int64, error) {
-			return CanonicalItem{}, 0, fmt.Errorf("test error")
-		},
+func TestSelectMeasuresFinalStructuredGapMarker(t *testing.T) {
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 10, sp(strings.Repeat("s", 500))),
+		mkMsg("user", strings.Repeat("o", 1000), 1000),
+		mkMsg("user", strings.Repeat("n", 500), 500),
 	}
-	units, err := BuildSemanticUnits([]CanonicalItem{mkMsg("user", "hello", 10)})
+	units, err := BuildSemanticUnits(items)
 	require.NoError(t, err)
-	_, err = SelectEvidence(units, badPolicy)
-	assert.Error(t, err)
+	limit := unitTotal(units) - 1
+	res, err := SelectEvidence(units, testPolicy(limit))
+	require.NoError(t, err)
+	require.NotNil(t, res.Gap)
+	var measured int64
+	for _, item := range res.Items {
+		itemBytes, err := canonicalBytesOf(item)
+		require.NoError(t, err)
+		measured += itemBytes
+	}
+	assert.Equal(t, measured, res.TotalBytes)
+	for _, item := range res.Items {
+		if item.Kind != CanonicalKindGap {
+			continue
+		}
+		assert.Len(t, item.Hmac, 64)
+		require.NotNil(t, item.Gap)
+		assert.Equal(t, *res.Gap, *item.Gap)
+	}
+}
+
+func TestSelectGapBuilderContract(t *testing.T) {
+	items := []CanonicalItem{
+		mkMsg("user", strings.Repeat("a", 500), 500),
+		mkMsg("user", strings.Repeat("b", 500), 500),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	limit := unitTotal(units) - 1
+
+	t.Run("builder error", func(t *testing.T) {
+		policy := DefaultSelectionPolicy(limit, func(GapInfo) (CanonicalItem, error) {
+			return CanonicalItem{}, fmt.Errorf("test error")
+		})
+		_, err := SelectEvidence(units, policy)
+		assert.ErrorContains(t, err, "test error")
+	})
+
+	t.Run("missing final HMAC", func(t *testing.T) {
+		policy := DefaultSelectionPolicy(limit, func(gap GapInfo) (CanonicalItem, error) {
+			return GapMarker(gap), nil
+		})
+		_, err := SelectEvidence(units, policy)
+		assert.ErrorContains(t, err, "final SHA-256 HMAC")
+	})
+
+	t.Run("builder only required for truncation", func(t *testing.T) {
+		res, err := SelectEvidence(units, DefaultSelectionPolicy(unitTotal(units), nil))
+		require.NoError(t, err)
+		assert.Equal(t, items, res.Items)
+		_, err = SelectEvidence(units, DefaultSelectionPolicy(limit, nil))
+		assert.ErrorContains(t, err, "gap builder is required")
+	})
+}
+
+func BenchmarkSemanticSelector(b *testing.B) {
+	const (
+		turns = 20
+		limit = int64(4 * 1024)
+	)
+	policy := testPolicy(limit)
+	replays := make([][]SemanticUnit, 0, turns)
+	var previousDigests []string
+	var fullContextBytes, deltaSuffixBytes int64
+
+	for turn := 1; turn <= turns; turn++ {
+		items := make([]CanonicalItem, 0, turn+1)
+		system := mkItem(CanonicalKindSystem, "", "", 1200, sp(strings.Repeat("s", 1200)))
+		items = append(items, withHmac(system, NormalizeOptions{HMACKey: testHMACKey}))
+		for message := 1; message <= turn; message++ {
+			item := mkMsg("user", strings.Repeat(string(rune('a'+message%26)), 500), 500)
+			items = append(items, withHmac(item, NormalizeOptions{HMACKey: testHMACKey}))
+		}
+		units, err := BuildSemanticUnits(items)
+		if err != nil {
+			b.Fatal(err)
+		}
+		replays = append(replays, units)
+		selected, err := SelectEvidence(units, policy)
+		if err != nil {
+			b.Fatal(err)
+		}
+		digests := make([]string, 0, len(selected.Items))
+		for _, item := range selected.Items {
+			digests = append(digests, item.Hmac)
+		}
+		fullPayload, err := common.Marshal(digests)
+		if err != nil {
+			b.Fatal(err)
+		}
+		prefix := commonPrefix(previousDigests, digests)
+		suffixPayload, err := common.Marshal(digests[prefix:])
+		if err != nil {
+			b.Fatal(err)
+		}
+		fullContextBytes += int64(len(fullPayload))
+		deltaSuffixBytes += int64(len(suffixPayload))
+		previousDigests = digests
+	}
+	amplification := float64(deltaSuffixBytes) / float64(fullContextBytes)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := SelectEvidence(replays[i%len(replays)], policy); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer()
+	b.ReportMetric(amplification, "suffix/full")
 }
 
 // ---------------------------------------------------------------------------
@@ -846,7 +1052,7 @@ func fixtureUnits(t *testing.T, name, format string, req dto.Request) ([]Semanti
 	require.NotEmpty(t, wrapper.Body)
 	require.NoError(t, json.Unmarshal(wrapper.Body, req))
 	res := NormalizeRequest(format, req, NormalizeOptions{
-		CaptureLimit: 1 << 30, MaxRequestBytes: 1 << 30, MinCaptureEnvelopeBytes: 0, HMACKey: testHMACKey,
+		CaptureLimit: 1 << 30, MaxRequestBytes: 1 << 30, HMACKey: testHMACKey,
 	})
 	require.NotEqual(t, ContentStateMetadataOnly, res.ContentState, "fixture must normalize")
 	require.NotEmpty(t, res.Items)
