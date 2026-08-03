@@ -710,7 +710,9 @@ type contentPlan struct {
 }
 
 // normalizeOne normalizes one event's parsed request with the observer's
-// configured canonical capture cap. Queue reservation remains admission-only:
+// configured canonical capture cap. CaptureRelayFormat is the original client
+// format paired with the retained request DTO; RelayFormat remains the final
+// upstream format stored on the turn. Queue reservation remains admission-only:
 // it bounds queued raw request bytes and never changes which evidence the
 // semantic selector retains. A panic inside the normalizer is absorbed here
 // (the normalizer also recovers internally), so the event degrades to
@@ -721,7 +723,11 @@ func (d *Dispatcher) normalizeOne(ev *Event) (plan contentPlan) {
 			plan = contentPlan{state: ContentStateMetadataOnly}
 		}
 	}()
-	res := NormalizeRequest(ev.RelayFormat, *ev.Request, NormalizeOptions{
+	captureFormat := ev.CaptureRelayFormat
+	if captureFormat == "" {
+		captureFormat = ev.RelayFormat
+	}
+	res := NormalizeRequest(captureFormat, *ev.Request, NormalizeOptions{
 		CaptureLimit:    d.cfg.MaxCaptureBytesPerTurn,
 		MaxRequestBytes: d.cfg.MaxRequestBytes,
 		HMACKey:         d.cfg.HMACKey,

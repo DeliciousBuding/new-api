@@ -517,8 +517,9 @@ func bindAuxiliaryTx(ctx context.Context, tx contentTx, in *ContentInput, sid uu
 // owning session row (FOR UPDATE OF s) until the transaction commits: the
 // append path uses it for the primary alias so the session row becomes the
 // unified serialization boundary shared with retention deletion — append
-// always holds session → head → content, retention holds session → head,
-// never the reverse (T3 lock-order contract). Auxiliary lookups stay
+// always holds session → content → head, retention holds session → head, and
+// no path takes head/content before the shared session-row boundary (T3
+// lock-order contract). Auxiliary lookups stay
 // lock-free: they never serialize against retention.
 func lookupAliasSessionTx(ctx context.Context, tx contentTx, nodeScope string, userID int64, a Alias, lockSession bool) (uuid.UUID, error) {
 	raw, err := itemDigestBytes(a.Digest)

@@ -241,7 +241,7 @@ session → content objects → head
 
 即 `insertContentObjectsTx` 在 `lockHeadTx` **之前**执行。retention 路径持有 `session → head`，从不持有 content 行锁的逆序。全系统不存在 `head → session` 或 `head → content` 反序路径，因此**不会产生之前担心的 session/head 死锁**——但注释与测试说明必须按此实际顺序书写。
 
-注意：`persistence.go:445` 注释仍写 "append always holds session → head → content"，与代码顺序不符（本 PR 纯文档，不动 .go）；**实现 PR 应顺带修正该注释及 retention 测试中的锁序说明**。
+实现 PR 已同步修正 `persistence.go` 的锁序注释为 `session → content → head`，与实际 append 路径和 retention 的 `session → head` 顺序一致。
 
 ## 8. 权衡与风险
 
@@ -309,4 +309,3 @@ go test -tags relay_observer_pg_integration ./pkg/relay_observer/ -run '^(TestIn
 - AgentLoop 产品线：window 分段、fork DAG、subagent 关系、`AgentLoopWindow` 模型；
 - output-side evidence 旁路（v2 评估）；
 - prefix+suffix 双端 delta（方案 B）；
-- `persistence.go:445` 锁序注释修正（随实现 PR）。
