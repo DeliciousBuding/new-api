@@ -515,8 +515,13 @@ func TestHalfOpenSingleProbe100Concurrent(t *testing.T) {
 
 	assert.Equal(t, int64(1), accepted.Load())
 	assert.Equal(t, int64(100), d.droppedTotal.Load()) // 1 initial failure + 99 concurrent drops
-	assert.Equal(t, int64(0), d.pendingCount.Load())   // probe event already received by the worker
-	assert.Equal(t, 2, store.writeCountSnapshot())     // 1 failed + 1 probe write, still blocked
+	// Admission completion does not imply the worker has already received the
+	// probe. Synchronize on WriteBatch entry before asserting worker-owned state;
+	// the blocked store keeps the probe in flight once this condition is true.
+	require.Eventually(t, func() bool {
+		return store.writeCountSnapshot() == 2 && d.pendingCount.Load() == 0
+	}, 2*time.Second, time.Millisecond)
+	assert.Equal(t, 2, store.writeCountSnapshot()) // 1 failed + 1 probe write, still blocked
 
 	close(block)
 	waitNotify(t, store.writeNotify)
