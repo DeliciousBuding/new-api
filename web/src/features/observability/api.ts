@@ -27,6 +27,15 @@ For commercial licensing, please contact support@quantumnous.com
  */
 import { api } from '@/lib/http-client'
 
+import {
+  observerOverviewSchema,
+  observerSessionPageSchema,
+  observerSessionSchema,
+  observerStatusSchema,
+  observerTurnContextSchema,
+  observerTurnPageSchema,
+  parseObserverResponse,
+} from './types'
 import type {
   ObserverOverview,
   ObserverResponse,
@@ -99,7 +108,7 @@ function buildQueryString(params: object): string {
 /** GET /api/relay-observer/status — safe in-memory snapshot, no DB query. */
 export async function getStatus(): Promise<ObserverResponse<ObserverStatus>> {
   const res = await api.get('/api/relay-observer/status')
-  return res.data
+  return parseObserverResponse(observerStatusSchema, res.data)
 }
 
 /** GET /api/relay-observer/overview — aggregate windows and totals. */
@@ -109,7 +118,7 @@ export async function getOverview(
   const res = await api.get(
     `/api/relay-observer/overview${buildQueryString(params)}`
   )
-  return res.data
+  return parseObserverResponse(observerOverviewSchema, res.data)
 }
 
 /** GET /api/relay-observer/sessions — one keyset page of sessions. */
@@ -119,7 +128,7 @@ export async function listSessions(
   const res = await api.get(
     `/api/relay-observer/sessions${buildQueryString(params)}`
   )
-  return res.data
+  return parseObserverResponse(observerSessionPageSchema, res.data)
 }
 
 /** GET /api/relay-observer/sessions/:id — one session summary; 404 when
@@ -128,7 +137,7 @@ export async function getSession(
   sessionId: string
 ): Promise<ObserverResponse<ObserverSession>> {
   const res = await api.get(`/api/relay-observer/sessions/${sessionId}`)
-  return res.data
+  return parseObserverResponse(observerSessionSchema, res.data)
 }
 
 /** GET /api/relay-observer/sessions/:id/turns — one keyset page of turns. */
@@ -139,7 +148,7 @@ export async function listTurns(
   const res = await api.get(
     `/api/relay-observer/sessions/${sessionId}/turns${buildQueryString(params)}`
   )
-  return res.data
+  return parseObserverResponse(observerTurnPageSchema, res.data)
 }
 
 /** GET /api/relay-observer/turns/:id/context — canonical content
@@ -153,5 +162,5 @@ export async function getTurnContext(
       session_id: sessionId,
     })}`
   )
-  return res.data
+  return parseObserverResponse(observerTurnContextSchema, res.data)
 }
