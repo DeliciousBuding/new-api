@@ -461,3 +461,63 @@ fallback_count/cache_hits + 旁路 token usage（响应有 usage 则记录）。
 8. 重复请求 → ✅ 两次各 vision_calls=1，同一产物（description_bytes=199）
 
 **部署配置**（observer-test options）：enabled=true、target_models=`["deepseek*"]`、models=`["gemma-4-31b"]`、base_url=https://api.tokendancelab.com、api_key=vision-bridge 同款、timeout_sec=15、sidecall_token=随机 48 hex。
+
+## 20. HK3 生产部署计划（用户拍板：一切先在 sgp2 测试完整，HK3 零试错）
+
+> 状态：**计划**（2026-08-03）。HK3 是生产主实例（api.tokendancelab.com）；本计划所有步骤在 sgp2 完整测试通过 + 用户逐项确认后执行。
+
+### 20.1 原则
+
+1. **sgp2 完整测试是 HK3 前置条件**——任何未在 sgp2 验证的配置/场景不得上 HK3
+2. HK3 生产变更逐项确认（配置级小步：先零行为 → 再小流量 → 再放量）
+3. 回滚首选配置级（`enabled=false` 即时零行为），镜像回滚为后备
+
+### 20.2 sgp2 补测矩阵（HK3 前必须完成）
+
+| # | 场景 | 当前状态 | 说明 |
+|---|------|---------|------|
+| T1 | **自回环完整链路** | ❌ 未测（最大缺口） | observer-test 的 base_url 指向**自己**（http://127.0.0.1:3100）+ 新增 gemma 渠道（上游 HK3）+ vision token 授权 gemma → 带图 deepseek 请求 → 旁路回环自己 → marker 校验通过跳过 Enhance → gemma 渠道 → 描述注入。**这精确复现 HK3 场景**（sgp2 此前测的是"旁路到 HK3"而非"旁路到自己"） |
+| T2 | marker 一致性 | ❌ 未测 | sidecall_token 配置一致 → 回环跳过；token 被清 → 旁路回环不触发 Enhance（gemma 不在 target_models，第二层防护） |
+| T3 | 计费核对 | ❌ 未测 | vision token 配额按 gemma 单价扣减；用户 token 只按 deepseek 计费（预扣-退还一致） |
+| T4 | 并发压力 | ❌ 未测 | 多并发带图请求：decode/call 闸门、401 熔断、占位降级不阻塞 |
+| T5 | 长期观察 | ❌ 未测 | 连续请求：vision 日志稳定、无 fd/内存泄漏、耗时分布 |
+| T6 | 8 项复验回归 | ✅ 已过 | 保持通过（任何代码改动后重跑） |
+
+### 20.3 HK3 部署步骤（逐步放量）
+
+**前置准备**
+1. gemma 渠道健康检查（HK3 主栈渠道：上游 PicPi/tokendance，模型 gemma-4-31b 可用）
+2. 签发 **vision token**：授权 gemma-4-31b/step-3.7-flash/grok-4.5、足够配额、group 命中 gemma 渠道（sgp2 教训：token 模型限制不放行 gemma 会导致 Invalid token）
+3. 回环路径决策：**内网直连优先**（nginx 放行自身来源或内部端口）vs 公网回环（CF 限流风险）；sgp2 已验公网可行，HK3 生产建议内网
+4. 生成 sidecall_token（随机 48 hex，仅写 DB options，不回显）
+
+**功能启用（四步，每步观察 ≥ 观察窗）**
+- S1：写全部配置但 `enabled=false` → 零行为确认（含 sidecall_token 写入无副作用）
+- S2：`enabled=true` + `target_models=[]` → 无模型命中，零行为
+- S3：`target_models=["deepseek*"]` + 内部测试 key 走自回环链路验证（对应 sgp2 T1 复验）
+- S4：放量 → 观察 TTFT 增加、识图成本（vision token 配额消耗速率）、错误率、gemma 渠道健康
+
+**回滚手册**
+- 即时回滚：`enabled=false`（配置级，秒级生效，零行为）
+- 镜像回滚：HK3 compose 恢复旧镜像（部署前备份 compose + 记录旧 digest）
+
+### 20.4 HK3 上线验收清单
+
+- [ ] sgp2 T1-T5 全部通过（自回环全链路 + marker 一致性 + 计费 + 并发 + 长期观察）
+- [ ] 8 项复验（T6）保持全绿
+- [ ] PR #12 合入 main + HK3 镜像升级完成（升级本身独立回归）
+- [ ] HK3 S1-S3 小流量验证通过 + S4 观察窗（≥24h）无异常
+- [ ] 回滚手册演练过（配置级回滚实测）
+- [ ] 部署记录 + server docs/log.md 更新（含 commit SHA/image digest/回滚目标，不记录 key/token）
+
+### 20.5 HK3 生产配置（目标值）
+
+```text
+vision_relay.enabled         = true
+vision_relay.target_models   = ["deepseek*", "qwen3-coder*", ...]  // 只列纯文本模型
+vision_relay.models          = ["gemma-4-31b", "step-3.7-flash", "grok-4.5"]
+vision_relay.base_url        = <内网直连优先，回环本实例>
+vision_relay.api_key         = <HK3 专用 vision token：授权 gemma 系 + 配额 + group>
+vision_relay.sidecall_token  = <随机 48 hex>
+vision_relay.timeout_sec     = 15
+```
