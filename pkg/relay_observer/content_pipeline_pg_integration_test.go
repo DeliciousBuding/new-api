@@ -230,17 +230,17 @@ func TestIntegrationContentPipelineUnknownFormatLeavesNoContent(t *testing.T) {
 }
 
 // TestIntegrationContentPipelineTruncationWritesGapMarker is the gap
-// contract end to end: an admission reservation below the canonical byte
-// total truncates the tail, the turn is written as gap, the context row
-// exists, the content objects carry an explicit gap marker row, and
-// reconstruction closes with the marker (data, not silent loss).
+// contract end to end: the configured canonical cap retains the latest
+// semantic block beside one structured gap, the turn is written as gap, the
+// context row exists, and PostgreSQL reconstruction preserves both marker
+// metadata and protocol order. Queue reservation is admission-only.
 func TestIntegrationContentPipelineTruncationWritesGapMarker(t *testing.T) {
 	dsn := integrationDSN(t)
 	resetObserverSchema(t, dsn)
 	store := openVerifyStore(t, dsn)
 	t.Cleanup(func() { require.NoError(t, store.Close(context.Background())) })
 
-	body := `{"model":"gpt-5","messages":[{"role":"user","content":"alpha alpha alpha"},{"role":"user","content":"bravo bravo bravo"}]}`
+	body := `{"model":"gpt-5","messages":[{"role":"user","content":"alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha"},{"role":"user","content":"bravo bravo bravo bravo bravo bravo bravo bravo bravo bravo"}]}`
 	reqObj := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
 	reqObj.Header.Set("X-Codex-Turn-Metadata", `{"thread_id":"t26-thr-gap"}`)
 
@@ -256,14 +256,24 @@ func TestIntegrationContentPipelineTruncationWritesGapMarker(t *testing.T) {
 		require.NoError(t, err)
 		total += int64(len(p))
 	}
+	require.Len(t, full.Items, 2)
+	gapInfo := GapInfo{
+		Position:     GapPositionHead,
+		Reason:       GapReasonBudget,
+		OmittedItems: 1,
+		LogicalBytes: full.Items[0].LogicalBytes,
+	}
+	marker := withHmac(GapMarker(gapInfo), NormalizeOptions{HMACKey: testHMACKey})
+	markerPayload, err := common.Marshal(marker)
+	require.NoError(t, err)
+	latestPayload, err := common.Marshal(full.Items[1])
+	require.NoError(t, err)
+	captureLimit := int64(len(markerPayload) + len(latestPayload))
+	require.Less(t, captureLimit, total)
 
 	disp := newPipelineDispatcher(t, store, func(c *Config) {
 		c.BatchSize = 1
-		// The capture cap (P0-B) drives the truncation, no longer the
-		// admission reservation. 200 bytes fits the gap marker but not the
-		// first message item, so the capture truncates with an explicit
-		// marker.
-		c.MaxCaptureBytesPerTurn = 200
+		c.MaxCaptureBytesPerTurn = captureLimit
 	})
 	ev := sampleEvent()
 	ev.EventID = "t26-req-gap"
@@ -271,7 +281,7 @@ func TestIntegrationContentPipelineTruncationWritesGapMarker(t *testing.T) {
 	ev.RelayFormat = string(types.RelayFormatOpenAI)
 	ev.Request = &req
 	ev.Identity = IdentityInput{Headers: reqObj.Header, Body: []byte(body)}
-	require.True(t, disp.TryEnqueue(&ev, total-1)) // one canonical byte short
+	require.True(t, disp.TryEnqueue(&ev, total-1))
 
 	db := openFixturePool(t, dsn)
 	turnID := turnRowID("t26-node", "t26-req-gap")
@@ -290,11 +300,11 @@ func TestIntegrationContentPipelineTruncationWritesGapMarker(t *testing.T) {
 	require.True(t, ok, "the PG store must implement the content persistence port")
 	rec, err := cp.ReconstructTurn(context.Background(), sid, turnID, testHMACKey)
 	require.NoError(t, err)
-	require.NotEmpty(t, rec.Items)
-	last := rec.Items[len(rec.Items)-1]
-	assert.Equal(t, CanonicalKindGap, last.Kind)
-	assert.True(t, last.Truncated)
-	assert.Greater(t, last.LogicalBytes, int64(0))
+	require.Len(t, rec.Items, 2)
+	assert.Equal(t, marker, rec.Items[0])
+	require.NotNil(t, rec.Items[0].Gap)
+	assert.Equal(t, gapInfo, *rec.Items[0].Gap)
+	assert.Equal(t, full.Items[1], rec.Items[1], "the latest message survives persistence and reconstruction")
 }
 
 // TestIntegrationSessionOnlyAppendTracksIdentityWithoutContent locks the T2

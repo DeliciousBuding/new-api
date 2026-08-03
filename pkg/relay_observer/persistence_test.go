@@ -1171,6 +1171,23 @@ func TestGapMarkerDigestNeverCollidesWithRealItem(t *testing.T) {
 		require.NoError(t, err)
 		return int64(len(p))
 	}
+	findGap := func(t *testing.T, items []CanonicalItem) CanonicalItem {
+		t.Helper()
+		var gaps []CanonicalItem
+		for _, item := range items {
+			if item.Kind == CanonicalKindGap {
+				gaps = append(gaps, item)
+			}
+		}
+		require.Len(t, gaps, 1, "a truncated turn carries exactly one gap marker")
+		return gaps[0]
+	}
+	assertNoRealDigestCollision := func(t *testing.T, marker CanonicalItem, realItems []CanonicalItem) {
+		t.Helper()
+		for _, item := range realItems {
+			require.NotEqual(t, item.Hmac, marker.Hmac, "the marker digest is never borrowed from real content")
+		}
+	}
 
 	t.Run("real item stored first, marker lost", func(t *testing.T) {
 		f := newFakeFixture(t, "gap-collision-forward")
@@ -1182,10 +1199,9 @@ func TestGapMarkerDigestNeverCollidesWithRealItem(t *testing.T) {
 		t1 := ContentInput{NodeScope: f.node, UserID: f.user, Aliases: []Alias{f.alias}, TurnID: uuid.New(), Items: full.Items}
 		require.NoError(t, appendTurnTx(context.Background(), f.tx, &t1))
 
-		// Turn 2 exceeds the cap with one more item: the normalizer drops the
-		// tail and appends a gap marker. Its digest must not collide with any
-		// stored real item. The limit keeps exactly six items plus the marker
-		// (a ~170-byte payload), so items 6 and 7 of the eight are dropped.
+		// Turn 2 exceeds the cap with one more item. The semantic selector may
+		// put the marker at the head or in the middle depending on which latest
+		// block fits, but its digest must not collide with any stored real item.
 		var sum6 int64
 		for _, it := range full.Items[:6] {
 			sum6 += payloadOf(t, it)
@@ -1193,11 +1209,11 @@ func TestGapMarkerDigestNeverCollidesWithRealItem(t *testing.T) {
 		limit := sum6 + 250
 		truncated := NormalizeRequest(string(types.RelayFormatOpenAI), buildChat(8), NormalizeOptions{CaptureLimit: limit, MaxRequestBytes: limit, HMACKey: testHMACKey})
 		require.Equal(t, ContentStateGap, truncated.ContentState)
-		require.Len(t, truncated.Items, 7, "six kept items plus one marker")
-		marker := truncated.Items[len(truncated.Items)-1]
+		marker := findGap(t, truncated.Items)
 		require.Equal(t, CanonicalKindGap, marker.Kind)
 		require.True(t, marker.Truncated)
-		require.NotEqual(t, full.Items[6].Hmac, marker.Hmac, "the marker's digest is its own content digest")
+		require.NotNil(t, marker.Gap)
+		assertNoRealDigestCollision(t, marker, full.Items)
 
 		t2 := ContentInput{NodeScope: f.node, UserID: f.user, Aliases: []Alias{f.alias}, TurnID: uuid.New(), Items: truncated.Items}
 		require.NoError(t, appendTurnTx(context.Background(), f.tx, &t2))
@@ -1205,25 +1221,25 @@ func TestGapMarkerDigestNeverCollidesWithRealItem(t *testing.T) {
 		got, err := reconstructTurnQ(context.Background(), f.tx, f.sessionID(), t2.TurnID, testHMACKey)
 		require.NoError(t, err)
 		require.NotEmpty(t, got.Items)
-		last := got.Items[len(got.Items)-1]
-		assert.Equal(t, CanonicalKindGap, last.Kind, "the truncation marker is data, not silent loss")
-		assert.True(t, last.Truncated)
+		reconstructedMarker := findGap(t, got.Items)
+		assert.Equal(t, marker, reconstructedMarker, "the truncation marker is data, not silent loss")
+		assert.True(t, reconstructedMarker.Truncated)
 	})
 
 	t.Run("marker stored first, real item replaced", func(t *testing.T) {
 		f := newFakeFixture(t, "gap-collision-reverse")
-		// Turn 1 truncates early: the dropped tail's first item is "c", which
-		// is stored as a real item only in the later divergent turn 2. The
-		// limit keeps a, b and the marker (~170 bytes) and drops c.
+		// Turn 1 truncates, then turn 2 stores every message as real content.
+		// Marker placement is not part of this persistence invariant; only its
+		// independent digest and exact round-trip are.
 		c := buildChat(3)
 		first := NormalizeRequest(string(types.RelayFormatOpenAI), c, NormalizeOptions{CaptureLimit: 1 << 20, MaxRequestBytes: 1 << 20, HMACKey: testHMACKey})
 		limit := payloadOf(t, first.Items[0]) + payloadOf(t, first.Items[1]) + 250
 		truncated := NormalizeRequest(string(types.RelayFormatOpenAI), c, NormalizeOptions{CaptureLimit: limit, MaxRequestBytes: limit, HMACKey: testHMACKey})
 		require.Equal(t, ContentStateGap, truncated.ContentState)
-		require.Len(t, truncated.Items, 3, "two kept items plus one marker")
-		marker := truncated.Items[len(truncated.Items)-1]
+		marker := findGap(t, truncated.Items)
 		require.Equal(t, CanonicalKindGap, marker.Kind)
-		require.NotEqual(t, first.Items[2].Hmac, marker.Hmac, "the marker's digest is its own content digest")
+		require.NotNil(t, marker.Gap)
+		assertNoRealDigestCollision(t, marker, first.Items)
 
 		t1 := ContentInput{NodeScope: f.node, UserID: f.user, Aliases: []Alias{f.alias}, TurnID: uuid.New(), Items: truncated.Items}
 		require.NoError(t, appendTurnTx(context.Background(), f.tx, &t1))

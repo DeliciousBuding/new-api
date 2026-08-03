@@ -669,7 +669,7 @@ func (d *Dispatcher) planContent(batch []queuedEvent) []ContentInput {
 		if ev == nil {
 			continue
 		}
-		plan := d.normalizeOne(ev, qe.reservation)
+		plan := d.normalizeOne(ev)
 		ev.ContentState = plan.state
 		if plan.state == ContentStateGap || plan.state == ContentStateMetadataOnly {
 			// ContentGapsTotal counts turns whose capture ended with a gap
@@ -709,12 +709,13 @@ type contentPlan struct {
 	items []CanonicalItem
 }
 
-// normalizeOne normalizes one event's parsed request with the event's own
-// admission reservation as the canonical byte budget. A panic inside the
-// normalizer is absorbed here (the normalizer also recovers internally, so
-// this is the outer fail-open boundary of the worker call site): the event
-// degrades to metadata-only and the worker keeps running.
-func (d *Dispatcher) normalizeOne(ev *Event, reservation int64) (plan contentPlan) {
+// normalizeOne normalizes one event's parsed request with the observer's
+// configured canonical capture cap. Queue reservation remains admission-only:
+// it bounds queued raw request bytes and never changes which evidence the
+// semantic selector retains. A panic inside the normalizer is absorbed here
+// (the normalizer also recovers internally), so the event degrades to
+// metadata-only and the worker keeps running.
+func (d *Dispatcher) normalizeOne(ev *Event) (plan contentPlan) {
 	defer func() {
 		if recover() != nil {
 			plan = contentPlan{state: ContentStateMetadataOnly}
