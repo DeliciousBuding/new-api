@@ -555,8 +555,8 @@ func TestIntegrationSessionOnlyAppendExactlyOnceRollbackRetry(t *testing.T) {
 	// statement (the counter bump) and database/sql rolls the transaction
 	// back, undoing the claim.
 	ctx, cancel := context.WithCancel(context.Background())
-	testAppendHook = func() { cancel() }
-	t.Cleanup(func() { testAppendHook = nil })
+	appendHook = func() { cancel() }
+	t.Cleanup(func() { appendHook = nil })
 
 	err := cp.AppendTurns(ctx, []ContentInput{in})
 	require.Error(t, err, "the canceled context must abort the append")
@@ -612,7 +612,7 @@ func TestIntegrationSessionOnlyAppendExactlyOnceContentReplay(t *testing.T) {
 // TestIntegrationAppendVsRetentionEndToEndScenarioA is the true end-to-end
 // scenario A of the T3 lock-order contract, calling the production methods on
 // two connections: AppendTurns has acquired the session row lock (the
-// testAppendHook pauses it after the claim), DeleteSessionRetention blocks
+// appendHook pauses it after the claim), DeleteSessionRetention blocks
 // behind it, and after the append commits (refreshing last_seen), the
 // retention re-check sees the fresh row and no-ops — the session survives
 // with exactly one turn.
@@ -636,11 +636,11 @@ func TestIntegrationAppendVsRetentionEndToEndScenarioA(t *testing.T) {
 	// the session row lock.
 	appendLocked := make(chan struct{})
 	release := make(chan struct{})
-	testAppendHook = func() {
+	appendHook = func() {
 		close(appendLocked)
 		<-release
 	}
-	t.Cleanup(func() { testAppendHook = nil })
+	t.Cleanup(func() { appendHook = nil })
 
 	appendDone := make(chan error, 1)
 	go func() { appendDone <- cp.AppendTurns(context.Background(), []ContentInput{in}) }()
@@ -678,7 +678,7 @@ func TestIntegrationAppendVsRetentionEndToEndScenarioA(t *testing.T) {
 
 // TestIntegrationAppendVsRetentionEndToEndScenarioB is the true end-to-end
 // scenario B of the T3 lock-order contract: DeleteSessionRetention has
-// acquired the session row lock (the testRetentionHook pauses it after the
+// acquired the session row lock (the retentionHook pauses it after the
 // lock and the last_seen re-check), AppendTurns blocks on the alias lookup,
 // and after the retention deletes the session and commits, the append
 // unblocks, observes the session is gone, and creates a complete fresh
@@ -703,11 +703,11 @@ func TestIntegrationAppendVsRetentionEndToEndScenarioB(t *testing.T) {
 	// the last_seen re-check, before any delete.
 	retentionLocked := make(chan struct{})
 	release := make(chan struct{})
-	testRetentionHook = func() {
+	retentionHook = func() {
 		close(retentionLocked)
 		<-release
 	}
-	t.Cleanup(func() { testRetentionHook = nil })
+	t.Cleanup(func() { retentionHook = nil })
 
 	retDone := make(chan error, 1)
 	go func() { retDone <- rs.DeleteSessionRetention(context.Background(), uuid.MustParse(oldSid), cutoff) }()

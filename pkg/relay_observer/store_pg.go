@@ -762,13 +762,6 @@ func (s *pgStore) DeleteSessionRetention(ctx context.Context, sessionID uuid.UUI
 	return tx.Commit()
 }
 
-// testRetentionHook is a test-only pause inside deleteSessionRetentionTx.
-// When non-nil it runs after the session row lock and the last_seen re-check,
-// while the retention transaction still holds the session row lock and has
-// deleted nothing. Production builds keep it nil: the hook costs one branch
-// and never runs.
-var testRetentionHook func()
-
 // deleteSessionRetentionTx deletes one expired session and everything that
 // references it, inside the caller's transaction. The session row is locked
 // and its last_seen re-checked against the cutoff before anything is deleted:
@@ -790,9 +783,7 @@ func deleteSessionRetentionTx(ctx context.Context, tx contentTx, sessionID uuid.
 		// delete is a no-op. The locked row is released by the commit/rollback.
 		return nil
 	}
-	if testRetentionHook != nil {
-		testRetentionHook()
-	}
+	runRetentionHook()
 	if _, err := tx.Exec(ctx, `DELETE FROM observer_content_objects WHERE session_id = $1`, sessionID.String()); err != nil {
 		return fmt.Errorf("relayobserver: delete session retention: delete content: %w", err)
 	}

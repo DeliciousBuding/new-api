@@ -256,11 +256,15 @@ func appendTurnsTx(ctx context.Context, tx contentTx, turns []ContentInput) erro
 	return nil
 }
 
-// testAppendHook is a test-only pause inside appendTurnTx. When non-nil it
-// runs after the turn claim, while the append transaction still holds the
-// session row lock and has committed nothing. Production builds keep it nil:
-// the hook costs one branch and never runs.
-var testAppendHook func()
+// SessionResolution is the outcome of resolving a primary alias to a session.
+// SessionID is the resolved session; Created is true when this call created
+// the session row inside the current transaction (the primary binding may
+// still have collided cross-profile, in which case the created session is
+// unbound and a rejected claim must delete it).
+type SessionResolution struct {
+	SessionID uuid.UUID
+	Created   bool
+}
 
 // appendTurnTx persists one turn inside the caller's transaction: session
 // resolution, idempotency check, content dedup, head serialization, context
@@ -275,7 +279,10 @@ func appendTurnTx(ctx context.Context, tx contentTx, in *ContentInput) error {
 		// is written by the turn writer (WriteBatch).
 		return nil
 	}
-	sessionID, err := resolveSessionTx(ctx, tx, in)
+	// Phase 1: resolve the primary alias to a session. Auxiliary aliases are
+	// not bound yet — the claim gate may reject the turn, and a rejected
+	// append must not leave orphaned auxiliary bindings behind.
+	res, err := resolvePrimarySessionTx(ctx, tx, in)
 	if err != nil {
 		return err
 	}
@@ -291,15 +298,27 @@ func appendTurnTx(ctx context.Context, tx contentTx, in *ContentInput) error {
 	// one transaction: a failed append rolls the claim back with everything
 	// else and the retry claims fresh; a committed append is never
 	// double-counted by a replay or a concurrent duplicate.
-	claimed, err := claimTurnForSessionTx(ctx, tx, in.TurnID, sessionID)
+	claimed, err := claimTurnForSessionTx(ctx, tx, in.TurnID, res.SessionID)
 	if err != nil {
 		return err
 	}
 	if !claimed {
+		// The turn was already bound (replay or concurrent duplicate). If
+		// this append just created a fresh session, it would be an orphan
+		// with no turns — delete it inside the current transaction so the
+		// commit leaves no ghost row.
+		if res.Created {
+			if err := deleteOrphanSessionTx(ctx, tx, res.SessionID); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
-	if testAppendHook != nil {
-		testAppendHook()
+	runAppendHook()
+	// Phase 2: bind auxiliary aliases only after a successful claim. After
+	// this point the append owns the turn and creates durable content.
+	if err := bindAuxiliaryTx(ctx, tx, in, res.SessionID); err != nil {
+		return err
 	}
 	if len(in.Items) == 0 {
 		// Session-only append: the turn has an identity but capture produced
@@ -309,7 +328,7 @@ func appendTurnTx(ctx context.Context, tx contentTx, in *ContentInput) error {
 		// views see the turn even though the context endpoint reports no
 		// canonical content. No content objects, context rows, or head rows
 		// are created by this path.
-		return bumpSessionTx(ctx, tx, in, sessionID, in.ContentState == ContentStateGap)
+		return bumpSessionTx(ctx, tx, in, res.SessionID, in.ContentState == ContentStateGap)
 	}
 	// Idempotency: a turn whose context row already exists is a no-op. The
 	// content objects and the head were already written by the first append.
@@ -324,13 +343,13 @@ func appendTurnTx(ctx context.Context, tx contentTx, in *ContentInput) error {
 
 	// Content object dedup: one row per (session, digest); repeated events
 	// reference the same object, never a copy.
-	meta, err := insertContentObjectsTx(ctx, tx, sessionID, in.Items)
+	meta, err := insertContentObjectsTx(ctx, tx, res.SessionID, in.Items)
 	if err != nil {
 		return err
 	}
 
 	// Serialize on the session head row, then plan the next context.
-	head, headFull, err := lockHeadTx(ctx, tx, sessionID)
+	head, headFull, err := lockHeadTx(ctx, tx, res.SessionID)
 	if err != nil {
 		return err
 	}
@@ -348,14 +367,14 @@ func appendTurnTx(ctx context.Context, tx contentTx, in *ContentInput) error {
 	}
 	plan := planGroup(head, headFull, meta.digests)
 
-	contextID, err := insertContextTx(ctx, tx, sessionID, in.TurnID, plan, meta)
+	contextID, err := insertContextTx(ctx, tx, res.SessionID, in.TurnID, plan, meta)
 	if err != nil {
 		return err
 	}
-	if err := updateHeadTx(ctx, tx, sessionID, contextID, plan); err != nil {
+	if err := updateHeadTx(ctx, tx, res.SessionID, contextID, plan); err != nil {
 		return err
 	}
-	return bumpSessionTx(ctx, tx, in, sessionID, meta.hasGap)
+	return bumpSessionTx(ctx, tx, in, res.SessionID, meta.hasGap)
 }
 
 // claimTurnForSessionTx claims one turn for its resolved session inside the
@@ -382,9 +401,11 @@ func claimTurnForSessionTx(ctx context.Context, tx contentTx, turnID, sessionID 
 	return n == 1, nil
 }
 
-// resolveSessionTx resolves the primary alias to a session id, creating the
-// session and its first alias binding on first sight, then binds the
-// auxiliary aliases when they are free.
+// resolvePrimarySessionTx resolves the primary alias to a session, creating
+// the session and its first alias binding on first sight. Auxiliary aliases
+// are deliberately not bound here: the claim gate may still reject the turn,
+// and a rejected append must not leave orphaned auxiliary bindings behind
+// (they bind in bindAuxiliaryTx, after the claim succeeds).
 //
 // Lookup is scoped by the alias's profile (the provider column): an alias is
 // an identity of all four fields, so equal raw values across profiles stay
@@ -393,27 +414,26 @@ func claimTurnForSessionTx(ctx context.Context, tx contentTx, turnID, sessionID 
 // bindings. When a primary binding collides with a binding of another
 // profile, the new session stays unbound and the conflicting alias keeps its
 // existing binding (SSOT: conflicting aliases remain separate in v1; the
-// worker never merges). An auxiliary alias already bound to a different
-// session is likewise left untouched.
-func resolveSessionTx(ctx context.Context, tx contentTx, in *ContentInput) (uuid.UUID, error) {
+// worker never merges).
+func resolvePrimarySessionTx(ctx context.Context, tx contentTx, in *ContentInput) (SessionResolution, error) {
 	primary := in.Aliases[0]
 	sid, err := lookupAliasSessionTx(ctx, tx, in.NodeScope, in.UserID, primary, true)
 	if err == nil {
-		return sid, bindAuxiliaryTx(ctx, tx, in, sid)
+		return SessionResolution{SessionID: sid}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return uuid.Nil, err
+		return SessionResolution{}, err
 	}
 
 	// First sight of this primary alias: create the session and bind it.
 	sid = uuid.New()
 	if _, err := tx.Exec(ctx, `INSERT INTO observer_sessions (id, node_scope, user_id, client_family, first_seen, last_seen, turn_count, gap_count) VALUES ($1, $2, $3, $4, now(), now(), 0, 0) ON CONFLICT (id) DO NOTHING`,
 		sid.String(), in.NodeScope, in.UserID, string(primary.Scope)); err != nil {
-		return uuid.Nil, fmt.Errorf("relayobserver: append content: insert session: %w", err)
+		return SessionResolution{}, fmt.Errorf("relayobserver: append content: insert session: %w", err)
 	}
 	bound, err := bindAliasRowTx(ctx, tx, in.NodeScope, in.UserID, primary, sid)
 	if err != nil {
-		return uuid.Nil, err
+		return SessionResolution{}, err
 	}
 	if !bound {
 		// The binding collided: either a concurrent append bound the same
@@ -432,15 +452,27 @@ func resolveSessionTx(ctx context.Context, tx contentTx, in *ContentInput) (uuid
 				// conservative: a session that somehow already accumulated
 				// turns or bindings survives for the retention pass.
 				if _, err := tx.Exec(ctx, `DELETE FROM observer_sessions WHERE id = $1 AND turn_count = 0 AND NOT EXISTS (SELECT 1 FROM observer_session_aliases a WHERE a.session_id = $1)`, sid.String()); err != nil {
-					return uuid.Nil, fmt.Errorf("relayobserver: append content: delete losing session: %w", err)
+					return SessionResolution{}, fmt.Errorf("relayobserver: append content: delete losing session: %w", err)
 				}
 			}
-			sid = existing
+			return SessionResolution{SessionID: existing}, nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
-			return uuid.Nil, err
+			return SessionResolution{}, err
 		}
 	}
-	return sid, bindAuxiliaryTx(ctx, tx, in, sid)
+	return SessionResolution{SessionID: sid, Created: true}, nil
+}
+
+// deleteOrphanSessionTx deletes a session created by this append that ended
+// up owning nothing: the claim was rejected, so the session has no turns and
+// nothing else references it. The guard columns make the delete conservative
+// — a session that somehow already accumulated turns or bindings survives for
+// the retention pass.
+func deleteOrphanSessionTx(ctx context.Context, tx contentTx, sessionID uuid.UUID) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM observer_sessions WHERE id = $1 AND turn_count = 0 AND NOT EXISTS (SELECT 1 FROM observer_session_aliases a WHERE a.session_id = $1)`, sessionID.String()); err != nil {
+		return fmt.Errorf("relayobserver: append content: delete orphan session: %w", err)
+	}
+	return nil
 }
 
 // bindAuxiliaryTx binds every auxiliary alias to sid when it is free. An
