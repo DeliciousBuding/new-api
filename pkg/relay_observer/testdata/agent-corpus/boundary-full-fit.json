@@ -1,0 +1,51 @@
+{
+  "_meta": {
+    "name": "boundary-full-fit",
+    "desc": "P0-B full-fit band fixture (openai_responses format): the capture budget sits above the total canonical bytes by 40 (the old 1024-byte envelope band), so the previous fixed-envelope algorithm truncated a capture that fits whole. The P0-B contract keeps it full. Synthetic ids only.",
+    "format": "openai_responses",
+    "raw_body_bytes": 443,
+    "capture_limit": 889,
+    "scope_expect": "codex_cli",
+    "sources_expect": [
+      "turn_thread",
+      "turn_session"
+    ]
+  },
+  "headers": {
+    "Originator": "codex_cli_fixture_1.0.0",
+    "X-Codex-Turn-Metadata": "{\"thread_id\":\"fx-thread-0003\",\"session_id\":\"fx-session-0003\",\"turn\":\"fx-turn-0003\"}"
+  },
+  "body": {
+    "model": "gpt-5-fixture",
+    "instructions": "Follow the fixture plan.",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "fx boundary content line one padded to a stable canonical size"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "fx assistant reply line two padded with stable padding"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "fx final boundary message padded to keep the capture in the band"
+          }
+        ]
+      }
+    ]
+  }
+}

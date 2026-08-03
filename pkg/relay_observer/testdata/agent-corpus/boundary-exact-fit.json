@@ -1,0 +1,31 @@
+{
+  "_meta": {
+    "name": "boundary-exact-fit",
+    "desc": "P0-B exact-fit fixture (openai chat format): the capture budget equals the total canonical bytes exactly, so a full capture must be kept whole. The old fixed-envelope algorithm reserved the envelope first and truncated this capture into a gap marker. Synthetic ids only.",
+    "format": "openai",
+    "raw_body_bytes": 144,
+    "capture_limit": 374,
+    "scope_expect": "codex_cli",
+    "sources_expect": [
+      "turn_thread",
+      "turn_session"
+    ]
+  },
+  "headers": {
+    "Originator": "codex_cli_fixture_1.0.0",
+    "X-Codex-Turn-Metadata": "{\"thread_id\":\"fx-thread-0004\",\"session_id\":\"fx-session-0004\",\"turn\":\"fx-turn-0004\"}"
+  },
+  "body": {
+    "model": "gpt-5-fixture",
+    "messages": [
+      {
+        "role": "user",
+        "content": "fx exact fit message one"
+      },
+      {
+        "role": "user",
+        "content": "fx exact fit message two"
+      }
+    ]
+  }
+}
