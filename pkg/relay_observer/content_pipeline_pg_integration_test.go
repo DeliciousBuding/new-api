@@ -413,6 +413,80 @@ func TestIntegrationSessionOnlyAppendMetadataOnly(t *testing.T) {
 	assert.Zero(t, contexts)
 }
 
+// TestIntegrationCrossProfileEqualAliasStaysSeparate proves the v4 database
+// identity contract on real PostgreSQL. Codex and Claude may expose the same
+// raw session value, which intentionally produces the same HMAC digest, but
+// provider remains part of the alias identity. Each profile must therefore
+// keep one stable session across repeated turns, and the two sessions must
+// never merge or force one profile into a fresh unbound session per turn.
+func TestIntegrationCrossProfileEqualAliasStaysSeparate(t *testing.T) {
+	dsn := integrationDSN(t)
+	store := resetObserverSchema(t, dsn)
+	defer store.Close(context.Background())
+	cp, ok := store.(ContentPersistence)
+	require.True(t, ok)
+	db := openFixturePool(t, dsn)
+	ctx := context.Background()
+
+	scope := uniqueScope("t54-profile")
+	const userID int64 = 41
+	km := KeyMaterial{CurrentKey: testHMACKey, CurrentVersion: 1}
+	codex, err := GenerateAlias("same-raw-session", SourceTurnThread, ScopeCodexCLI, km)
+	require.NoError(t, err)
+	claude, err := GenerateAlias("same-raw-session", SourceClaudeHeader, ScopeClaudeCLI, km)
+	require.NoError(t, err)
+	require.Equal(t, codex.Digest, claude.Digest, "fixture must exercise one digest across profiles")
+
+	profiles := []struct {
+		name  string
+		alias Alias
+	}{
+		{name: "codex", alias: codex},
+		{name: "claude", alias: claude},
+	}
+	resolved := map[string]string{}
+	for round := 1; round <= 2; round++ {
+		for _, profile := range profiles {
+			eventID := fmt.Sprintf("%s-%d", profile.name, round)
+			ev := sampleEvent()
+			ev.NodeScope = scope
+			ev.UserID = userID
+			ev.EventID = eventID
+			ev.OccurredAt = time.Now().UTC()
+			require.NoError(t, store.WriteBatch(ctx, []Event{ev}))
+
+			turnID := turnRowID(scope, eventID)
+			require.NoError(t, cp.AppendTurns(ctx, []ContentInput{{
+				NodeScope:    scope,
+				UserID:       userID,
+				Aliases:      []Alias{profile.alias},
+				TurnID:       turnID,
+				ContentState: ContentStateMetadataOnly,
+			}}))
+
+			var sessionID string
+			require.NoError(t, db.QueryRow(`SELECT session_id::text FROM observer_turns WHERE id = $1`, turnID.String()).Scan(&sessionID))
+			if round == 1 {
+				resolved[profile.name] = sessionID
+			} else {
+				assert.Equal(t, resolved[profile.name], sessionID, "%s must preserve session continuity", profile.name)
+			}
+		}
+	}
+
+	require.NotEqual(t, resolved["codex"], resolved["claude"], "cross-profile aliases must never merge")
+	var sessionCount, aliasCount int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_sessions WHERE node_scope = $1 AND user_id = $2`, scope, userID).Scan(&sessionCount))
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_session_aliases WHERE node_scope = $1 AND user_id = $2`, scope, userID).Scan(&aliasCount))
+	assert.Equal(t, 2, sessionCount)
+	assert.Equal(t, 2, aliasCount)
+	for _, sessionID := range resolved {
+		turns, gaps := sessionCounts(t, db, sessionID)
+		assert.Equal(t, int64(2), turns)
+		assert.Zero(t, gaps)
+	}
+}
+
 // --- PR #14: exactly-once claim for session-only appends ---
 
 // insertAppendFixture seeds one session, its codex_cli alias binding (user id

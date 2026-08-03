@@ -41,9 +41,10 @@ const (
 	observerSchemaV1 = 1
 	observerSchemaV2 = 2
 	observerSchemaV3 = 3
+	observerSchemaV4 = 4
 	// observerSchemaCurrent is the newest schema version; keep it in sync
 	// when a migration file is appended.
-	observerSchemaCurrent = observerSchemaV3
+	observerSchemaCurrent = observerSchemaV4
 
 	// observerSchemaLockKey is the fixed advisory-lock key serializing
 	// concurrent bootstrap attempts against the same database.
@@ -61,7 +62,12 @@ const (
 // upgrade. Each file is idempotent and runs inside the bootstrap transaction.
 // The list is frozen by convention: future migrations append a new file and a
 // new schema version constant, never mutate this list.
-var observerMigrations = []string{"migrations/001_v1.sql", "migrations/002_v2.sql", "migrations/003_v3.sql"}
+var observerMigrations = []string{
+	"migrations/001_v1.sql",
+	"migrations/002_v2.sql",
+	"migrations/003_v3.sql",
+	"migrations/004_v4.sql",
+}
 
 // ErrUnsupportedDSN classifies a SQL DSN the observer cannot use: it is empty,
 // a SQLite/MySQL DSN, or not parseable by pgx as a PostgreSQL URI or keyword
@@ -194,19 +200,19 @@ func (a dbtxAdapter) ExecContext(ctx context.Context, query string, args ...any)
 }
 
 // verifySchema performs the bounded startup schema check: the version table
-// must hold exactly [1] (complete v1, upgrade pending at bootstrap), [1, 2]
-// (complete v2, upgrade pending at bootstrap), or [1, 2, 3] (current), and
-// every required observer table must exist. On the current version it also
-// checks the v2 column so a schema whose version row lies about its structure
-// is rejected. It never runs DDL, scans data tables, or executes VACUUM.
+// must hold a complete known prefix ([1], [1,2], [1,2,3]) awaiting bootstrap,
+// or [1,2,3,4] (current), and every required observer table must exist. On
+// the current version it also checks the v2 column and v4 alias identity
+// index so a schema whose version row lies about its structure is rejected.
+// It never runs DDL, scans data tables, or executes VACUUM.
 func verifySchema(ctx context.Context, db dbtx) error {
 	versions, err := readSchemaVersions(ctx, db)
 	if err != nil {
 		return fmt.Errorf("relayobserver: schema verify: %w", err)
 	}
 	current := isVersionListCurrent(versions)
-	if !current && !isVersionListV1(versions) && !isVersionListV2(versions) {
-		return fmt.Errorf("relayobserver: schema verify: version mismatch: have %v, want [%d] or [%d, %d] or [%d, %d, %d]", versions, observerSchemaV1, observerSchemaV1, observerSchemaV2, observerSchemaV1, observerSchemaV2, observerSchemaV3)
+	if !current && !isVersionListV1(versions) && !isVersionListV2(versions) && !isVersionListV3(versions) {
+		return fmt.Errorf("relayobserver: schema verify: version mismatch: have %v, want a complete prefix of [1, 2, 3, 4]", versions)
 	}
 	missing, err := missingObserverTables(ctx, db)
 	if err != nil {
@@ -225,6 +231,13 @@ func verifySchema(ctx context.Context, db dbtx) error {
 		}
 		if !has {
 			return fmt.Errorf("relayobserver: schema verify: v2 column observer_content_objects.created_at is missing")
+		}
+		has, err = observerV4AliasIndexExists(ctx, db)
+		if err != nil {
+			return err
+		}
+		if !has {
+			return fmt.Errorf("relayobserver: schema verify: v4 provider-scoped alias identity index is missing")
 		}
 	}
 	return nil
@@ -264,10 +277,16 @@ func isVersionListV2(versions []int) bool {
 	return len(versions) == 2 && versions[0] == observerSchemaV1 && versions[1] == observerSchemaV2
 }
 
-// isVersionListCurrent reports whether versions is exactly the current state
-// [1, 2, 3].
-func isVersionListCurrent(versions []int) bool {
+// isVersionListV3 reports whether versions is exactly the complete v3 state
+// [1, 2, 3], which still awaits the v4 alias identity upgrade.
+func isVersionListV3(versions []int) bool {
 	return len(versions) == 3 && versions[0] == observerSchemaV1 && versions[1] == observerSchemaV2 && versions[2] == observerSchemaV3
+}
+
+// isVersionListCurrent reports whether versions is exactly the current state
+// [1, 2, 3, 4].
+func isVersionListCurrent(versions []int) bool {
+	return len(versions) == 4 && versions[0] == observerSchemaV1 && versions[1] == observerSchemaV2 && versions[2] == observerSchemaV3 && versions[3] == observerSchemaV4
 }
 
 // observerV2ColumnExists reports whether the v2 created_at column exists on
@@ -291,6 +310,47 @@ func observerV2ColumnExists(ctx context.Context, db dbtx) (bool, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return false, fmt.Errorf("relayobserver: schema verify: check v2 column: %w", err)
+	}
+	return exists, nil
+}
+
+// observerV4AliasIndexExists reports whether the provider-scoped identity
+// index introduced by v4 exists. The provider is part of alias identity: the
+// same raw value may legitimately identify independent Codex and Claude
+// sessions for the same user and node scope.
+func observerV4AliasIndexExists(ctx context.Context, db dbtx) (bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT EXISTS (
+		SELECT 1
+		FROM pg_class idx
+		JOIN pg_index i ON i.indexrelid = idx.oid
+		JOIN pg_class tbl ON tbl.oid = i.indrelid
+		JOIN pg_namespace n ON n.oid = tbl.relnamespace
+		WHERE n.nspname = current_schema()
+		  AND tbl.relname = 'observer_session_aliases'
+		  AND idx.relname = 'idx_observer_session_aliases_identity'
+		  AND i.indisunique
+		  AND i.indpred IS NULL
+		  AND (
+		      SELECT array_agg(a.attname ORDER BY k.ordinality)
+		      FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinality)
+		      JOIN pg_attribute a
+		        ON a.attrelid = i.indrelid
+		       AND a.attnum = k.attnum
+		      WHERE k.attnum > 0
+		  ) = ARRAY['node_scope', 'user_id', 'key_version', 'alias_digest', 'provider']::name[])`)
+	if err != nil {
+		return false, fmt.Errorf("relayobserver: schema verify: check v4 alias identity index: %w", err)
+	}
+	defer closeRows(rows)
+	if !rows.Next() {
+		return false, fmt.Errorf("relayobserver: schema verify: check v4 alias identity index: no result row")
+	}
+	var exists bool
+	if err := rows.Scan(&exists); err != nil {
+		return false, fmt.Errorf("relayobserver: schema verify: check v4 alias identity index: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("relayobserver: schema verify: check v4 alias identity index: %w", err)
 	}
 	return exists, nil
 }
@@ -409,7 +469,7 @@ func bootstrapSchemaTx(ctx context.Context, tx dbtx, tables map[string]bool, ver
 				return err
 			}
 		}
-	case (isVersionListV1(versions) || isVersionListV2(versions)) && allRequiredTablesPresent(tables):
+	case (isVersionListV1(versions) || isVersionListV2(versions) || isVersionListV3(versions)) && allRequiredTablesPresent(tables):
 		// Complete older schema awaiting the upgrade: apply the pending
 		// migrations from the current version upward. Each migration is
 		// idempotent, so a repeated bootstrap is a no-op. A partial schema

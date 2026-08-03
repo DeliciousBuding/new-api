@@ -132,67 +132,64 @@ func openRetentionStores(t *testing.T, dsn string) (Store, RetentionStore) {
 }
 
 // TestIntegrationMigrationLifecycle covers the versioned migration path on
-// the live database: an empty schema bootstraps straight to the current
-// version, a complete v1 schema upgrades in place through v2 and v3, a
-// complete v2 schema upgrades through v3 only, repeated bootstrap is
-// idempotent, verify rejects an unknown version, and the v2 column and v3
-// indexes are present with their expected shapes.
+// the live database: every complete historical prefix upgrades to v4,
+// repeated bootstrap is idempotent, verify rejects an unknown version, and
+// the v2/v3/v4 structural contracts are present with their expected shapes.
 func TestIntegrationMigrationLifecycle(t *testing.T) {
 	dsn := integrationDSN(t)
 	db := openFixturePool(t, dsn)
-	cleanupObserverSchema(t, db)
 	ctx := context.Background()
 
-	// Build a complete v1 schema by hand (001 only), then verify accepts it
-	// as upgrade-pending.
-	v1SQL, err := migrationsFS.ReadFile(observerMigrations[0])
-	require.NoError(t, err)
-	_, err = db.Exec(string(v1SQL))
-	require.NoError(t, err)
-	store, err := OpenPGStore(ctx, dsn, SchemaModeVerify)
-	require.NoError(t, err, "verify must accept a complete v1 schema")
-	require.NoError(t, store.Close(ctx))
+	for _, tt := range []struct {
+		name       string
+		migrations int
+	}{
+		{name: "v1 upgrades through v4", migrations: 1},
+		{name: "v2 upgrades through v4", migrations: 2},
+		{name: "v3 upgrades through v4", migrations: 3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cleanupObserverSchema(t, db)
+			for i := 0; i < tt.migrations; i++ {
+				sqlText, err := migrationsFS.ReadFile(observerMigrations[i])
+				require.NoError(t, err)
+				_, err = db.Exec(string(sqlText))
+				require.NoError(t, err)
+			}
 
-	var colExists bool
-	require.NoError(t, db.QueryRow(`SELECT EXISTS (SELECT 1 FROM information_schema.columns
-		WHERE table_schema = current_schema() AND table_name = 'observer_content_objects' AND column_name = 'created_at')`).Scan(&colExists))
-	assert.False(t, colExists, "a hand-built v1 schema must not have the v2 column yet")
+			store, err := OpenPGStore(ctx, dsn, SchemaModeVerify)
+			require.NoError(t, err, "verify must accept a complete historical prefix")
+			require.NoError(t, store.Close(ctx))
 
-	// Bootstrap upgrades v1 -> v2 -> v3 inside its transaction.
-	store, err = OpenPGStore(ctx, dsn, SchemaModeBootstrap)
-	require.NoError(t, err, "bootstrap must upgrade a complete v1 schema to the current version")
-	require.NoError(t, store.Close(ctx))
-	assertSchemaVersions(t, db, []int{1, 2, 3})
-	require.NoError(t, db.QueryRow(`SELECT EXISTS (SELECT 1 FROM information_schema.columns
-		WHERE table_schema = current_schema() AND table_name = 'observer_content_objects' AND column_name = 'created_at')`).Scan(&colExists))
-	assert.True(t, colExists, "bootstrap must add the v2 created_at column")
-	var notNull int
-	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_content_objects WHERE created_at IS NULL`).Scan(&notNull))
-	assert.Zero(t, notNull, "created_at is NOT NULL")
-	assertV3Indexes(t, db)
+			store, err = OpenPGStore(ctx, dsn, SchemaModeBootstrap)
+			require.NoError(t, err, "bootstrap must upgrade the prefix to current")
+			require.NoError(t, store.Close(ctx))
+			assertSchemaVersions(t, db, []int{1, 2, 3, 4})
+			assertCurrentSchemaShape(t, db)
+		})
+	}
 
 	// Repeated bootstrap is an idempotent no-op on the current schema.
-	store, err = OpenPGStore(ctx, dsn, SchemaModeBootstrap)
+	store, err := OpenPGStore(ctx, dsn, SchemaModeBootstrap)
 	require.NoError(t, err, "repeated bootstrap must be idempotent")
 	require.NoError(t, store.Close(ctx))
-	assertSchemaVersions(t, db, []int{1, 2, 3})
+	assertSchemaVersions(t, db, []int{1, 2, 3, 4})
 
-	// A complete v2 schema (001 + 002) upgrades through v3 only.
-	cleanupObserverSchema(t, db)
-	v2SQL, err := migrationsFS.ReadFile(observerMigrations[1])
+	// A version row is not sufficient: verify must reject an index with the
+	// right name but the legacy four-column shape.
+	_, err = db.Exec("DROP INDEX idx_observer_session_aliases_identity")
 	require.NoError(t, err)
-	_, err = db.Exec(string(v1SQL))
-	require.NoError(t, err)
-	_, err = db.Exec(string(v2SQL))
+	_, err = db.Exec(`CREATE UNIQUE INDEX idx_observer_session_aliases_identity
+		ON observer_session_aliases (node_scope, user_id, key_version, alias_digest)`)
 	require.NoError(t, err)
 	store, err = OpenPGStore(ctx, dsn, SchemaModeVerify)
-	require.NoError(t, err, "verify must accept a complete v2 schema")
-	require.NoError(t, store.Close(ctx))
-	store, err = OpenPGStore(ctx, dsn, SchemaModeBootstrap)
-	require.NoError(t, err, "bootstrap must upgrade a complete v2 schema to v3")
-	require.NoError(t, store.Close(ctx))
-	assertSchemaVersions(t, db, []int{1, 2, 3})
-	assertV3Indexes(t, db)
+	require.Error(t, err, "verify must reject a lying v4 alias index")
+	assert.Nil(t, store)
+	_, err = db.Exec("DROP INDEX idx_observer_session_aliases_identity")
+	require.NoError(t, err)
+	_, err = db.Exec(`CREATE UNIQUE INDEX idx_observer_session_aliases_identity
+		ON observer_session_aliases (node_scope, user_id, key_version, alias_digest, provider)`)
+	require.NoError(t, err)
 
 	// Verify rejects an unknown version row.
 	_, err = db.Exec("INSERT INTO observer_schema_versions (version, applied_at) VALUES (99, now())")
@@ -208,8 +205,34 @@ func TestIntegrationMigrationLifecycle(t *testing.T) {
 	store, err = OpenPGStore(ctx, dsn, SchemaModeBootstrap)
 	require.NoError(t, err, "bootstrap must create the current schema on an empty database")
 	require.NoError(t, store.Close(ctx))
-	assertSchemaVersions(t, db, []int{1, 2, 3})
+	assertSchemaVersions(t, db, []int{1, 2, 3, 4})
+	assertCurrentSchemaShape(t, db)
+}
+
+func assertCurrentSchemaShape(t *testing.T, db *sql.DB) {
+	t.Helper()
+	var colExists bool
+	require.NoError(t, db.QueryRow(`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'observer_content_objects' AND column_name = 'created_at')`).Scan(&colExists))
+	assert.True(t, colExists, "current schema must include v2 created_at")
+	var notNull int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_content_objects WHERE created_at IS NULL`).Scan(&notNull))
+	assert.Zero(t, notNull, "created_at is NOT NULL")
 	assertV3Indexes(t, db)
+	assertV4AliasIndex(t, db)
+}
+
+func assertV4AliasIndex(t *testing.T, db *sql.DB) {
+	t.Helper()
+	var definition string
+	require.NoError(t, db.QueryRow(`SELECT indexdef FROM pg_indexes
+		WHERE schemaname = current_schema()
+		  AND tablename = 'observer_session_aliases'
+		  AND indexname = 'idx_observer_session_aliases_identity'`).Scan(&definition))
+	assert.Contains(t, definition, "UNIQUE INDEX")
+	for _, column := range []string{"node_scope", "user_id", "key_version", "alias_digest", "provider"} {
+		assert.Contains(t, definition, column)
+	}
 }
 
 // assertV3Indexes asserts the three v3 composite indexes exist with the exact
@@ -787,7 +810,10 @@ func TestIntegrationRetentionLockOrderSerializesAppendVsRetention(t *testing.T) 
 			`SELECT last_seen FROM observer_sessions WHERE id = $1 FOR UPDATE`, sid).Scan(&lastSeen))
 
 		// conn2: the append's alias lookup blocks on the same row.
-		type lookResult struct{ found string; err error }
+		type lookResult struct {
+			found string
+			err   error
+		}
 		lookDone := make(chan lookResult, 1)
 		go func() {
 			tx2, err := conn2.BeginTx(context.Background(), nil)
