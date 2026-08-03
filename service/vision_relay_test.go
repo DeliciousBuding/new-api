@@ -181,8 +181,8 @@ func TestPrepareVisionRelayInfraFailureNoPartialCommit(t *testing.T) {
 	}
 }
 
-// 4. 提交成功：旧 storage 关闭（替换后原对象不可再用），新 storage 可被
-//    两次重读（retry 循环语义）
+//  4. 提交成功：旧 storage 关闭（替换后原对象不可再用），新 storage 可被
+//     两次重读（retry 循环语义）
 func TestPrepareVisionRelayCommitAndReread(t *testing.T) {
 	var calls int
 	ts := visionMockServer(t, &calls)
@@ -246,8 +246,8 @@ func TestPrepareVisionRelayPassThroughBody(t *testing.T) {
 	}
 }
 
-// 8. retry 两次：视觉 endpoint 只调一次，两次读到的 upstream body 相同
-//    （增强产物在 retry 前一次性生成）
+//  8. retry 两次：视觉 endpoint 只调一次，两次读到的 upstream body 相同
+//     （增强产物在 retry 前一次性生成）
 func TestPrepareVisionRelayRetryConsistency(t *testing.T) {
 	var calls int
 	ts := visionMockServer(t, &calls)
@@ -270,10 +270,11 @@ func TestPrepareVisionRelayRetryConsistency(t *testing.T) {
 	}
 }
 
-// 7. SSRF fetcher：正常路径有限流下载成功（InitHttpClient 初始化 SSRF 客户端）；
-//    SSRF 保护客户端不可用场景由代码审查覆盖（包级只读，无法测试注入 nil——
-//    实现保证 nil → 错误，绝不 fallback 到 http.DefaultClient）
-func TestVisionRelayFetcherNormalPath(t *testing.T) {	InitHttpClient() // 测试环境未走 main.go 启动路径，需显式初始化 SSRF 客户端
+//  7. SSRF fetcher：正常路径有限流下载成功（InitHttpClient 初始化 SSRF 客户端）；
+//     SSRF 保护客户端不可用场景由代码审查覆盖（包级只读，无法测试注入 nil——
+//     实现保证 nil → 错误，绝不 fallback 到 http.DefaultClient）
+func TestVisionRelayFetcherNormalPath(t *testing.T) {
+	InitHttpClient() // 测试环境未走 main.go 启动路径，需显式初始化 SSRF 客户端
 	img := image.NewRGBA(image.Rect(0, 0, 10, 10))
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
@@ -305,16 +306,16 @@ func TestVisionRelayFetcherNormalPath(t *testing.T) {	InitHttpClient() // 测试
 	}
 }
 
-// 9. 递归保护（P0-2）：外部伪造 marker（含旧字面 "1"）→ 不绕过，Enhance 照常执行；
-//    合法认证 marker（HMAC 匹配配置的 sidecall_token）→ 真跳过（请求原样）
+//  9. 递归保护（P0-2）：外部伪造 marker（含旧字面 "1"）→ 不绕过，Enhance 照常执行；
+//     合法认证 marker（HMAC 匹配配置的 sidecall_secret）→ 真跳过（请求原样）
 func TestPrepareVisionRelayRecursionMarker(t *testing.T) {
-	const token = "test-sidecall-token"
+	const token = "test-sidecall-secret"
 	ts := visionMockServer(t, nil)
 	defer ts.Close()
 
 	t.Run("forged header does not bypass", func(t *testing.T) {
 		c, relayInfo, _ := setupVisionRelayEnv(t, ts.URL, true)
-		setSidecallToken(token)
+		setSidecallSecret(token)
 		c.Request.Header.Set("X-NewAPI-Vision-Relay", "1") // 旧版字面值伪造
 		apiErr := PrepareVisionRelayRequest(c, relayInfo)
 		if apiErr != nil {
@@ -328,7 +329,7 @@ func TestPrepareVisionRelayRecursionMarker(t *testing.T) {
 
 	t.Run("forged random marker does not bypass", func(t *testing.T) {
 		c, relayInfo, _ := setupVisionRelayEnv(t, ts.URL, true)
-		setSidecallToken(token)
+		setSidecallSecret(token)
 		c.Request.Header.Set("X-NewAPI-Vision-Relay", "vr:1234567890:deadbeef")
 		apiErr := PrepareVisionRelayRequest(c, relayInfo)
 		if apiErr != nil {
@@ -342,7 +343,7 @@ func TestPrepareVisionRelayRecursionMarker(t *testing.T) {
 
 	t.Run("valid marker bypasses", func(t *testing.T) {
 		c, relayInfo, raw := setupVisionRelayEnv(t, ts.URL, true)
-		setSidecallToken(token)
+		setSidecallSecret(token)
 		marker := vision_relay.BuildMarker(token, time.Now())
 		c.Request.Header.Set("X-NewAPI-Vision-Relay", marker)
 		apiErr := PrepareVisionRelayRequest(c, relayInfo)
@@ -355,10 +356,37 @@ func TestPrepareVisionRelayRecursionMarker(t *testing.T) {
 	})
 }
 
-// setSidecallToken setupVisionRelayEnv 会重置 OptionMap，需在其后补设
-func setSidecallToken(token string) {
+// setSidecallSecret setupVisionRelayEnv 会重置 OptionMap，需在其后补设
+func setSidecallSecret(token string) {
 	common.OptionMapRWMutex.Lock()
-	common.OptionMap["vision_relay.sidecall_token"] = token
+	common.OptionMap["vision_relay.sidecall_secret"] = token
 	common.OptionMapRWMutex.Unlock()
 }
 
+//  10. 出站 marker（审核 P1-2）：配置 sidecall_secret 后旁路请求必须携带
+//     合法认证 marker（自回环递归防护接线验证）
+func TestPrepareVisionRelayOutboundMarker(t *testing.T) {
+	const secret = "test-sidecall-secret"
+	var sawMarker bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := r.Header.Get("X-NewAPI-Vision-Relay")
+		if h != "" && vision_relay.ValidateMarker(secret, h, time.Now()) {
+			sawMarker = true
+		}
+		w.Write([]byte(`{"choices":[{"message":{"content":"这是测试图片描述"}}]}`))
+	}))
+	defer ts.Close()
+	c, relayInfo, _ := setupVisionRelayEnv(t, ts.URL, true)
+	setSidecallSecret(secret)
+	apiErr := PrepareVisionRelayRequest(c, relayInfo)
+	if apiErr != nil {
+		t.Fatalf("unexpected error: %v", apiErr)
+	}
+	if !sawMarker {
+		t.Fatal("outbound sidecall must carry valid HMAC marker when sidecall_secret configured")
+	}
+	body := storageContent(t, c)
+	if strings.Contains(string(body), `"type":"image"`) {
+		t.Fatal("enhanced body must not contain image block")
+	}
+}

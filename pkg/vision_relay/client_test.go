@@ -19,12 +19,12 @@ import (
 
 func testConfig(url string) Config {
 	return Config{
-		Enabled:       true,
-		Models:        []string{"vision-model-a", "vision-model-b"},
-		BaseURL:       url,
-		APIKey:        "sk-test",
-		TimeoutSec:    5,
-		SidecallToken: "test-sidecall-token",
+		Enabled:        true,
+		Models:         []string{"vision-model-a", "vision-model-b"},
+		BaseURL:        url,
+		APIKey:         "sk-test",
+		TimeoutSec:     5,
+		SidecallSecret: "test-sidecall-secret",
 	}
 }
 
@@ -50,7 +50,7 @@ func TestDescribeOneSuccess(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
 		if h := r.Header.Get("X-NewAPI-Vision-Relay"); h == "" ||
-			!ValidateMarker("test-sidecall-token", h, time.Now()) {
+			!ValidateMarker("test-sidecall-secret", h, time.Now()) {
 			t.Error("recursion protection marker missing or invalid")
 		}
 		var body map[string]any
@@ -405,5 +405,36 @@ func TestEngineEnhanceAuthCircuitBreak(t *testing.T) {
 	}
 	if stats.VisionCalls > RequestConcurrency {
 		t.Fatalf("stats.VisionCalls=%d must be <= RequestConcurrency", stats.VisionCalls)
+	}
+}
+
+// 敏感词检查（审核 P1-3/A6）：SensitiveCheck 命中 → blocked 稳定占位，不注入原文
+func TestEngineEnhanceSensitiveCheck(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"choices":[{"message":{"content":"敏感内容描述"}}]}`))
+	}))
+	defer ts.Close()
+	engine := &Engine{
+		Client: &VisionClient{HTTPClient: ts.Client()},
+		SensitiveCheck: func(desc string) bool {
+			return strings.Contains(desc, "敏感")
+		},
+	}
+	stats := &Stats{}
+	enhanced, err := engine.Enhance(context.Background(),
+		[]byte(`{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"`+base64.StdEncoding.EncodeToString(testImageData())+`"}}]}]}`),
+		FormatClaude, testConfig(ts.URL), stats)
+	if err != nil {
+		t.Fatalf("enhance: %v", err)
+	}
+	out := string(enhanced)
+	if strings.Contains(out, "敏感内容描述") {
+		t.Fatal("sensitive description must not be injected")
+	}
+	if !strings.Contains(out, "blocked") {
+		t.Fatal("sensitive image must be replaced with blocked placeholder")
+	}
+	if stats.Success != 0 || stats.Failed != 1 {
+		t.Fatalf("expected failed=1 success=0, got success=%d failed=%d", stats.Success, stats.Failed)
 	}
 }

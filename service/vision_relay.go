@@ -65,7 +65,7 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 	// 2. 递归保护（审核 P0-2）：仅认证 marker（HMAC 校验通过）才允许 bypass；
 	//    外部伪造的任意值（含旧字面 "1"）被忽略，继续正常执行 Vision Relay
 	if h := c.GetHeader(relayRequestHeader); h != "" &&
-		vision_relay.ValidateMarker(cfg.SidecallToken, h, time.Now()) {
+		vision_relay.ValidateMarker(cfg.SidecallSecret, h, time.Now()) {
 		return nil
 	}
 	// 3. 策略：allowlist 命中才处理（未启用/未命中 → no-op）
@@ -113,15 +113,21 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 			HTTPClient: GetHttpClient(), // 显式注入（继承 NewAPI 连接池/TLS 配置）
 		},
 		Fetcher: visionRelayFetcher{},
+		// 审核 P1-3（A6）：识图描述注入前过原生敏感词检查（命中 → blocked 占位）
+		SensitiveCheck: func(desc string) bool {
+			ok, _ := CheckSensitiveText(desc)
+			return ok
+		},
 	}
 	coreCfg := vision_relay.Config{
-		Enabled:      cfg.Enabled,
-		TargetModels: cfg.TargetModels,
-		Models:       cfg.Models,
-		BaseURL:      cfg.BaseURL,
-		APIKey:       cfg.APIKey,
-		Prompt:       cfg.Prompt,
-		TimeoutSec:   cfg.TimeoutSec,
+		Enabled:        cfg.Enabled,
+		TargetModels:   cfg.TargetModels,
+		Models:         cfg.Models,
+		BaseURL:        cfg.BaseURL,
+		APIKey:         cfg.APIKey,
+		Prompt:         cfg.Prompt,
+		TimeoutSec:     cfg.TimeoutSec,
+		SidecallSecret: cfg.SidecallSecret, // 审查 P1-2：出站旁路请求必须携带认证 marker（自回环递归防护）
 	}
 	var stats vision_relay.Stats
 	enhanced, err := engine.Enhance(enhanceCtx, rawBody, format, coreCfg, &stats)

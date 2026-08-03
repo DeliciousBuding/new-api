@@ -1,6 +1,8 @@
 package vision_relay
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -29,16 +31,23 @@ func TestValidateMarkerForged(t *testing.T) {
 	now := time.Now()
 	valid := BuildMarker(token, now)
 
+	// 确定性篡改：时间戳 +1s（仍在 ±5min 窗口内 → 必过窗口检查，但 HMAC
+	// 因 ts 不同必不匹配）——修复旧逻辑 `valid[:len-1]+"0"` 在 HMAC 末位恰为
+	// '0' 时无操作导致 1/16 概率随机红（审查 P1-4）
+	parts := strings.Split(valid, ":")
+	ts, _ := strconv.ParseInt(parts[1], 10, 64)
+	tsForged := fmt.Sprintf("%s:%d:%s", parts[0], ts+1, parts[2])
+
 	cases := []string{
-		"1",                                  // 旧版字面值（P0-2 主修复对象）
-		"",                                   // 空头
-		"vr",                                 // 缺段
-		"vr:123",                             // 缺 HMAC 段
-		"vr:abc:deadbeef",                    // 时间戳非数字
-		"vr:" + "9999999999" + ":" + "abcd",  // 过期时间戳（1970 年）
-		valid[:len(valid)-1] + "0",           // 篡改最后一个 hex 字符
-		"vr:99999999999999999999:abcd",       // 时间戳溢出
-		"other:123:abcd",                     // 错误前缀
+		"1",                            // 旧版字面值（P0-2 主修复对象）
+		"",                             // 空头
+		"vr",                           // 缺段
+		"vr:123",                       // 缺 HMAC 段
+		"vr:abc:deadbeef",              // 时间戳非数字
+		"vr:9999999999:abcd",           // 过期时间戳（1970 年）
+		tsForged,                       // 窗口内但 HMAC 不匹配（确定性篡改）
+		"vr:99999999999999999999:abcd", // 时间戳溢出
+		"other:123:abcd",               // 错误前缀
 	}
 	for _, h := range cases {
 		if ValidateMarker(token, h, now) {

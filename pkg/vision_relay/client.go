@@ -85,22 +85,14 @@ type VisionClient struct {
 //	网络传输错误（transportError）：同模型重试 1 次（预算内）
 //	429 / 5xx / 空 choices / 空 content / 非 JSON：provider 瞬时错误 → 换下一模型（不重试）
 //	400 → ErrUnsupported（停止该图，不遍历其他模型）
-//	401/403 → ErrAuth（终止整条 fallback，防 key 错误打三模型）
-//	413 → ErrSizeLimit（不 fallback）
-//	451 → ErrBlocked（当前图停止）
-// Call 单次旁路调用。错误矩阵（门槛七 + v0.2.2 语义）：
-//
-//	网络传输错误（transportError）：同模型重试 1 次（预算内）
-//	429 / 5xx / 空 choices / 空 content / 非 JSON：provider 瞬时错误 → 换下一模型（不重试）
-//	400 → ErrUnsupported（停止该图，不遍历其他模型）
 //	401/403 → ErrAuth（请求级熔断；该图不重试不 fallback）
 //	413 → ErrSizeLimit（不 fallback）
 //	451 → ErrBlocked（当前图停止）
 //
-// sidecallToken 非空时携带递归保护认证 marker（审核 P0-2：目标实例只有
+// sidecallSecret 非空时携带递归保护认证 marker（审核 P0-2：目标实例只有
 // HMAC 校验通过才允许 bypass，外部伪造不可绕过）。
 // 返回 (文本, 实际 HTTP 请求次数, 错误)——calls 含 transport retry（P2-6）。
-func (c *VisionClient) Call(ctx context.Context, model, instruction string, data []byte, mediaType, baseURL, apiKey, sidecallToken string, timeout time.Duration, maxTokens int) (string, int, error) {
+func (c *VisionClient) Call(ctx context.Context, model, instruction string, data []byte, mediaType, baseURL, apiKey, sidecallSecret string, timeout time.Duration, maxTokens int) (string, int, error) {
 	body, err := buildVisionPayload(model, instruction, data, mediaType, maxTokens)
 	if err != nil {
 		return "", 0, err
@@ -112,7 +104,7 @@ func (c *VisionClient) Call(ctx context.Context, model, instruction string, data
 	var text string
 	calls := 0
 	for attempt := 0; attempt <= 1; attempt++ { // 仅传输错误重试 ≤1（预算内）
-		text, err = c.doRequest(ctx, client, model, baseURL, apiKey, sidecallToken, body, timeout)
+		text, err = c.doRequest(ctx, client, model, baseURL, apiKey, sidecallSecret, body, timeout)
 		calls++
 		var te *transportError
 		if err == nil || !errors.As(err, &te) {
@@ -145,7 +137,7 @@ func buildVisionPayload(model, instruction string, data []byte, mediaType string
 	return common.Marshal(payload)
 }
 
-func (c *VisionClient) doRequest(ctx context.Context, client *http.Client, model, baseURL, apiKey, sidecallToken string, body []byte, timeout time.Duration) (string, error) {
+func (c *VisionClient) doRequest(ctx context.Context, client *http.Client, model, baseURL, apiKey, sidecallSecret string, body []byte, timeout time.Duration) (string, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
@@ -157,8 +149,8 @@ func (c *VisionClient) doRequest(ctx context.Context, client *http.Client, model
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	// 递归保护（审核 P0-2）：认证 marker（HMAC），目标实例校验通过才跳过；
 	// token 未配置则不携带（防递归由模型匹配天然保证）
-	if sidecallToken != "" {
-		req.Header.Set("X-NewAPI-Vision-Relay", BuildMarker(sidecallToken, time.Now()))
+	if sidecallSecret != "" {
+		req.Header.Set("X-NewAPI-Vision-Relay", BuildMarker(sidecallSecret, time.Now()))
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -190,21 +182,25 @@ func (c *VisionClient) doRequest(ctx context.Context, client *http.Client, model
 			return "", fmt.Errorf("empty vision content")
 		}
 		return s, nil
-	case resp.StatusCode == http.StatusBadRequest:
-		return "", fmt.Errorf("%w: HTTP 400", ErrUnsupported)
-	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return "", fmt.Errorf("%w: HTTP %d", ErrAuth, resp.StatusCode)
-	case resp.StatusCode == http.StatusRequestEntityTooLarge:
-		return "", fmt.Errorf("%w: HTTP 413", ErrSizeLimit)
-	case resp.StatusCode == http.StatusTooManyRequests:
-		// 429：provider 瞬时错误 → 换下一模型（不重试；尊重 Retry-After 不 sleep 破预算）
-		return "", fmt.Errorf("vision rate limited (retry_after=%s)", resp.Header.Get("Retry-After"))
-	case resp.StatusCode == http.StatusUnavailableForLegalReasons:
-		return "", fmt.Errorf("%w: HTTP 451", ErrBlocked)
 	default:
-		// 其他 5xx：截断仅内部记录，绝不进占位文本
+		// 非 200：统一 drain 有限响应体（连接复用，防 429/5xx 高频场景连接 churn
+		// 波及同池其他 relay 流量；错误体截断仅内部记录，绝不进占位文本——审查 P2-3）
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("vision provider error: HTTP %d", resp.StatusCode)
+		switch {
+		case resp.StatusCode == http.StatusBadRequest:
+			return "", fmt.Errorf("%w: HTTP 400", ErrUnsupported)
+		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+			return "", fmt.Errorf("%w: HTTP %d", ErrAuth, resp.StatusCode)
+		case resp.StatusCode == http.StatusRequestEntityTooLarge:
+			return "", fmt.Errorf("%w: HTTP 413", ErrSizeLimit)
+		case resp.StatusCode == http.StatusTooManyRequests:
+			// 429：provider 瞬时错误 → 换下一模型（不重试；尊重 Retry-After 不 sleep 破预算）
+			return "", fmt.Errorf("vision rate limited (retry_after=%s)", resp.Header.Get("Retry-After"))
+		case resp.StatusCode == http.StatusUnavailableForLegalReasons:
+			return "", fmt.Errorf("%w: HTTP 451", ErrBlocked)
+		default:
+			return "", fmt.Errorf("vision provider error: HTTP %d", resp.StatusCode)
+		}
 	}
 }
 
@@ -232,12 +228,12 @@ func contentString(content any) string {
 // DescribeResult 单图识图结果（结构化，审核 P0-2 §3 / P2-6：保留请求级熔断
 // 标记与真实 HTTP/fallback 计数，不提前压成字符串枚举）
 type DescribeResult struct {
-	Desc   string // 纯描述（成功）
-	Enum   string // 失败枚举（空=成功）
-	Model  string // 使用模型
-	Abort  bool   // 请求级熔断：401/403（鉴权/配置错误）→ 整次 Enhance 停止后续 sidecall
-	HTTPCalls int // 实际 HTTP 请求次数（含 transport retry 与 fallback）
-	Fallbacks int // 真实模型切换次数（换到下一个模型算一次）
+	Desc      string // 纯描述（成功）
+	Enum      string // 失败枚举（空=成功）
+	Model     string // 使用模型
+	Abort     bool   // 请求级熔断：401/403（鉴权/配置错误）→ 整次 Enhance 停止后续 sidecall
+	HTTPCalls int    // 实际 HTTP 请求次数（含 transport retry 与 fallback）
+	Fallbacks int    // 真实模型切换次数（换到下一个模型算一次）
 }
 
 // DescribeOne 单图旁路识图（调用方已在 decode gate 内完成压缩、call gate 内
@@ -272,7 +268,7 @@ func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, data
 			return DescribeResult{Enum: EnumTimeout, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
 		}
 		text, calls, err := c.Call(ctx, model, instruction, data, mediaType,
-			cfg.BaseURL, cfg.APIKey, cfg.SidecallToken, remaining, DefaultMaxTokens)
+			cfg.BaseURL, cfg.APIKey, cfg.SidecallSecret, remaining, DefaultMaxTokens)
 		result.HTTPCalls += calls
 		if err == nil {
 			result.Desc, result.Model = text, model

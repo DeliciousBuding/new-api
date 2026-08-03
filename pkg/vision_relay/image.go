@@ -75,10 +75,11 @@ func DigestBytes(data []byte) string {
 }
 
 // CompressForVision 像素校验 + 压缩（必须在解码并发闸内调用）：
-// 1. DecodeConfig 只读头校验（宽/高/像素，超限拒绝——解压炸弹防线，
-//    不触发完整 Decode）
-// 2. 小图原样发送（≤2000px 且 ≤1.5MB；小 PNG 无损保留）
-// 3. 大图降采样/转 JPEG（对齐客户端压缩策略 2000px/1.5MB）
+//  1. DecodeConfig 只读头校验（宽/高/像素，超限拒绝——解压炸弹防线，
+//     不触发完整 Decode）
+//  2. 小图原样发送（≤2000px 且 ≤1.5MB；小 PNG 无损保留）
+//  3. 大图降采样/转 JPEG（对齐客户端压缩策略 2000px/1.5MB）
+//
 // 不处理 EXIF 旋转（审核 A7：标准库不自动转正，阶段 1 明确不处理）。
 func CompressForVision(data []byte, mediaType string) ([]byte, string, error) {
 	if len(data) == 0 {

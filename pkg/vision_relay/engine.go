@@ -39,6 +39,10 @@ func (g *processGate) release(ch chan struct{}) {
 type Engine struct {
 	Client  *VisionClient // 视觉端点客户端（nil 时构建时兜底）
 	Fetcher ImageFetcher  // 远程图片有限流下载（NewAPI 适配注入；nil = URL 图失败占位）
+	// SensitiveCheck 可选的敏感词检查（审核 P1-3/A6：注入前对描述过一遍原生
+	// 敏感词检查，命中 → 该图 blocked 稳定占位，不注入原文）。nil = 不检查。
+	// NewAPI 适配在 service 层注入 CheckSensitiveText 包装。
+	SensitiveCheck func(text string) bool
 }
 
 // Enhance 一次请求的完整增强（事务由调用方保证）：
@@ -157,6 +161,10 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 			// ① decode gate（2）：完整解码/降采样/JPEG 编码——内存峰值闸门
 			decodeGateCh, err := globalDecodeGate.acquire(ctx)
 			if err != nil {
+				// 审查 P2-2：ctx 取消/闸获取失败 → 与调度前置检查对称，补记 Failed
+				mu.Lock()
+				stats.Failed += len(g)
+				mu.Unlock()
 				return
 			}
 			compressed, mediaType, err := CompressForVision(g[0].Data, g[0].Patch.Source.MediaType)
@@ -169,8 +177,9 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 			if err != nil {
 				enum = enumFromErr(err)
 			}
-			// ② call gate（8）：HTTP 旁路调用
-			if enum == "" {
+			// ② call gate（8）：HTTP 旁路调用；闸后复查 abort（审查 P2-1：
+			//    等待期间收到 401/403 → 不再发起 HTTP sidecall）
+			if enum == "" && !abort.Load() {
 				callGateCh, err := globalCallGate.acquire(ctx)
 				if err == nil {
 					r := client.DescribeOne(ctx, instruction, compressed, mediaType, cfg)
@@ -187,6 +196,14 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 			stats.VisionCalls += calls // P2-6：实际 HTTP 次数（含 retry/fallback）
 			stats.FallbackCount += fallbacks
 			if enum == "" && desc != "" {
+				if e.SensitiveCheck != nil && e.SensitiveCheck(desc) {
+					// 审核 P1-3（A6）：敏感词命中 → 该图 blocked 稳定占位，不注入原文
+					for _, im := range g {
+						im.Err = ErrBlocked
+					}
+					stats.Failed += len(g)
+					return
+				}
 				results[d] = desc
 				stats.Success += len(g) // 成功替换的图片块
 				if stats.ModelsUsed == "" {
@@ -202,10 +219,10 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 }
 
 // truncateResults 严格截断（v0.2.2）：
-// - 单图：预算 = MaxDescriptionBytes - len(TruncatedSuffix)，截断后加尾标，
-//   最终长度 ≤ MaxDescriptionBytes
-// - 总量：预算含 wrap 边界文本（prefix/suffix/换行）与占位文本，按图片
-//   原始顺序累计（确定性，非 map 随机序）
+//   - 单图：预算 = MaxDescriptionBytes - len(TruncatedSuffix)，截断后加尾标，
+//     最终长度 ≤ MaxDescriptionBytes
+//   - 总量：预算含 wrap 边界文本（prefix/suffix/换行）与占位文本，按图片
+//     原始顺序累计（确定性，非 map 随机序）
 func truncateResults(images []*PatchedImage, results map[string]string, stats *Stats) {
 	total := 0
 	for _, img := range images {

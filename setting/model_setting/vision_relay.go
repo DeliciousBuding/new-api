@@ -17,14 +17,14 @@ import (
 // GetOptions 敏感字段过滤自动隐藏。
 // 安全限制（图片数/像素/字节/并发等）是包内常量，不进 DB 配置面（v0.2.1）。
 type VisionRelaySettings struct {
-	Enabled      bool     `json:"enabled"`       // 总开关，默认关闭
-	TargetModels []string `json:"target_models"` // 目标模型 allowlist（glob，JSON 数组），默认空=不处理任何模型
-	Models       []string `json:"models"`        // 视觉模型 fallback 链（JSON 数组）
-	BaseURL      string   `json:"base_url"`      // 视觉端点（OpenAI 兼容）
-	APIKey       string   `json:"api_key"`       // 视觉端点鉴权
-	Prompt       string   `json:"prompt"`        // 识图指令模板（空=默认保真基线）
-	TimeoutSec   int      `json:"timeout_sec"`   // 每请求识图总预算（秒）
-	SidecallToken string  `json:"sidecall_token"` // 递归保护共享 secret（认证 marker HMAC 密钥，审核 P0-2；空=不携带/不信任任何递归头）
+	Enabled        bool     `json:"enabled"`         // 总开关，默认关闭
+	TargetModels   []string `json:"target_models"`   // 目标模型 allowlist（glob，JSON 数组），默认空=不处理任何模型
+	Models         []string `json:"models"`          // 视觉模型 fallback 链（JSON 数组）
+	BaseURL        string   `json:"base_url"`        // 视觉端点（OpenAI 兼容）
+	APIKey         string   `json:"api_key"`         // 视觉端点鉴权
+	Prompt         string   `json:"prompt"`          // 识图指令模板（空=默认保真基线）
+	TimeoutSec     int      `json:"timeout_sec"`     // 每请求识图总预算（秒）
+	SidecallSecret string   `json:"sidecall_secret"` // 递归保护共享 secret（认证 marker HMAC 密钥，审核 P0-2；空=不携带/不信任任何递归头）
 }
 
 // VisionRelaySnapshot 不可变配置快照（值对象，深拷贝 slice；请求全程使用）
@@ -69,7 +69,7 @@ func GetVisionRelaySnapshot() (VisionRelaySnapshot, error) {
 	apiKey := common.OptionMap["vision_relay.api_key"]
 	prompt := common.OptionMap["vision_relay.prompt"]
 	timeoutRaw := common.OptionMap["vision_relay.timeout_sec"]
-	sidecallToken := common.OptionMap["vision_relay.sidecall_token"]
+	sidecallToken := common.OptionMap["vision_relay.sidecall_secret"]
 	common.OptionMapRWMutex.RUnlock()
 
 	snap := defaultVisionRelaySettings
@@ -87,14 +87,21 @@ func GetVisionRelaySnapshot() (VisionRelaySnapshot, error) {
 		return snap, nil
 	}
 	if targetsRaw != "" {
-		if err := common.UnmarshalJsonStr(targetsRaw, &snap.TargetModels); err != nil {
+		// 先解到全新 slice 再赋值（深拷贝）：避免 Unmarshal 对长度 ≤ 当前容量的
+		// JSON 数组原地解码进 defaultVisionRelaySettings 共享 backing array，
+		// 造成默认配置污染 + 并发读写竞态（审查 P1-1）
+		var targets []string
+		if err := common.UnmarshalJsonStr(targetsRaw, &targets); err != nil {
 			return VisionRelaySnapshot{}, fmt.Errorf("vision_relay.target_models: %w", err)
 		}
+		snap.TargetModels = targets
 	}
 	if modelsRaw != "" {
-		if err := common.UnmarshalJsonStr(modelsRaw, &snap.Models); err != nil {
+		var models []string
+		if err := common.UnmarshalJsonStr(modelsRaw, &models); err != nil {
 			return VisionRelaySnapshot{}, fmt.Errorf("vision_relay.models: %w", err)
 		}
+		snap.Models = models
 	}
 	snap.BaseURL = strings.TrimSpace(baseURL)
 	if snap.BaseURL == "" {
@@ -106,7 +113,7 @@ func GetVisionRelaySnapshot() (VisionRelaySnapshot, error) {
 	}
 	snap.APIKey = strings.TrimSpace(apiKey)
 	snap.Prompt = strings.TrimSpace(prompt)
-	snap.SidecallToken = strings.TrimSpace(sidecallToken)
+	snap.SidecallSecret = strings.TrimSpace(sidecallToken)
 	if timeoutRaw != "" {
 		v, err := strconv.Atoi(timeoutRaw)
 		if err != nil || v <= 0 {

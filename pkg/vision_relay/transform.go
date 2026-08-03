@@ -36,10 +36,10 @@ type Patch struct {
 
 // PatchedImage 识别前的图片单元（engine 组装：prepare 后填 Digest/Err）
 type PatchedImage struct {
-	Patch   Patch
-	Digest  string
-	Data    []byte // 解码后原始字节（base64 源；URL 源下载后回填）
-	Err     error  // 提取/下载/校验失败（非 nil → 占位替换）
+	Patch  Patch
+	Digest string
+	Data   []byte // 解码后原始字节（base64 源；URL 源下载后回填）
+	Err    error  // 提取/下载/校验失败（非 nil → 占位替换）
 }
 
 // Discover 路径感知扫描：收集协议路径上的图片块 Patch（只读）。

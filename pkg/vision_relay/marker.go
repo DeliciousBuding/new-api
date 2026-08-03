@@ -16,9 +16,9 @@ import (
 // 自行设置该头直接绕过 Vision Relay。现改为 HMAC 认证 marker：
 //
 //	格式: vr:<unix_ts>:<hmac_hex>
-//	hmac = HMAC-SHA256(sidecall_token, "newapi-vision-relay:<unix_ts>")
+//	hmac = HMAC-SHA256(sidecall_secret, "newapi-vision-relay:<unix_ts>")
 //
-// - 共享 secret（vision_relay.sidecall_token）来自 DB options，多实例读同一
+// - 共享 secret（vision_relay.sidecall_secret）来自 DB options，多实例读同一
 //   配置 → 跨节点校验一致（sidecall 可能被反代路由到任意实例）。
 // - 时间戳窗口 ±5min 防重放（sidecall 为秒级即时调用，窗口充裕）。
 // - token 未配置时任何 header 都不被信任（返回 false），继续正常 Enhance；
