@@ -442,7 +442,7 @@ fallback_count/cache_hits + 旁路 token usage（响应有 usage 则记录）。
 ## 19. issue #11 合并前收口 + 最终复验（2026-08-03，PR #12）
 
 **收口项**（分支 `feat/vision-relay-merge`，从 public/main 5a47fadb5 重建，17 文件 diff 全在允许清单）：
-- **P0-2 递归保护**：`X-NewAPI-Vision-Relay` 改 HMAC 认证 marker（`vr:<ts>:<hmac>`，`vision_relay.sidecall_token` 共享 secret，±5min 窗口）；外部伪造不可 bypass
+- **P0-2 递归保护**：`X-NewAPI-Vision-Relay` 改 HMAC 认证 marker（`vr:<ts>:<hmac>`，`vision_relay.sidecall_secret` 共享 secret，±5min 窗口）；外部伪造不可 bypass
 - **P1-3 请求级熔断**：首个 401/403 → Abort，后续 sidecall 停止（≤ RequestConcurrency=2），未处理图稳定占位
 - **P1-4 严格解析**：enabled ParseBool / 数组 JSON 错误不吞 / timeout 非法报错 / base_url net/url 完整校验；**disabled 时零行为优先**（残留 malformed 不 5xx）
 - **P2-6 Stats**：VisionCalls=实际 HTTP、FallbackCount=真实切换、ctx 取消未调度计 Failed
@@ -460,7 +460,7 @@ fallback_count/cache_hits + 旁路 token usage（响应有 usage 则记录）。
 7. disabled + 残留 malformed → ✅ 零行为（原样透传，无 vision 日志）
 8. 重复请求 → ✅ 两次各 vision_calls=1，同一产物（description_bytes=199）
 
-**部署配置**（observer-test options）：enabled=true、target_models=`["deepseek*"]`、models=`["gemma-4-31b"]`、base_url=https://api.tokendancelab.com、api_key=vision-bridge 同款、timeout_sec=15、sidecall_token=随机 48 hex。
+**部署配置**（observer-test options）：enabled=true、target_models=`["deepseek*"]`、models=`["gemma-4-31b"]`、base_url=https://api.tokendancelab.com、api_key=vision-bridge 同款、timeout_sec=15、sidecall_secret=随机 48 hex。
 
 ## 20. HK3 生产部署计划（用户拍板：一切先在 sgp2 测试完整，HK3 零试错）
 
@@ -477,7 +477,7 @@ fallback_count/cache_hits + 旁路 token usage（响应有 usage 则记录）。
 | # | 场景 | 当前状态 | 说明 |
 |---|------|---------|------|
 | T1 | **自回环完整链路** | ❌ 未测（最大缺口） | observer-test 的 base_url 指向**自己**（http://127.0.0.1:3100）+ 新增 gemma 渠道（上游 HK3）+ vision token 授权 gemma → 带图 deepseek 请求 → 旁路回环自己 → marker 校验通过跳过 Enhance → gemma 渠道 → 描述注入。**这精确复现 HK3 场景**（sgp2 此前测的是"旁路到 HK3"而非"旁路到自己"） |
-| T2 | marker 一致性 | ❌ 未测 | sidecall_token 配置一致 → 回环跳过；token 被清 → 旁路回环不触发 Enhance（gemma 不在 target_models，第二层防护） |
+| T2 | marker 一致性 | ❌ 未测 | sidecall_secret 配置一致 → 回环跳过；token 被清 → 旁路回环不触发 Enhance（gemma 不在 target_models，第二层防护） |
 | T3 | 计费核对 | ❌ 未测 | vision token 配额按 gemma 单价扣减；用户 token 只按 deepseek 计费（预扣-退还一致） |
 | T4 | 并发压力 | ❌ 未测 | 多并发带图请求：decode/call 闸门、401 熔断、占位降级不阻塞 |
 | T5 | 长期观察 | ❌ 未测 | 连续请求：vision 日志稳定、无 fd/内存泄漏、耗时分布 |
@@ -489,10 +489,10 @@ fallback_count/cache_hits + 旁路 token usage（响应有 usage 则记录）。
 1. gemma 渠道健康检查（HK3 主栈渠道：上游 PicPi/tokendance，模型 gemma-4-31b 可用）
 2. 签发 **vision token**：授权 gemma-4-31b/step-3.7-flash/grok-4.5、足够配额、group 命中 gemma 渠道（sgp2 教训：token 模型限制不放行 gemma 会导致 Invalid token）
 3. 回环路径决策：**内网直连优先**（nginx 放行自身来源或内部端口）vs 公网回环（CF 限流风险）；sgp2 已验公网可行，HK3 生产建议内网
-4. 生成 sidecall_token（随机 48 hex，仅写 DB options，不回显）
+4. 生成 sidecall_secret（随机 48 hex，仅写 DB options，不回显）
 
 **功能启用（四步，每步观察 ≥ 观察窗）**
-- S1：写全部配置但 `enabled=false` → 零行为确认（含 sidecall_token 写入无副作用）
+- S1：写全部配置但 `enabled=false` → 零行为确认（含 sidecall_secret 写入无副作用）
 - S2：`enabled=true` + `target_models=[]` → 无模型命中，零行为
 - S3：`target_models=["deepseek*"]` + 内部测试 key 走自回环链路验证（对应 sgp2 T1 复验）
 - S4：放量 → 观察 TTFT 增加、识图成本（vision token 配额消耗速率）、错误率、gemma 渠道健康
@@ -518,6 +518,72 @@ vision_relay.target_models   = ["deepseek*", "qwen3-coder*", ...]  // 只列纯�
 vision_relay.models          = ["gemma-4-31b", "step-3.7-flash", "grok-4.5"]
 vision_relay.base_url        = <内网直连优先，回环本实例>
 vision_relay.api_key         = <HK3 专用 vision token：授权 gemma 系 + 配额 + group>
-vision_relay.sidecall_token  = <随机 48 hex>
+vision_relay.sidecall_secret  = <随机 48 hex>
 vision_relay.timeout_sec     = 15
 ```
+
+## 21. 终审修正（2026-08-03，PR #12 终审评论 + 团队审查）
+
+### 21.1 P0：sidecall_secret 防泄露（已完成）
+
+`vision_relay.sidecall_token` → **`vision_relay.sidecall_secret`**（GetOptions 敏感过滤匹配 `Secret` 后缀；小写 `token` 不被过滤会泄露到管理端 Options API）。sgp2 旧值已视为暴露：删除旧键 + 生成全新 secret + 重启 + Options API 实测不返回。所有测试/文档已更新。
+
+### 21.2 端点模式 ADR（架构决策变更，替代旧 D3/A14）
+
+旧设计（D3/A14）：sidecall 不进入 quota 链、直接请求外部端点。新定稿：
+
+```text
+Vision Relay 支持两种端点模式：
+
+direct：
+  直接请求外部 OpenAI-compatible endpoint。
+  sidecall_secret 必须为空，不发送 marker。
+  适合把识图外包给独立视觉服务。
+
+self-loop（HK3 生产采用）：
+  请求本实例内部地址（容器 loopback 或受信任内部 service DNS）。
+  使用专用 vision token 和独立内部账户。
+  进入正常 channel / billing 链（gemma 渠道 + 正常计费）。
+  必须配置 sidecall_secret（递归防护）。
+```
+
+**HK3 禁止公网回环**（Cloudflare/WAF/限流/连接绕路/header 处理不确定性）。
+
+### 21.3 T1 内部端口（修正）
+
+sidecall 从 API 容器内部发起：容器内监听 `127.0.0.1:3000`（Dockerfile EXPOSE 3000）；宿主机 3100 是映射端口，容器内不可达。T1 前实证（docker exec wget + docker inspect network mode），bridge 网络下 `base_url = http://127.0.0.1:3000`。
+
+### 21.4 T2 拆分（marker 有效性验证）
+
+| 子项 | 配置 | 预期 |
+|---|---|---|
+| T2a 合法 marker | 临时 target_models 含 deepseek* + gemma* | inner gemma 因合法 marker 直接 bypass；无第二次 Enhance（1 outer + 1 inner + 0 第三层） |
+| T2b 防伪 | 外部 deepseek 带图 + 伪造 marker（字面 1/随机/过期） | 不 bypass，仍正常识图 |
+| T2c 防御纵深 | secret 为空 + gemma 不在 target_models | 无 marker 时靠模型策略避免递归 |
+
+**禁止执行**：无效 marker + gemma 命中 target_models（=主动制造递归）。
+
+### 21.5 T1 通过标准（修正）
+
+一次外部 deepseek 带图请求 = **1 outer deepseek + 1 inner gemma + 0 第三层**：
+- outer 日志 `vision_calls=1`；inner 使用专用 vision token；inner 命中 gemma channel；inner 无 Vision Enhance 日志；最终转发 zero image block；deepseek 回答引用识图描述；整体 ≤15s；inner/outer 消费日志可区分。
+
+### 21.6 T3 计费判定（修正）
+
+两个独立账户（外部测试用户 + 内部 vision service account），settle 后核对：
+- 外部用户承担 deepseek 费用（**含注入描述文本增加的 prompt token**——不是"只按原始文字计"）；不承担 gemma 费用
+- vision account 承担 gemma 费用；不承担 deepseek
+- 一次图片请求只产生一次 gemma 计费记录；失败请求按现有结算语义记录
+
+### 21.7 T4/T5 量化（修正）
+
+- T4：并发 1/2/4/8/16 × 每档 20-50 带图请求 × 5 场景（正常/vision 401/provider 5xx/15s 超时/6 图）；记录成功率、占位率、p50/p95/p99、实际 vision HTTP calls、RSS、goroutines、FD、DB connections；401 场景 sidecall ≤ RequestConcurrency
+- T5：sgp2 持续 30-60 分钟；通过标准：RSS/FD/goroutine 不单调增长、无永久挂起、无第三层递归、无 quota 漂移、p95 不恶化、disabled 后即时零行为
+
+### 21.8 团队审查修复（已完成，69bcb6e26）
+
+P1×4：快照深拷贝（防默认配置污染+竞态）、出站 marker 接线（coreCfg 补 SidecallSecret + 断言测试）、A6 敏感词检查落地（SensitiveCheck 注入 + blocked 占位）、TestValidateMarkerForged 确定性篡改。P2×5：熔断后复查 abort、取消路径 stats 补记、非 200 统一 drain、Result/ErrorKind 死代码删除、重复注释块清理。
+
+### 21.9 最终执行顺序（终审裁决）
+
+1. sidecall_secret 改名 ✅ → 2. sgp2 轮换旧 secret（T1 前）→ 3. 文档计划态 ✅ → 4. T1 内部端口 ✅ → 5. T2a/b/c 拆分 ✅ → 6. 同步最新 main → 7. CI 重跑 → 8. 最终候选 SHA 构建镜像 → 9. sgp2 T1→T3→T2→T4→T5→T6 → 10. 记录最终 SHA+digest → 11. PR 转 Ready → 12. 合并 → 13. **HK3 只部署 sgp2 测过的同一 digest**
