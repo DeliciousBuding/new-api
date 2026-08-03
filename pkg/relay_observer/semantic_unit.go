@@ -2,6 +2,7 @@ package relayobserver
 
 import (
 	"bytes"
+	"fmt"
 	"sort"
 
 	"github.com/QuantumNous/new-api/common"
@@ -17,8 +18,9 @@ import (
 // Atomicity contract: a canonical item is a digest-keyed storage object, so a
 // unit never splits an item, and a tool call and its result(s) never enter
 // different units. Pairing is by stable call ID (codex call_id / claude
-// tool_use_id), never by adjacency, so parallel or interleaved calls still
-// pair correctly.
+// tool_use_id) using union-find connected components, so parallel calls,
+// interleaved calls, and multi-result items referencing multiple call owners
+// all group into the correct atomic unit.
 
 // SemanticUnitKind is the frozen vocabulary of semantic unit kinds.
 type SemanticUnitKind string
@@ -47,22 +49,21 @@ const canonicalKindCompactSummary = "compact_summary"
 
 // SemanticUnit is one atomic semantic unit of a canonical stream.
 //
-// Orphan is a v1 extension of the audited interface (the brief leaves the
-// orphan marking mechanism to the implementer): it is true for a tool-exchange
-// unit whose result references a call ID that no unit in the stream declares —
-// the result is still retained as its own unit, never dropped.
+// ItemIndexes holds the original positions of the unit's items in the
+// canonical stream, sorted. The selector uses ItemIndexes for global-index
+// assembly (D5), so the unit's Items field is an aggregate convenience and
+// the ItemIndexes field is the authoritative position record.
 type SemanticUnit struct {
 	Kind           SemanticUnitKind
 	Items          []CanonicalItem
+	ItemIndexes    []int // original positions in the input stream, sorted
 	LogicalBytes   int64
 	CanonicalBytes int64
 	// CallIDs is the sorted, de-duplicated set of stable call IDs of the unit:
 	// call-part IDs plus result-referenced IDs. For a paired unit this is
-	// exactly the pair's call IDs; for an orphan result it is the missing
+	// exactly the component's call IDs; for an orphan result it is the missing
 	// call ID the result references.
-	CallIDs []string
-	// Anchor marks an anchor candidate: a system/developer directive, a
-	// compact summary, or the latest user instruction.
+	CallIDs         []string
 	Anchor          bool
 	SourceTruncated bool
 	Orphan          bool
@@ -70,111 +71,102 @@ type SemanticUnit struct {
 
 // codexTruncationMarker is the prefix Codex prepends to tool output it
 // truncated at the source. The canonical item keeps output text verbatim, so
-// the marker survives into the part payload; it is one of the two source-
-// truncation signals the unit builder recognizes (the other is the canonical
-// item's own Truncated flag).
+// the marker survives into the part payload.
 const codexTruncationMarker = "Warning: truncated output"
 
 // BuildSemanticUnits groups canonical items into deterministic semantic units.
+// Errors are marshal failures: every item must be serializable.
 //
-//  1. Each item is classified by its canonical kind and parts (system,
-//     message, tool call, tool result, unknown/gap).
-//  2. A tool result unit whose referenced call ID is declared by another unit
-//     merges into that call's unit (stable-ID pairing, adjacency-free);
-//     parallel calls in one item keep all their IDs.
-//  3. Unpaired results survive as their own units marked Orphan.
-//  4. Anchor candidates are flagged: system/developer directives (in stream
-//     order), compact summaries (in stream order), and the latest user
-//     instruction.
-//
-// Output is deterministic: identical input yields identical units.
-func BuildSemanticUnits(items []CanonicalItem) []SemanticUnit {
+// Pairing uses union-find connected components (D6): each item is a node; two
+// items sharing a call ID (one declaring it, another referencing it) are
+// edges. Every connected component becomes one atomic unit. Unpaired results
+// survive as their own one-item units marked Orphan.
+func BuildSemanticUnits(items []CanonicalItem) ([]SemanticUnit, error) {
 	n := len(items)
 	if n == 0 {
-		return nil
+		return nil, nil
 	}
-	b := make([]unitBuilder, n)
+
+	// Classify each item.
+	cls := make([]itemClass, n)
 	for i := range items {
-		b[i] = classifyItem(items[i])
-		b[i].itemIndexes = []int{i}
+		cls[i] = classifyItem(items[i])
 	}
 
-	// Stable-ID pairing: map each declared call ID to its first declaring
-	// unit; a result-only unit merges into the first unit declaring any of its
-	// referenced IDs. Call units are never consumed, so no merge chains form.
-	callOwner := make(map[string]int, n)
-	for i := range b {
-		for _, id := range b[i].callIDs {
-			if _, ok := callOwner[id]; !ok {
-				callOwner[id] = i
-			}
+	// Union-find: items sharing a call ID are connected.
+	uf := newItemUF(n)
+	callIDOwners := make(map[string]int)
+	for i := range items {
+		calls, results := toolIDsOfParts(items[i].Content)
+		if items[i].ToolCallID != "" {
+			results = append(results, items[i].ToolCallID)
 		}
-	}
-	mergedInto := make([]int, n)
-	for i := range mergedInto {
-		mergedInto[i] = -1
-	}
-	for i := range b {
-		if len(b[i].callIDs) > 0 || len(b[i].resultIDs) == 0 {
-			continue
-		}
-		for _, rid := range b[i].resultIDs {
-			if owner, ok := callOwner[rid]; ok && owner != i {
-				mergedInto[i] = owner
-				break
+		allIDs := append(calls, results...)
+		for _, id := range allIDs {
+			if owner, ok := callIDOwners[id]; ok {
+				uf.union(owner, i)
+			} else {
+				callIDOwners[id] = i
 			}
 		}
 	}
 
-	// Final units: surviving builders (nothing merged into them), items in
-	// protocol order, aggregates derived from the items.
-	survivors := make([]*unitBuilder, 0, n)
-	finalIdx := make(map[int]int, n)
-	for i := range b {
-		if mergedInto[i] == -1 {
-			finalIdx[i] = len(survivors)
-			survivors = append(survivors, &b[i])
+	// Group by root.
+	rootToComp := make(map[int]*component, n)
+	for i := range items {
+		r := uf.find(i)
+		comp, ok := rootToComp[r]
+		if !ok {
+			comp = &component{root: r}
+			rootToComp[r] = comp
 		}
-	}
-	for i := range b {
-		if mergedInto[i] != -1 {
-			owner := &b[mergedInto[i]]
-			owner.itemIndexes = append(owner.itemIndexes, b[i].itemIndexes...)
-		}
+		comp.itemIndexes = append(comp.itemIndexes, i)
+		comp.callIDs = append(comp.callIDs, cls[i].callIDs...)
+		comp.resultIDs = append(comp.resultIDs, cls[i].resultIDs...)
+		comp.declaresCall = comp.declaresCall || len(cls[i].callIDs) > 0
 	}
 
-	units := make([]SemanticUnit, 0, len(survivors))
-	for _, sb := range survivors {
-		sort.Ints(sb.itemIndexes)
-		units = append(units, finalizeUnit(sb, items))
+	// Build units in protocol order.
+	roots := make([]int, 0, len(rootToComp))
+	for r := range rootToComp {
+		roots = append(roots, r)
+	}
+	sort.Ints(roots)
+	units := make([]SemanticUnit, 0, len(roots))
+	for _, r := range roots {
+		comp := rootToComp[r]
+		sort.Ints(comp.itemIndexes)
+		u, err := finalizeUnit(comp, items, cls)
+		if err != nil {
+			return nil, err
+		}
+		units = append(units, u)
 	}
 	flagAnchorCandidates(units)
-	return units
+	return units, nil
 }
 
-// unitBuilder is the per-item construction state; SemanticUnit fields are
-// finalized from the item set so merges always stay consistent.
-type unitBuilder struct {
-	kind        SemanticUnitKind
-	callIDs     []string
-	resultIDs   []string
-	itemIndexes []int
+// itemClass holds the parsed classification of one canonical item.
+type itemClass struct {
+	kind      SemanticUnitKind
+	callIDs   []string
+	resultIDs []string
 }
 
 // classifyItem maps one canonical item to its unit kind and pairing IDs.
-func classifyItem(it CanonicalItem) unitBuilder {
-	b := unitBuilder{kind: SemanticUnitUnknown}
+func classifyItem(it CanonicalItem) itemClass {
+	c := itemClass{kind: SemanticUnitUnknown}
 	switch it.Kind {
 	case CanonicalKindSystem:
-		b.kind = SemanticUnitAnchor
+		c.kind = SemanticUnitAnchor
 	case canonicalKindCompactSummary:
-		b.kind = SemanticUnitCompactSummary
+		c.kind = SemanticUnitCompactSummary
 	case CanonicalKindToolCall:
-		b.kind = SemanticUnitToolExchange
-		b.callIDs, _ = toolIDsOfParts(it.Content)
+		c.kind = SemanticUnitToolExchange
+		c.callIDs, _ = toolIDsOfParts(it.Content)
 	case CanonicalKindToolResult:
-		b.kind = SemanticUnitToolExchange
-		_, b.resultIDs = toolIDsOfParts(it.Content)
+		c.kind = SemanticUnitToolExchange
+		_, c.resultIDs = toolIDsOfParts(it.Content)
 	default: // message, unknown, gap
 		switch it.Kind {
 		case CanonicalKindMessage:
@@ -183,24 +175,67 @@ func classifyItem(it CanonicalItem) unitBuilder {
 				results = append(results, it.ToolCallID)
 			}
 			if len(calls) > 0 || len(results) > 0 {
-				// Tool-bearing message: an assistant tool_use turn, a Claude
-				// tool_result turn, or a chat role=tool result message. The
-				// whole item (text and tool parts) is one exchange unit.
-				b.kind = SemanticUnitToolExchange
-				b.callIDs = calls
-				b.resultIDs = results
+				c.kind = SemanticUnitToolExchange
+				c.callIDs = calls
+				c.resultIDs = results
 			} else {
-				b.kind = SemanticUnitMessage
+				c.kind = SemanticUnitMessage
 			}
 		case CanonicalKindUnknown, CanonicalKindGap:
-			b.kind = SemanticUnitUnknown
+			c.kind = SemanticUnitUnknown
 		}
 	}
-	return b
+	return c
+}
+
+// component is the union-find connected component of a unit.
+type component struct {
+	root         int
+	itemIndexes  []int
+	callIDs      []string
+	resultIDs    []string
+	declaresCall bool
+}
+
+// itemUF is a union-find over canonical item indexes.
+type itemUF struct {
+	parent []int
+	rank   []int
+}
+
+func newItemUF(n int) *itemUF {
+	p := make([]int, n)
+	for i := range p {
+		p[i] = i
+	}
+	return &itemUF{parent: p, rank: make([]int, n)}
+}
+
+func (uf *itemUF) find(x int) int {
+	for uf.parent[x] != x {
+		uf.parent[x] = uf.parent[uf.parent[x]]
+		x = uf.parent[x]
+	}
+	return x
+}
+
+func (uf *itemUF) union(x, y int) {
+	xr, yr := uf.find(x), uf.find(y)
+	if xr == yr {
+		return
+	}
+	if uf.rank[xr] < uf.rank[yr] {
+		uf.parent[xr] = yr
+	} else if uf.rank[xr] > uf.rank[yr] {
+		uf.parent[yr] = xr
+	} else {
+		uf.parent[yr] = xr
+		uf.rank[xr]++
+	}
 }
 
 // toolIDsOfParts collects the call IDs and result-referenced IDs of an item's
-// content parts. Empty IDs are ignored (nothing to pair against).
+// content parts. Empty IDs are ignored.
 func toolIDsOfParts(parts []CanonicalPart) (calls, results []string) {
 	for _, p := range parts {
 		switch p.Type {
@@ -217,38 +252,41 @@ func toolIDsOfParts(parts []CanonicalPart) (calls, results []string) {
 	return calls, results
 }
 
-// finalizeUnit derives a unit's aggregates from its item set, in protocol
-// order, so merged units never drift from their items.
-func finalizeUnit(b *unitBuilder, items []CanonicalItem) SemanticUnit {
-	u := SemanticUnit{Kind: b.kind, Items: make([]CanonicalItem, 0, len(b.itemIndexes))}
+// finalizeUnit derives a unit's aggregates from its component.
+func finalizeUnit(comp *component, items []CanonicalItem, cls []itemClass) (SemanticUnit, error) {
+	kind := cls[comp.itemIndexes[0]].kind
+	u := SemanticUnit{
+		Kind:        kind,
+		Items:       make([]CanonicalItem, 0, len(comp.itemIndexes)),
+		ItemIndexes: append([]int(nil), comp.itemIndexes...),
+	}
 	var ids []string
-	for _, idx := range b.itemIndexes {
+	for _, idx := range comp.itemIndexes {
 		it := items[idx]
 		u.Items = append(u.Items, it)
 		u.LogicalBytes += it.LogicalBytes
-		u.CanonicalBytes += canonicalBytesOf(it)
+		cb, err := canonicalBytesOf(it)
+		if err != nil {
+			return SemanticUnit{}, fmt.Errorf("item %d: %w", idx, err)
+		}
+		u.CanonicalBytes += cb
 		if itemSourceTruncated(it) {
 			u.SourceTruncated = true
 		}
-		calls, results := toolIDsOfParts(it.Content)
-		if it.ToolCallID != "" {
-			results = append(results, it.ToolCallID)
-		}
-		ids = append(ids, calls...)
-		ids = append(ids, results...)
+		ids = append(ids, cls[idx].callIDs...)
+		ids = append(ids, cls[idx].resultIDs...)
 	}
 	u.CallIDs = sortedUnique(ids)
-	// A surviving unit that carries results but never declared a call is an
-	// orphan result: its referenced call ID is absent from the whole stream.
-	if len(b.callIDs) == 0 && len(b.resultIDs) > 0 {
+	// A component that carries results but never declared a call is an orphan.
+	if !comp.declaresCall && len(comp.resultIDs) > 0 {
 		u.Orphan = true
 	}
-	return u
+	return u, nil
 }
 
-// flagAnchorCandidates marks the anchor candidates on the final units:
-// system/developer directives (stream order), compact summaries (stream
-// order), and the latest user instruction.
+// flagAnchorCandidates marks the anchor candidates on the final units.
+// The selector (D7) applies its own continuous-prefix + compact-summary-at-0
+// filter; the unit-level Anchor flag is a hint for the selector.
 func flagAnchorCandidates(units []SemanticUnit) {
 	for i := range units {
 		u := &units[i]
@@ -281,8 +319,7 @@ func isSystemDeveloperMessage(u *SemanticUnit) bool {
 	return false
 }
 
-// isUserMessage reports whether a message unit is a user instruction (role
-// user; tool-result carrier messages are tool exchanges, never instructions).
+// isUserMessage reports whether a message unit is a user instruction.
 func isUserMessage(u *SemanticUnit) bool {
 	for _, it := range u.Items {
 		if it.Role == "user" {
@@ -293,8 +330,7 @@ func isUserMessage(u *SemanticUnit) bool {
 }
 
 // itemSourceTruncated reports whether a canonical item carries a source
-// truncation signal: the item's own Truncated flag, an explicit gap item, or a
-// tool result output carrying the Codex truncated-output marker.
+// truncation signal.
 func itemSourceTruncated(it CanonicalItem) bool {
 	if it.Truncated || it.Kind == CanonicalKindGap {
 		return true
@@ -307,18 +343,16 @@ func itemSourceTruncated(it CanonicalItem) bool {
 	return false
 }
 
-// canonicalBytesOf is the marshaled canonical size of an item, using the same
-// serializer the pipeline uses for byte accounting.
-func canonicalBytesOf(it CanonicalItem) int64 {
+// canonicalBytesOf is the marshaled canonical size of an item.
+func canonicalBytesOf(it CanonicalItem) (int64, error) {
 	payload, err := common.Marshal(it)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("marshal canonical item: %w", err)
 	}
-	return int64(len(payload))
+	return int64(len(payload)), nil
 }
 
-// sortedUnique returns the de-duplicated, lexicographically sorted copy of
-// ids; the sort keeps pairing output deterministic across input layouts.
+// sortedUnique returns the de-duplicated, lexicographically sorted copy of ids.
 func sortedUnique(ids []string) []string {
 	if len(ids) == 0 {
 		return nil
