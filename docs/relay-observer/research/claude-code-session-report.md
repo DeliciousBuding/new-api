@@ -74,6 +74,12 @@
   - compact 后数组被替换为 `boundary + summary + 保留段 + 新尾部`（compact.ts:330-340），boundary 是新的"逻辑起点"。
 - 因此 tail-first 截断策略的正确性成立：**截掉头部不丢任何未归档的新证据**；head 保留的需求仅来自缓存命中率（cache_control 前缀）而非证据完整性。
 
+### 2.1 并行 tool_use 与结果顺序（邻接不可靠）
+
+- 流式响应**每结束一个 content block 就产出一条 assistant 消息**（`<repo>/src/services/api/claude.ts:2171-2211`）——并行 `tool_use` 表现为多条 assistant 消息（每条一个块）。
+- `tool_result` 块由本地工具执行收集进下一条 user 消息（`<repo>/src/services/tools/toolExecution.ts:396-408`），**wire 顺序与 tool_use 出现顺序不一定一致**；读取端必须 `recoverOrphanedParallelToolResults` 按 `message.id` 分组恢复兄弟 tool_use（`<repo>/src/utils/sessionStorage.ts:2118-2206`）——只能按 `tool_use_id` 配对，不能靠邻接/顺序。
+- **"result 后必有 continuation"不成立**：tool 执行后 loop 通常立即再调 API（`<repo>/src/query.ts:1395-1400 → 1716`），tool_result 因此恒在下一次请求尾部可见；但若会话在最终回答后结束（或被中断），**该轮 tool_results 与最终 assistant 文本不会出现在任何被观察请求中**（只存在于本地 transcript）——捕获侧只见"下一次请求"，最后一轮的产出可能永久不可见。
+
 ## 3. 分支与 session 追踪
 
 ### 3.1 session 与 transcript 文件

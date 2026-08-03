@@ -62,6 +62,13 @@
 - 上下文更新 item（developer/user 角色）由 `context_manager/updates.rs` 组装（`build_developer_update_item` / `build_contextual_user_message`）：`core/src/context_manager/updates.rs`
 - 用户消息落地：`record_user_prompt_and_emit_turn_item` → 记录 user-role Message：`core/src/session/mod.rs:3787-3799`；hook 注入与 pending input 记录：`core/src/hook_runtime.rs:539-563`
 
+### 1.6 并行工具调用：顺序与配对（邻接不可靠）
+
+- 请求体携带 `parallel_tool_calls: "auto"`（`codex-api/src/common.rs:216-239` 顶层字段，见 1.1）——单次采样响应**可含多个 `function_call`**，逐个立即记录进历史（`core/src/stream_events_utils.rs:319-357`）。
+- 多个工具 future 并发挂起于 `in_flight`，结果由 `drain_in_flight` **按完成顺序**追加进历史尾部（`core/src/session/turn.rs:1908-1928`）——**完成顺序 ≠ 调用顺序**，`function_call_output` 与 `function_call` 在数组中的相对位置不可作为配对依据。
+- 协议层自己按 `call_id` 配对：`for_prompt` 归一化**补全 call/output 配对、剥离孤儿 output**（`core/src/context_manager/history.rs:141-144, 355-368`）——唯一可靠键是 `call_id`。
+- **无"result 后必有 continuation"保证**：turn 以最终 assistant 消息结束时，其后的工具结果/尾部内容不会再出现在任何后续请求中（工具结果只在下一轮请求的 input 尾部可见，见 1.4）。
+
 ---
 
 ## 2. delta 位置：「最新证据在哪里」
