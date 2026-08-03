@@ -23,7 +23,7 @@ The relay may convert a client request before sending it upstream. Observer keep
 
 This distinction is required for conversions such as Claude client input routed through an OpenAI-compatible upstream. Persisted relay analytics still report the final upstream format, while canonical content is decoded using the actual in-memory DTO shape.
 
-Supported canonical input families are OpenAI Chat Completions, OpenAI Responses, and Claude Messages. Unsupported or over-budget input degrades to `metadata_only` or a canonical `gap` marker; it does not affect relay success.
+Supported canonical input families are OpenAI Chat Completions, OpenAI Responses, and Claude Messages. Responses message items accept both the explicit `type: "message"` discriminator used by current clients and the legacy omitted-type shape; function/custom tool calls and outputs remain ordered canonical items. Unsupported or over-budget input degrades to `metadata_only`, an `unknown` canonical item, or a bounded `gap` marker; it does not affect relay success.
 
 ## 3. Admission, worker, and circuit
 
