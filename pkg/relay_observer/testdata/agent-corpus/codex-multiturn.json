@@ -1,0 +1,61 @@
+{
+  "_meta": {
+    "name": "codex-multiturn",
+    "desc": "Codex CLI multi-turn: a tool invocation loop where the latest assistant tool_call + function_call_output land at the tail of the input array. Synthetic ids only.",
+    "raw_body_bytes": 507,
+    "capture_limit": 507,
+    "scope_expect": "codex_cli",
+    "sources_expect": [
+      "turn_thread",
+      "turn_session"
+    ]
+  },
+  "headers": {
+    "Originator": "codex_cli_fixture_1.0.0",
+    "X-Codex-Turn-Metadata": "{\"thread_id\":\"fx-thread-0002\",\"session_id\":\"fx-session-0002\",\"turn\":\"fx-turn-0002\"}"
+  },
+  "body": {
+    "model": "gpt-5-fixture",
+    "instructions": "Run the fixture plan.",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "fx user message two"
+          }
+        ]
+      },
+      {
+        "type": "function_call",
+        "call_id": "fx-call-001",
+        "name": "fixture_tool",
+        "arguments": "{\"a\":1}"
+      },
+      {
+        "type": "function_call_output",
+        "call_id": "fx-call-001",
+        "output": "{\"result\":\"fx-ok\"}"
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "fx intermediate answer"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "fx follow-up question"
+          }
+        ]
+      }
+    ]
+  }
+}

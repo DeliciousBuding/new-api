@@ -1,0 +1,67 @@
+{
+  "_meta": {
+    "name": "claude-tool-chain",
+    "desc": "Claude Code tool chain: assistant tool_use + user tool_result adjacency, latest activity at the tail. Synthetic ids only.",
+    "raw_body_bytes": 503,
+    "capture_limit": 503,
+    "scope_expect": "claude_cli",
+    "sources_expect": [
+      "claude_session_header"
+    ]
+  },
+  "headers": {
+    "X-App": "cli",
+    "X-Claude-Code-Session-Id": "fx-claude-session-0002"
+  },
+  "body": {
+    "model": "claude-sonnet-fixture",
+    "system": [
+      {
+        "type": "text",
+        "text": "You are a fixture."
+      }
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": "fx claude user message two"
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "fx thinking aloud"
+          },
+          {
+            "type": "tool_use",
+            "id": "fx-tooluse-001",
+            "name": "fixture_tool",
+            "input": {
+              "cmd": "fx-ls"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "fx-tooluse-001",
+            "content": "fx-tool-output"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "fx final answer"
+          }
+        ]
+      }
+    ]
+  }
+}

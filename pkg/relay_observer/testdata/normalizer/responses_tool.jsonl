@@ -1,0 +1,5 @@
+{"kind":"tool_call","content":[{"type":"tool_call","call":{"id":"call_1","name":"get_weather","arguments":"{\"city\":\"tokyo\"}"}}],"logical_bytes":99,"hmac":"6d72270c27cd2a48d341381ecbbb87e7bb0654a719771dd5a10160308ed170f8"}
+{"kind":"tool_result","content":[{"type":"tool_result","result":{"tool_call_id":"call_1","output":"{\"temp\":22}"}}],"logical_bytes":75,"hmac":"dd7df415a3c53c521e9be783b7a89a0dbd19de78953472a67e52dd5d9825c57b"}
+{"kind":"tool_call","content":[{"type":"tool_call","call":{"id":"call_2","name":"run_shell","arguments":{"cmd":"ls"}}}],"logical_bytes":86,"hmac":"060b9dbd66926be9118ad8bfb099135c3b7d9babedabc93e6bc373d92b20d2e4"}
+{"kind":"tool_result","content":[{"type":"tool_result","result":{"tool_call_id":"call_2","output":"file1\n"}}],"logical_bytes":72,"hmac":"98691f436e38476dfa6df2ae07a192a6c1ecf8711414c832121e1e2576b35a6b"}
+{"kind":"unknown","logical_bytes":60,"hmac":"c91a473c8c21df2a5b33562af4b2570bf79a49b3390b3ed73b4b0cab96aa59c7"}

@@ -1,0 +1,1199 @@
+package relayobserver
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// This file tests the P0-C semantic selector (PR #17A): unit building,
+// evidence selection, and the frozen invariants — tool pair atomicity, one
+// gap, deterministic output, and a byte budget that is never exceeded.
+//
+// The unit tests are synthetic (inline canonical items, no fixture
+// dependency); the two fixture tests at the bottom load the read-only
+// agent-corpus samples and assert invariants only, never exact contents.
+
+// ---------------------------------------------------------------------------
+// test helpers
+
+func testPolicy(limit int64) SelectionPolicy {
+	return DefaultSelectionPolicy(limit, testBuildGap)
+}
+
+func testBuildGap(gap GapInfo) (CanonicalItem, error) {
+	return withHmac(GapMarker(gap), NormalizeOptions{HMACKey: testHMACKey}), nil
+}
+
+func sp(text string) CanonicalPart {
+	return CanonicalPart{Type: partTypeText, Text: text}
+}
+
+func callp(id string) CanonicalPart {
+	return CanonicalPart{Type: partTypeToolCall, Call: &ToolCallRef{ID: id, Name: "fx_tool", Arguments: json.RawMessage(`{}`)}}
+}
+
+func resp(id string) CanonicalPart {
+	return CanonicalPart{Type: partTypeToolResult, Result: &ToolResultRef{ToolCallID: id, Output: json.RawMessage(`{}`)}}
+}
+
+func mkItem(kind, role, toolCallID string, logical int64, parts ...CanonicalPart) CanonicalItem {
+	return CanonicalItem{Kind: kind, Role: role, ToolCallID: toolCallID, Content: parts, LogicalBytes: logical, Hmac: "h-" + kind + "-" + role}
+}
+
+func mkMsg(role, text string, logical int64) CanonicalItem {
+	return mkItem(CanonicalKindMessage, role, "", logical, sp(text))
+}
+
+func mkCallItem(id string, logical int64) CanonicalItem {
+	return mkItem(CanonicalKindToolCall, "", "", logical, callp(id))
+}
+
+func mkResultItem(id string, logical int64) CanonicalItem {
+	return mkItem(CanonicalKindToolResult, "", "", logical, resp(id))
+}
+
+// unitTotal sums the canonical bytes of units.
+func unitTotal(units []SemanticUnit) int64 {
+	var t int64
+	for i := range units {
+		t += units[i].CanonicalBytes
+	}
+	return t
+}
+
+// gapKindCount counts the gap-marker items of a selection.
+func gapKindCount(items []CanonicalItem) int {
+	n := 0
+	for _, it := range items {
+		if it.Kind == CanonicalKindGap {
+			n++
+		}
+	}
+	return n
+}
+
+func selectionGapCount(items []CanonicalItem, gap *GapInfo) int {
+	if gap == nil {
+		return 0
+	}
+	count := 0
+	for _, item := range items {
+		if item.Kind == CanonicalKindGap && item.Gap != nil && assert.ObjectsAreEqual(*item.Gap, *gap) {
+			count++
+		}
+	}
+	return count
+}
+
+func requireGapItem(t *testing.T, items []CanonicalItem) CanonicalItem {
+	t.Helper()
+	var gaps []CanonicalItem
+	for _, item := range items {
+		if item.Kind == CanonicalKindGap {
+			gaps = append(gaps, item)
+		}
+	}
+	require.Len(t, gaps, 1)
+	require.NotNil(t, gaps[0].Gap)
+	return gaps[0]
+}
+
+// assertSelectionInvariants locks the frozen selection rules for any input.
+func assertSelectionInvariants(t *testing.T, units []SemanticUnit, limit int64, res SelectionResult, err error) {
+	t.Helper()
+	require.NoError(t, err)
+	assert.LessOrEqual(t, res.TotalBytes, limit, "byte budget must never be exceeded")
+	selected := 0
+	for _, it := range res.Items {
+		if res.Gap != nil && it.Kind == CanonicalKindGap && it.Gap != nil && assert.ObjectsAreEqual(*it.Gap, *res.Gap) {
+			continue
+		}
+		selected++
+	}
+	if res.Gap == nil {
+		if res.TotalBytes == 0 && unitTotal(units) > limit {
+			// Degenerate limit: gap marker cannot fit, but with D2 the Gap
+			// is present with Reason=capture_limit_too_small.
+			require.NotNil(t, res.Gap)
+			assert.Equal(t, GapReasonLimitTooSmall, res.Gap.Reason)
+			return
+		}
+		assert.Equal(t, unitTotal(units), res.TotalBytes, "full fit reports the exact full total")
+		assert.Equal(t, 0, selectionGapCount(res.Items, res.Gap), "full fit adds no capture gap marker")
+		assert.Equal(t, selected, countUnitItems(units), "full fit returns every item")
+	} else {
+		if res.Gap.Reason == GapReasonLimitTooSmall {
+			assert.Empty(t, res.Items)
+			assert.Equal(t, int64(0), res.TotalBytes)
+			assert.Equal(t, countUnitItems(units), res.Gap.OmittedItems)
+			return
+		}
+		assert.Equal(t, 1, selectionGapCount(res.Items, res.Gap), "truncation adds exactly one capture gap marker")
+		assert.Equal(t, selected, countUnitItems(units)-res.Gap.OmittedItems, "gap omitted_items must match the selection")
+	}
+	// Verify protocol order against the original global item indexes, not unit
+	// flattening (a tool unit may contain non-adjacent items).
+	input := make([]CanonicalItem, countUnitItems(units))
+	for unitIndex := range units {
+		for localIndex, itemIndex := range units[unitIndex].ItemIndexes {
+			input[itemIndex] = units[unitIndex].Items[localIndex]
+		}
+	}
+	assertSubsequence(t, input, res.Items, res.Gap)
+}
+
+// assertSubsequence verifies that got, excluding only the capture marker added
+// by this selection, appears in want in order. Source gap items remain evidence
+// and therefore participate in the subsequence check.
+func assertSubsequence(t *testing.T, want, got []CanonicalItem, selectionGap *GapInfo) {
+	t.Helper()
+	j := 0
+	for _, item := range got {
+		if selectionGap != nil && item.Kind == CanonicalKindGap && item.Gap != nil && assert.ObjectsAreEqual(*item.Gap, *selectionGap) {
+			continue
+		}
+		found := false
+		for j < len(want) {
+			if assert.ObjectsAreEqual(want[j], item) {
+				j++
+				found = true
+				break
+			}
+			j++
+		}
+		if !found {
+			t.Fatalf("item not found in input order: %+v", item)
+		}
+	}
+}
+
+func containsItem(items []CanonicalItem, want CanonicalItem) bool {
+	for _, it := range items {
+		if assert.ObjectsAreEqual(it, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// unit building
+
+func TestBuildUnitsClassifiesPlainStream(t *testing.T) {
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 10, sp("sys")),
+		mkMsg("user", "question", 20),
+		mkMsg("assistant", "answer", 30),
+		mkItem(CanonicalKindUnknown, "", "", 40),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Len(t, units, 4)
+	assert.Equal(t, SemanticUnitAnchor, units[0].Kind)
+	assert.Equal(t, SemanticUnitMessage, units[1].Kind)
+	assert.Equal(t, SemanticUnitMessage, units[2].Kind)
+	assert.Equal(t, SemanticUnitUnknown, units[3].Kind)
+	assert.True(t, units[0].Anchor, "system directive is an anchor candidate")
+	// D7: latest user is no longer an anchor candidate — it's retained by the tail.
+	assert.False(t, units[1].Anchor, "D7: user message is not an anchor candidate")
+	assert.False(t, units[2].Anchor)
+	assert.False(t, units[3].Anchor)
+	for i := range units {
+		assert.Empty(t, units[i].CallIDs)
+		assert.False(t, units[i].Orphan)
+		assert.Equal(t, items[i].LogicalBytes, units[i].LogicalBytes)
+		cb, err := canonicalBytesOf(items[i])
+		require.NoError(t, err)
+		assert.Equal(t, cb, units[i].CanonicalBytes)
+	}
+}
+
+func TestBuildUnitsMergesClaudePairByID(t *testing.T) {
+	call := mkMsg("assistant", "calling", 10)
+	call.Content = append(call.Content, callp("call_A"))
+	result := mkMsg("user", "", 20)
+	result.Content = append(result.Content, resp("call_A"))
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 5, sp("sys")),
+		mkMsg("user", "go", 7),
+		call,
+		result,
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Len(t, units, 3, "call and result merge into one unit")
+	ex := units[2]
+	assert.Equal(t, SemanticUnitToolExchange, ex.Kind)
+	assert.Len(t, ex.Items, 2)
+	assert.Equal(t, call, ex.Items[0])
+	assert.Equal(t, result, ex.Items[1])
+	assert.Equal(t, []string{"call_A"}, ex.CallIDs)
+	assert.False(t, ex.Orphan)
+}
+
+func TestBuildUnitsMergesResponsesPairNonAdjacent(t *testing.T) {
+	items := []CanonicalItem{
+		mkCallItem("call_A", 10),
+		mkMsg("user", "middle", 20),
+		mkResultItem("call_A", 30),
+		mkMsg("user", "last", 40),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Len(t, units, 3)
+	ex := units[0]
+	assert.Equal(t, SemanticUnitToolExchange, ex.Kind)
+	assert.Len(t, ex.Items, 2, "pair matched by ID, not adjacency")
+	assert.Equal(t, items[0], ex.Items[0], "call keeps its protocol position")
+	assert.Equal(t, items[2], ex.Items[1], "result follows the call")
+	assert.Equal(t, []string{"call_A"}, ex.CallIDs)
+	// D7: latest user is no longer an anchor candidate.
+	assert.False(t, units[2].Anchor, "D7: latest user is not an anchor candidate")
+	assert.False(t, units[1].Anchor)
+}
+
+func TestBuildUnitsParallelCallsInOneItem(t *testing.T) {
+	asst := mkMsg("assistant", "parallel", 10)
+	asst.Content = append(asst.Content, callp("call_A"), callp("call_B"))
+	items := []CanonicalItem{
+		asst,
+		mkItem(CanonicalKindMessage, "tool", "call_A", 20),
+		mkItem(CanonicalKindMessage, "tool", "call_B", 30),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Len(t, units, 1, "all parallel calls merge into one exchange unit via union-find")
+	ex := units[0]
+	assert.Len(t, ex.Items, 3)
+	assert.Equal(t, []string{"call_A", "call_B"}, ex.CallIDs, "parallel call IDs all recorded, sorted")
+	assert.False(t, ex.Orphan)
+}
+
+func TestBuildUnitsParallelCallsResultsOutOfOrder(t *testing.T) {
+	items := []CanonicalItem{
+		mkCallItem("call_A", 10),
+		mkCallItem("call_B", 10),
+		mkResultItem("call_B", 20),
+		mkResultItem("call_A", 20),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Len(t, units, 2)
+	assert.Equal(t, []string{"call_A"}, units[0].CallIDs)
+	assert.Equal(t, []string{"call_B"}, units[1].CallIDs)
+	assert.Len(t, units[0].Items, 2)
+	assert.Equal(t, items[0], units[0].Items[0])
+	assert.Equal(t, items[3], units[0].Items[1])
+	assert.Equal(t, items[2], units[1].Items[1])
+	assert.False(t, units[0].Orphan)
+	assert.False(t, units[1].Orphan)
+}
+
+// TestBuildUnitsUnionFindMultiResult tests D6: a result item referencing
+// multiple call IDs forms a single connected component via union-find.
+func TestBuildUnitsUnionFindMultiResult(t *testing.T) {
+	items := []CanonicalItem{
+		mkCallItem("call_A", 10),
+		mkCallItem("call_B", 10),
+		mkMsg("assistant", "both", 10),
+	}
+	// The third item has two result parts referencing call_A and call_B.
+	items[2].Content = append(items[2].Content, resp("call_A"), resp("call_B"))
+	items[2].Kind = CanonicalKindMessage
+	items[2].ToolCallID = "call_A" // also contributes to the component
+
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	// All three items share a call ID transitive closure -> one component.
+	require.Len(t, units, 1, "union-find merges cross-referencing items into one component")
+	assert.Len(t, units[0].Items, 3)
+	assert.Equal(t, []string{"call_A", "call_B"}, units[0].CallIDs)
+}
+
+func TestBuildUnitsOrphanResultKept(t *testing.T) {
+	items := []CanonicalItem{
+		mkResultItem("call_X", 50),
+		mkMsg("user", "hello", 10),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Len(t, units, 2)
+	orphan := units[0]
+	assert.Equal(t, SemanticUnitToolExchange, orphan.Kind)
+	assert.True(t, orphan.Orphan, "unpaired result survives and is marked orphan")
+	assert.Equal(t, []string{"call_X"}, orphan.CallIDs)
+	assert.Len(t, orphan.Items, 1)
+	assert.False(t, units[1].Orphan)
+}
+
+func TestBuildUnitsCallWithoutResultIsNotOrphan(t *testing.T) {
+	items := []CanonicalItem{
+		mkCallItem("call_A", 10),
+		mkMsg("user", "next", 10),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Len(t, units, 2)
+	assert.False(t, units[0].Orphan, "a call awaiting its result is not an orphan")
+	assert.Equal(t, []string{"call_A"}, units[0].CallIDs)
+}
+
+func TestBuildUnitsSourceTruncated(t *testing.T) {
+	truncated := mkMsg("user", "cut", 10)
+	truncated.Truncated = true
+	gapItem := mkItem(CanonicalKindGap, "", "", 99, sp(""))
+	codexOut := mkResultItem("call_A", 10)
+	codexOut.Content[0].Result.Output = json.RawMessage(`"Warning: truncated output: 30k chars dropped"`)
+
+	units, err := BuildSemanticUnits([]CanonicalItem{truncated, gapItem, mkCallItem("call_A", 10), codexOut})
+	require.NoError(t, err)
+	require.Len(t, units, 3)
+	assert.True(t, units[0].SourceTruncated, "item Truncated flag propagates")
+	assert.True(t, units[1].SourceTruncated, "explicit gap item is source-truncated")
+	assert.True(t, units[2].SourceTruncated, "codex truncated-output marker propagates through the merge")
+}
+
+func TestBuildUnitsCompactSummaryAnchor(t *testing.T) {
+	items := []CanonicalItem{
+		mkItem(canonicalKindCompactSummary, "", "", 30),
+		mkMsg("user", "latest", 10),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Len(t, units, 2)
+	assert.Equal(t, SemanticUnitCompactSummary, units[0].Kind)
+	assert.True(t, units[0].Anchor, "compact summary is an anchor candidate")
+	// D7: latest user is not an anchor candidate.
+	assert.False(t, units[1].Anchor, "D7: latest user is not an anchor candidate")
+}
+
+func TestBuildUnitsDeveloperDirectiveAnchor(t *testing.T) {
+	items := []CanonicalItem{
+		mkMsg("developer", "be careful", 30),
+		mkMsg("user", "hi", 10),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Len(t, units, 2)
+	assert.True(t, units[0].Anchor, "chat developer directive is an anchor candidate")
+	assert.Equal(t, SemanticUnitMessage, units[0].Kind)
+}
+
+func TestBuildUnitsDeterministic(t *testing.T) {
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 5, sp("sys")),
+		mkCallItem("call_A", 10),
+		mkMsg("user", "mid", 10),
+		mkResultItem("call_A", 20),
+		mkResultItem("call_orphan", 20),
+		mkMsg("user", "last", 10),
+	}
+	first, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	second, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	assert.Equal(t, first, second, "same input must produce identical units")
+}
+
+func TestBuildUnitsItemIndexes(t *testing.T) {
+	items := []CanonicalItem{
+		mkCallItem("call_A", 10),
+		mkMsg("user", "middle", 20),
+		mkResultItem("call_A", 30),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Len(t, units, 2)
+	assert.Equal(t, []int{0, 2}, units[0].ItemIndexes)
+	assert.Equal(t, []int{1}, units[1].ItemIndexes)
+}
+
+func TestBuildUnitsOrdersComponentsByFirstItem(t *testing.T) {
+	bridge := mkMsg("assistant", "bridge", 10)
+	bridge.Content = append(bridge.Content, resp("call_A"), resp("call_B"))
+	items := []CanonicalItem{
+		mkCallItem("call_B", 10),
+		mkMsg("user", "middle", 10),
+		mkCallItem("call_A", 10),
+		bridge,
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Len(t, units, 2)
+	assert.Equal(t, []int{0, 2, 3}, units[0].ItemIndexes)
+	assert.Equal(t, []int{1}, units[1].ItemIndexes)
+}
+
+func TestBuildUnitsMarksPartiallyOrphanedResult(t *testing.T) {
+	result := mkMsg("user", "mixed result", 10)
+	result.Content = append(result.Content, resp("call_A"), resp("call_missing"))
+	items := []CanonicalItem{mkCallItem("call_A", 10), result}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Len(t, units, 1)
+	assert.True(t, units[0].Orphan)
+	assert.Equal(t, []string{"call_missing"}, units[0].UnmatchedResultIDs)
+	assert.Equal(t, []string{"call_A", "call_missing"}, units[0].CallIDs)
+}
+
+// ---------------------------------------------------------------------------
+// selection
+
+func TestSelectFullFit(t *testing.T) {
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 5, sp("sys")),
+		mkCallItem("call_A", 10),
+		mkResultItem("call_A", 20),
+		mkMsg("user", "last", 10),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	total := unitTotal(units)
+	for _, limit := range []int64{total, total + 500} {
+		res, err := SelectEvidence(units, testPolicy(limit))
+		assertSelectionInvariants(t, units, limit, res, err)
+		assert.Nil(t, res.Gap, "zero truncation keeps Gap nil")
+		assert.Empty(t, res.Oversized)
+		assert.Equal(t, items, res.Items)
+		assert.Equal(t, total, res.TotalBytes)
+	}
+}
+
+func TestSelectFullFitPreservesNonAdjacentToolOrder(t *testing.T) {
+	items := []CanonicalItem{
+		mkCallItem("call_A", 10),
+		mkMsg("user", "between", 20),
+		mkResultItem("call_A", 30),
+		mkMsg("user", "latest", 40),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Equal(t, []int{0, 2}, units[0].ItemIndexes)
+	res, err := SelectEvidence(units, testPolicy(unitTotal(units)))
+	require.NoError(t, err)
+	assert.Nil(t, res.Gap)
+	assert.Equal(t, items, res.Items)
+}
+
+func TestSelectCrossingToolSpansFormOneSafeBlock(t *testing.T) {
+	resultB := mkResultItem("call_B", 2000)
+	resultB.Content[0].Result.Output = json.RawMessage(`"` + strings.Repeat("b", 2000) + `"`)
+	resultA := mkResultItem("call_A", 2000)
+	resultA.Content[0].Result.Output = json.RawMessage(`"` + strings.Repeat("a", 2000) + `"`)
+	items := []CanonicalItem{
+		mkCallItem("call_A", 10),
+		mkCallItem("call_B", 10),
+		resultB,
+		resultA,
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Len(t, units, 2)
+	assert.Equal(t, []int{0, 3}, units[0].ItemIndexes)
+	assert.Equal(t, []int{1, 2}, units[1].ItemIndexes)
+
+	limit := unitTotal(units) - 1
+	res, err := SelectEvidence(units, testPolicy(limit))
+	require.NoError(t, err)
+	require.NotNil(t, res.Gap)
+	assert.Equal(t, GapPositionHead, res.Gap.Position)
+	assert.Equal(t, 4, res.Gap.OmittedItems)
+	assert.Len(t, res.Items, 1)
+	assert.Equal(t, CanonicalKindGap, res.Items[0].Kind)
+	assertSelectionInvariants(t, units, limit, res, err)
+}
+
+func TestSelectPreservesSourceGapAlongsideCaptureGap(t *testing.T) {
+	old := mkMsg("user", strings.Repeat("old-", 1000), 4000)
+	latest := mkMsg("user", strings.Repeat("latest-", 80), 560)
+	sourceInfo := GapInfo{
+		Position:        GapPositionTail,
+		Reason:          GapReasonItemCount,
+		OmittedItems:    7,
+		LogicalBytes:    9000,
+		SourceTruncated: true,
+	}
+	sourceGap, err := testBuildGap(sourceInfo)
+	require.NoError(t, err)
+	items := []CanonicalItem{old, latest, sourceGap}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+
+	captureInfo := GapInfo{
+		Position:     GapPositionHead,
+		Reason:       GapReasonBudget,
+		OmittedItems: 1,
+		LogicalBytes: old.LogicalBytes,
+	}
+	captureGap, err := testBuildGap(captureInfo)
+	require.NoError(t, err)
+	latestBytes, err := canonicalBytesOf(latest)
+	require.NoError(t, err)
+	sourceGapBytes, err := canonicalBytesOf(sourceGap)
+	require.NoError(t, err)
+	captureGapBytes, err := canonicalBytesOf(captureGap)
+	require.NoError(t, err)
+	limit := latestBytes + sourceGapBytes + captureGapBytes
+	require.Less(t, limit, unitTotal(units))
+
+	res, err := SelectEvidence(units, testPolicy(limit))
+	require.NoError(t, err)
+	require.NotNil(t, res.Gap)
+	assert.Equal(t, captureInfo, *res.Gap)
+	assert.Equal(t, []CanonicalItem{captureGap, latest, sourceGap}, res.Items)
+	assert.Equal(t, 2, gapKindCount(res.Items), "independent capture and source omissions require two markers")
+	assert.Equal(t, 1, selectionGapCount(res.Items, res.Gap), "the selector still adds only one capture marker")
+	assertSelectionInvariants(t, units, limit, res, err)
+}
+
+func TestSelectTruncatesMiddle(t *testing.T) {
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 5, sp(strings.Repeat("s", 500))),
+		mkMsg("user", strings.Repeat("u", 1000), 1000),
+		mkCallItem("call_A", 500),
+		mkResultItem("call_A", 500),
+		mkMsg("user", strings.Repeat("n", 500), 500),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	// 4 units: system(anchor), old user, toolExchange(call+result merged), newest.
+	require.Len(t, units, 4)
+	total := unitTotal(units)
+	// The limit is one byte short of the full total: only the old middle user
+	// message is omitted — system anchor, tool chain, and newest user message
+	// are retained. Marker ~140B fits because the content is large enough.
+	limit := total - 1
+	res, err := SelectEvidence(units, testPolicy(limit))
+	require.NoError(t, err)
+
+	require.NotNil(t, res.Gap)
+	assert.Equal(t, 1, gapKindCount(res.Items), "exactly one gap marker")
+	assert.True(t, containsItem(res.Items, items[4]), "latest user message retained")
+	assert.True(t, containsItem(res.Items, items[2]), "tool call retained")
+	assert.True(t, containsItem(res.Items, items[3]), "tool result retained")
+	assert.True(t, containsItem(res.Items, items[0]), "system anchor retained")
+	assert.False(t, containsItem(res.Items, items[1]), "old user message omitted")
+	assert.Equal(t, GapPositionMiddle, res.Gap.Position)
+	assert.Equal(t, 1, res.Gap.OmittedItems)
+	assert.Equal(t, items[1].LogicalBytes, res.Gap.LogicalBytes)
+	assert.Equal(t, GapReasonBudget, res.Gap.Reason)
+	assert.LessOrEqual(t, res.TotalBytes, limit)
+	assertSelectionInvariants(t, units, limit, res, err)
+}
+
+func TestSelectMarkerRollbackRecomputesGapPosition(t *testing.T) {
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 600, sp(strings.Repeat("s", 600))),
+		mkMsg("user", strings.Repeat("o", 1000), 1000),
+		mkMsg("user", strings.Repeat("n", 600), 600),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	initialGap := GapInfo{
+		Position:     GapPositionMiddle,
+		Reason:       GapReasonBudget,
+		OmittedItems: 1,
+		LogicalBytes: items[1].LogicalBytes,
+	}
+	marker, err := testBuildGap(initialGap)
+	require.NoError(t, err)
+	markerBytes, err := canonicalBytesOf(marker)
+	require.NoError(t, err)
+	limit := units[0].CanonicalBytes + units[2].CanonicalBytes + markerBytes - 1
+	policy := testPolicy(limit)
+	policy.AnchorRatio = 1
+	policy.AnchorCap = 1 << 20
+
+	res, err := SelectEvidence(units, policy)
+	require.NoError(t, err)
+	require.NotNil(t, res.Gap)
+	assert.False(t, containsItem(res.Items, items[0]))
+	assert.False(t, containsItem(res.Items, items[1]))
+	assert.True(t, containsItem(res.Items, items[2]))
+	assert.Equal(t, GapPositionHead, res.Gap.Position)
+	assert.Equal(t, 2, res.Gap.OmittedItems)
+	assertSelectionInvariants(t, units, limit, res, err)
+}
+
+func TestSelectLatestBlockPreemptsOptionalAnchor(t *testing.T) {
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 1000, sp(strings.Repeat("s", 1000))),
+		mkMsg("user", strings.Repeat("n", 5000), 5000),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	gap := GapInfo{
+		Position:     GapPositionHead,
+		Reason:       GapReasonBudget,
+		OmittedItems: 1,
+		LogicalBytes: items[0].LogicalBytes,
+	}
+	marker, err := testBuildGap(gap)
+	require.NoError(t, err)
+	markerBytes, err := canonicalBytesOf(marker)
+	require.NoError(t, err)
+	limit := units[1].CanonicalBytes + markerBytes + 1
+	require.Greater(t, unitTotal(units), limit)
+	require.LessOrEqual(t, units[0].CanonicalBytes, int64(float64(limit)*DefaultAnchorRatio))
+
+	res, err := SelectEvidence(units, testPolicy(limit))
+	require.NoError(t, err)
+	require.NotNil(t, res.Gap)
+	assert.False(t, containsItem(res.Items, items[0]))
+	assert.True(t, containsItem(res.Items, items[1]))
+	assert.Equal(t, GapPositionHead, res.Gap.Position)
+	assertSelectionInvariants(t, units, limit, res, err)
+}
+
+func TestSelectToolPairAtomicity(t *testing.T) {
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 5, sp("sys")),
+		mkMsg("user", "old", 10),
+		mkCallItem("call_A", 100),
+		mkResultItem("call_A", 100),
+		mkMsg("user", "mid", 10),
+		mkCallItem("call_B", 100),
+		mkResultItem("call_B", 100),
+		mkMsg("user", "newest", 10),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	total := unitTotal(units)
+	for _, limit := range []int64{1, 60, 120, 200, 260, 300, 340, 380, 420, total - 1, total} {
+		res, err := SelectEvidence(units, testPolicy(limit))
+		assertSelectionInvariants(t, units, limit, res, err)
+		for _, u := range units {
+			if u.Kind != SemanticUnitToolExchange || u.Orphan {
+				continue
+			}
+			kept := 0
+			for _, it := range u.Items {
+				if containsItem(res.Items, it) {
+					kept++
+				}
+			}
+			assert.Equalf(t, kept == 0 || kept == len(u.Items), true, "limit %d: pair %v must be all-in or all-out (kept %d/%d)", limit, u.CallIDs, kept, len(u.Items))
+		}
+	}
+}
+
+func TestSelectParallelPairAtomic(t *testing.T) {
+	asst := mkMsg("assistant", "parallel", 10)
+	asst.Content = append(asst.Content, callp("call_A"), callp("call_B"))
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 5, sp("sys")),
+		asst,
+		mkItem(CanonicalKindMessage, "tool", "call_A", 100),
+		mkItem(CanonicalKindMessage, "tool", "call_B", 100),
+		mkMsg("user", "newest", 10),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	require.Len(t, units, 3)
+	// A limit that cannot hold the whole parallel exchange must omit it whole.
+	res, err := SelectEvidence(units, testPolicy(unitTotal(units)-1))
+	require.NoError(t, err)
+	assert.False(t, containsItem(res.Items, items[1]), "parallel exchange all-out")
+	assert.False(t, containsItem(res.Items, items[2]))
+	assert.False(t, containsItem(res.Items, items[3]))
+	assert.True(t, containsItem(res.Items, items[4]), "newest user retained")
+	assertSelectionInvariants(t, units, unitTotal(units)-1, res, err)
+}
+
+func TestSelectOrphanResultNearTail(t *testing.T) {
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 5, sp(strings.Repeat("s", 2000))),
+		mkMsg("user", strings.Repeat("u", 1000), 1000),
+		mkResultItem("call_orphan", 1000),
+		mkMsg("user", strings.Repeat("n", 500), 500),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	total := unitTotal(units)
+	res, err := SelectEvidence(units, testPolicy(total-1))
+	require.NoError(t, err)
+	assert.True(t, containsItem(res.Items, items[2]), "orphan result survives selection near the tail")
+	assert.True(t, containsItem(res.Items, items[3]))
+	assertSelectionInvariants(t, units, total-1, res, err)
+}
+
+func TestSelectDeterministic(t *testing.T) {
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 5, sp("sys")),
+		mkCallItem("call_A", 100),
+		mkResultItem("call_A", 100),
+		mkResultItem("call_orphan", 50),
+		mkMsg("user", "newest", 10),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	for _, limit := range []int64{1, 100, 200, 300, unitTotal(units)} {
+		first, err := SelectEvidence(units, testPolicy(limit))
+		require.NoError(t, err)
+		second, err := SelectEvidence(units, testPolicy(limit))
+		require.NoError(t, err)
+		assert.Equal(t, first, second, "identical input+policy must produce the identical selection")
+	}
+}
+
+func TestSelectBudgetBoundaries(t *testing.T) {
+	asst := mkMsg("assistant", "parallel", 10)
+	asst.Content = append(asst.Content, callp("call_A"), callp("call_B"))
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 5, sp("sys")),
+		mkMsg("user", "old", 10),
+		asst,
+		mkItem(CanonicalKindMessage, "tool", "call_A", 100),
+		mkItem(CanonicalKindMessage, "tool", "call_B", 100),
+		mkResultItem("call_orphan", 50),
+		mkMsg("user", "newest", 10),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	total := unitTotal(units)
+	for _, limit := range []int64{0, 1, 10, 57, 58, 59, 60, 100, 300, 500, total - 1, total, total + 1, 1 << 20} {
+		t.Run(fmt.Sprintf("limit_%d", limit), func(t *testing.T) {
+			res, err := SelectEvidence(units, testPolicy(limit))
+			assertSelectionInvariants(t, units, limit, res, err)
+			assert.LessOrEqual(t, res.TotalBytes, limit)
+			if res.Gap != nil && res.Gap.Reason == GapReasonLimitTooSmall {
+				assert.Empty(t, res.Items)
+				assert.Zero(t, res.TotalBytes)
+			} else if res.Gap == nil {
+				assert.Equal(t, items, res.Items)
+			} else {
+				assert.Equal(t, 1, gapKindCount(res.Items))
+			}
+		})
+	}
+}
+
+func TestSelectOversizedLatestUnit(t *testing.T) {
+	bigResult := mkResultItem("call_A", 12000)
+	bigResult.Content[0].Result.Output = json.RawMessage(`"` + strings.Repeat("x", 12000) + `"`)
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 5, sp("sys")),
+		mkMsg("user", "before", 10),
+		mkCallItem("call_A", 200),
+		bigResult,
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	limit := int64(10000)
+	require.Len(t, units, 3)
+	require.Greater(t, units[2].CanonicalBytes, limit, "precondition: newest unit alone over the limit")
+	res, err := SelectEvidence(units, testPolicy(limit))
+	require.NoError(t, err)
+
+	require.Len(t, res.Oversized, 1)
+	ov := res.Oversized[0]
+	assert.Equal(t, SemanticUnitToolExchange, ov.Kind)
+	assert.Equal(t, []string{"call_A"}, ov.CallIDs)
+	assert.Equal(t, int64(12200), ov.LogicalBytes)
+	assert.Equal(t, OversizedReasonUnit, ov.Reason)
+	assert.False(t, ov.SourceTruncated)
+	assert.False(t, containsItem(res.Items, items[2]), "oversized pair not split: call omitted")
+	assert.False(t, containsItem(res.Items, items[3]), "oversized pair not split: result omitted")
+	assert.True(t, containsItem(res.Items, items[0]), "anchor retained")
+	assert.True(t, containsItem(res.Items, items[1]), "rest selected normally")
+	require.NotNil(t, res.Gap)
+	assert.Equal(t, GapPositionTail, res.Gap.Position)
+	assert.Equal(t, GapReasonOversized, res.Gap.Reason)
+	assert.Equal(t, 2, res.Gap.OmittedItems)
+	assert.Equal(t, int64(12200), res.Gap.LogicalBytes)
+	assert.Equal(t, res.Oversized, res.Gap.Oversized)
+	marker := requireGapItem(t, res.Items)
+	assert.Equal(t, res.Oversized, marker.Gap.Oversized)
+	assert.LessOrEqual(t, res.TotalBytes, limit)
+	assertSelectionInvariants(t, units, limit, res, err)
+}
+
+func TestSelectOversizedLatestOnlyUnit(t *testing.T) {
+	bigResult := mkResultItem("call_A", 12000)
+	bigResult.Content[0].Result.Output = json.RawMessage(`"` + strings.Repeat("x", 12000) + `"`)
+	items := []CanonicalItem{
+		mkCallItem("call_A", 200),
+		bigResult,
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	limit := int64(10000)
+	require.Greater(t, units[0].CanonicalBytes, limit, "precondition: the only unit over the limit")
+	res, err := SelectEvidence(units, testPolicy(limit))
+	require.NoError(t, err)
+	require.Len(t, res.Oversized, 1)
+	assert.Equal(t, OversizedReasonUnit, res.Oversized[0].Reason)
+	require.NotNil(t, res.Gap)
+	assert.Equal(t, GapPositionHead, res.Gap.Position, "a gap covering the whole stream is head")
+	assert.Equal(t, res.Oversized, res.Gap.Oversized)
+	marker := requireGapItem(t, res.Items)
+	assert.Equal(t, res.Oversized, marker.Gap.Oversized)
+	assert.LessOrEqual(t, res.TotalBytes, limit)
+	assertSelectionInvariants(t, units, limit, res, err)
+}
+
+func TestSelectAnchorBudgetCap(t *testing.T) {
+	bigSystem := mkItem(CanonicalKindSystem, "", "", 23000, sp(strings.Repeat("s", 23000)))
+	user := mkMsg("user", "latest", 100)
+	items := []CanonicalItem{bigSystem, user}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	limit := int64(20000)
+	require.Greater(t, unitTotal(units), limit)
+	res, err := SelectEvidence(units, testPolicy(limit))
+	require.NoError(t, err)
+
+	require.NotNil(t, res.Gap)
+	assert.False(t, containsItem(res.Items, bigSystem), "giant system must not crowd out the tail")
+	assert.True(t, containsItem(res.Items, user), "tail survives a giant anchor")
+	require.Len(t, res.Oversized, 1)
+	assert.Equal(t, OversizedReasonAnchor, res.Oversized[0].Reason)
+	assert.Equal(t, SemanticUnitAnchor, res.Oversized[0].Kind)
+	assert.Equal(t, int64(23000), res.Oversized[0].LogicalBytes)
+	assert.Equal(t, res.Oversized, res.Gap.Oversized)
+	marker := requireGapItem(t, res.Items)
+	assert.Equal(t, res.Oversized, marker.Gap.Oversized)
+	assert.LessOrEqual(t, res.TotalBytes, limit)
+	assertSelectionInvariants(t, units, limit, res, err)
+
+	// A system within the anchor budget is retained.
+	smallSystem := mkItem(CanonicalKindSystem, "", "", 2000, sp(strings.Repeat("s", 2000)))
+	middle := mkMsg("user", strings.Repeat("u", 9000), 9000)
+	units2, err := BuildSemanticUnits([]CanonicalItem{smallSystem, middle, user})
+	require.NoError(t, err)
+	res2, err := SelectEvidence(units2, testPolicy(10000))
+	require.NoError(t, err)
+	require.NotNil(t, res2.Gap)
+	assert.True(t, containsItem(res2.Items, smallSystem), "anchor within budget retained")
+	assert.True(t, containsItem(res2.Items, user), "newest user retained")
+	assert.False(t, containsItem(res2.Items, middle), "middle omitted")
+	assert.Empty(t, res2.Oversized)
+	assert.Equal(t, GapPositionMiddle, res2.Gap.Position)
+	assertSelectionInvariants(t, units2, 10000, res2, err)
+}
+
+// TestSelectAnchorBudgetUnusedReturned tests D4: unused anchor budget flows
+// back to the tail.
+func TestSelectAnchorBudgetUnusedReturned(t *testing.T) {
+	// No anchors at all: tail should be able to use the full limit.
+	items := []CanonicalItem{
+		mkMsg("user", strings.Repeat("u", 6000), 6000),
+		mkMsg("user", strings.Repeat("n", 6000), 6000),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	// Total ~12KB, limit=10KB, anchor budget ~2.5KB but unused,
+	// so tail should be able to retain the newest user message.
+	limit := int64(10000)
+	res, err := SelectEvidence(units, testPolicy(limit))
+	require.NoError(t, err)
+	require.NotNil(t, res.Gap)
+	assert.True(t, containsItem(res.Items, items[1]), "D4: newest user retained with full budget")
+	// The old user message is omitted.
+	assert.False(t, containsItem(res.Items, items[0]))
+	assert.LessOrEqual(t, res.TotalBytes, limit)
+	assertSelectionInvariants(t, units, limit, res, err)
+}
+
+func TestSelectBoundaryTotalEqualsLimit(t *testing.T) {
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 5, sp("sys")),
+		mkMsg("user", "latest", 10),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	res, err := SelectEvidence(units, testPolicy(unitTotal(units)))
+	require.NoError(t, err)
+	assert.Nil(t, res.Gap, "total == limit is a full fit, zero truncation")
+	assert.Equal(t, unitTotal(units), res.TotalBytes)
+}
+
+func TestSelectDegenerateLimit(t *testing.T) {
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 5, sp("sys")),
+		mkMsg("user", "latest", 10),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	for _, limit := range []int64{0, 1, 5, 10} {
+		res, err := SelectEvidence(units, testPolicy(limit))
+		require.NoError(t, err)
+		require.NotNil(t, res.Gap, "limit %d: degenerate limit has a gap with reason", limit)
+		assert.Equal(t, GapReasonLimitTooSmall, res.Gap.Reason, "limit %d", limit)
+		assert.Empty(t, res.Items, "limit %d", limit)
+		assert.Equal(t, int64(0), res.TotalBytes, "limit %d", limit)
+	}
+}
+
+func TestGapMarkerShape(t *testing.T) {
+	oversized := []OversizedUnitInfo{{
+		Kind:           SemanticUnitToolExchange,
+		CallIDs:        []string{"call_A"},
+		LogicalBytes:   12000,
+		CanonicalBytes: 12100,
+		Reason:         OversizedReasonUnit,
+	}}
+	info := GapInfo{
+		Position:        GapPositionMiddle,
+		Reason:          GapReasonBudget,
+		OmittedItems:    3,
+		LogicalBytes:    12345,
+		SourceTruncated: true,
+		Oversized:       oversized,
+	}
+	marker := GapMarker(info)
+	assert.Equal(t, CanonicalKindGap, marker.Kind)
+	assert.Equal(t, int64(12345), marker.LogicalBytes)
+	assert.True(t, marker.Truncated)
+	assert.Empty(t, marker.Hmac)
+	require.NotNil(t, marker.Gap)
+	assert.Equal(t, info, *marker.Gap)
+	oversized[0].CallIDs[0] = "mutated"
+	oversized[0].Reason = "mutated"
+	assert.Equal(t, []string{"call_A"}, marker.Gap.Oversized[0].CallIDs)
+	assert.Equal(t, OversizedReasonUnit, marker.Gap.Oversized[0].Reason)
+}
+
+func TestSelectMeasuresFinalStructuredGapMarker(t *testing.T) {
+	items := []CanonicalItem{
+		mkItem(CanonicalKindSystem, "", "", 10, sp(strings.Repeat("s", 500))),
+		mkMsg("user", strings.Repeat("o", 1000), 1000),
+		mkMsg("user", strings.Repeat("n", 500), 500),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	limit := unitTotal(units) - 1
+	res, err := SelectEvidence(units, testPolicy(limit))
+	require.NoError(t, err)
+	require.NotNil(t, res.Gap)
+	var measured int64
+	for _, item := range res.Items {
+		itemBytes, err := canonicalBytesOf(item)
+		require.NoError(t, err)
+		measured += itemBytes
+	}
+	assert.Equal(t, measured, res.TotalBytes)
+	for _, item := range res.Items {
+		if item.Kind != CanonicalKindGap {
+			continue
+		}
+		assert.Len(t, item.Hmac, 64)
+		require.NotNil(t, item.Gap)
+		assert.Equal(t, *res.Gap, *item.Gap)
+	}
+}
+
+func TestSelectGapBuilderContract(t *testing.T) {
+	items := []CanonicalItem{
+		mkMsg("user", strings.Repeat("a", 500), 500),
+		mkMsg("user", strings.Repeat("b", 500), 500),
+	}
+	units, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	limit := unitTotal(units) - 1
+
+	t.Run("builder error", func(t *testing.T) {
+		policy := DefaultSelectionPolicy(limit, func(GapInfo) (CanonicalItem, error) {
+			return CanonicalItem{}, fmt.Errorf("test error")
+		})
+		_, err := SelectEvidence(units, policy)
+		assert.ErrorContains(t, err, "test error")
+	})
+
+	t.Run("missing final HMAC", func(t *testing.T) {
+		policy := DefaultSelectionPolicy(limit, func(gap GapInfo) (CanonicalItem, error) {
+			return GapMarker(gap), nil
+		})
+		_, err := SelectEvidence(units, policy)
+		assert.ErrorContains(t, err, "final SHA-256 HMAC")
+	})
+
+	t.Run("builder only required for truncation", func(t *testing.T) {
+		res, err := SelectEvidence(units, DefaultSelectionPolicy(unitTotal(units), nil))
+		require.NoError(t, err)
+		assert.Equal(t, items, res.Items)
+		_, err = SelectEvidence(units, DefaultSelectionPolicy(limit, nil))
+		assert.ErrorContains(t, err, "gap builder is required")
+	})
+}
+
+func BenchmarkSemanticSelector(b *testing.B) {
+	const (
+		turns = 20
+		limit = int64(4 * 1024)
+	)
+	policy := testPolicy(limit)
+	replays := make([][]SemanticUnit, 0, turns)
+	var previousDigests []string
+	var fullContextBytes, deltaSuffixBytes int64
+
+	for turn := 1; turn <= turns; turn++ {
+		items := make([]CanonicalItem, 0, turn+1)
+		system := mkItem(CanonicalKindSystem, "", "", 1200, sp(strings.Repeat("s", 1200)))
+		items = append(items, withHmac(system, NormalizeOptions{HMACKey: testHMACKey}))
+		for message := 1; message <= turn; message++ {
+			item := mkMsg("user", strings.Repeat(string(rune('a'+message%26)), 500), 500)
+			items = append(items, withHmac(item, NormalizeOptions{HMACKey: testHMACKey}))
+		}
+		units, err := BuildSemanticUnits(items)
+		if err != nil {
+			b.Fatal(err)
+		}
+		replays = append(replays, units)
+		selected, err := SelectEvidence(units, policy)
+		if err != nil {
+			b.Fatal(err)
+		}
+		digests := make([]string, 0, len(selected.Items))
+		for _, item := range selected.Items {
+			digests = append(digests, item.Hmac)
+		}
+		fullPayload, err := common.Marshal(digests)
+		if err != nil {
+			b.Fatal(err)
+		}
+		prefix := commonPrefix(previousDigests, digests)
+		suffixPayload, err := common.Marshal(digests[prefix:])
+		if err != nil {
+			b.Fatal(err)
+		}
+		fullContextBytes += int64(len(fullPayload))
+		deltaSuffixBytes += int64(len(suffixPayload))
+		previousDigests = digests
+	}
+	amplification := float64(deltaSuffixBytes) / float64(fullContextBytes)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := SelectEvidence(replays[i%len(replays)], policy); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer()
+	b.ReportMetric(amplification, "suffix/full")
+}
+
+// ---------------------------------------------------------------------------
+// end-to-end shape tests over the read-only agent corpus (invariants only)
+
+func TestSelectE2EFixtureCodexMultiturn(t *testing.T) {
+	units, items := fixtureUnits(t, "codex-multiturn.json", string(types.RelayFormatOpenAIResponses), &dto.OpenAIResponsesRequest{})
+	assert.NotEmpty(t, units)
+	assertPairCompleteness(t, items, units)
+	assertDeterministicUnits(t, items)
+	total := unitTotal(units)
+	for _, limit := range []int64{1, 60, 100, total - 1, total, total + 1} {
+		res, err := SelectEvidence(units, testPolicy(limit))
+		require.NoError(t, err)
+		assert.LessOrEqual(t, res.TotalBytes, limit, "limit %d", limit)
+		if res.Gap != nil && res.Gap.Reason == GapReasonLimitTooSmall {
+			assert.Empty(t, res.Items)
+		} else if res.Gap == nil {
+			assert.Equal(t, items, res.Items, "limit %d: full fit", limit)
+		} else {
+			assert.Equal(t, 1, gapKindCount(res.Items), "limit %d", limit)
+		}
+		assertSelectionInvariants(t, units, limit, res, err)
+		again, err := SelectEvidence(units, testPolicy(limit))
+		require.NoError(t, err)
+		assert.Equal(t, res, again, "limit %d: deterministic", limit)
+	}
+}
+
+func TestSelectE2EFixtureClaudeToolChain(t *testing.T) {
+	units, items := fixtureUnits(t, "claude-tool-chain.json", string(types.RelayFormatClaude), &dto.ClaudeRequest{})
+	assert.NotEmpty(t, units)
+	assertPairCompleteness(t, items, units)
+	assertDeterministicUnits(t, items)
+	total := unitTotal(units)
+	for _, limit := range []int64{1, 60, 100, total - 1, total, total + 1} {
+		res, err := SelectEvidence(units, testPolicy(limit))
+		require.NoError(t, err)
+		assert.LessOrEqual(t, res.TotalBytes, limit, "limit %d", limit)
+		if res.Gap != nil && res.Gap.Reason == GapReasonLimitTooSmall {
+			assert.Empty(t, res.Items)
+		} else if res.Gap == nil {
+			assert.Equal(t, items, res.Items, "limit %d: full fit", limit)
+		} else {
+			assert.Equal(t, 1, gapKindCount(res.Items), "limit %d", limit)
+		}
+		assertSelectionInvariants(t, units, limit, res, err)
+		again, err := SelectEvidence(units, testPolicy(limit))
+		require.NoError(t, err)
+		assert.Equal(t, res, again, "limit %d: deterministic", limit)
+	}
+}
+
+// fixtureUnits normalizes one agent-corpus fixture body into canonical items.
+func fixtureUnits(t *testing.T, name, format string, req dto.Request) ([]SemanticUnit, []CanonicalItem) {
+	t.Helper()
+	rawBody, err := os.ReadFile("testdata/agent-corpus/" + name)
+	require.NoError(t, err)
+	var wrapper struct {
+		Body json.RawMessage `json:"body"`
+	}
+	require.NoError(t, json.Unmarshal(rawBody, &wrapper))
+	require.NotEmpty(t, wrapper.Body)
+	require.NoError(t, json.Unmarshal(wrapper.Body, req))
+	res := NormalizeRequest(format, req, NormalizeOptions{
+		CaptureLimit: 1 << 30, MaxRequestBytes: 1 << 30, HMACKey: testHMACKey,
+	})
+	require.NotEqual(t, ContentStateMetadataOnly, res.ContentState, "fixture must normalize")
+	require.NotEmpty(t, res.Items)
+	units, err := BuildSemanticUnits(res.Items)
+	require.NoError(t, err)
+	require.NotEmpty(t, units)
+	return units, res.Items
+}
+
+func assertPairCompleteness(t *testing.T, items []CanonicalItem, units []SemanticUnit) {
+	t.Helper()
+	unitByID := map[string]*SemanticUnit{}
+	for i := range units {
+		for _, id := range units[i].CallIDs {
+			unitByID[id] = &units[i]
+		}
+	}
+	for _, it := range items {
+		calls, results := toolIDsOfParts(it.Content)
+		for _, id := range calls {
+			u, ok := unitByID[id]
+			require.Truef(t, ok, "call %s must belong to a unit", id)
+			assert.NotEqual(t, 0, len(u.CallIDs), "unit must keep its call IDs")
+		}
+		for _, id := range results {
+			if u, ok := unitByID[id]; ok {
+				assert.Equal(t, SemanticUnitToolExchange, u.Kind, "paired unit kind")
+			}
+			assert.True(t, containsIDInUnits(units, id), "result %s must survive in a unit", id)
+		}
+	}
+}
+
+func containsIDInUnits(units []SemanticUnit, id string) bool {
+	for i := range units {
+		for _, u := range units[i].CallIDs {
+			if u == id {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func assertDeterministicUnits(t *testing.T, items []CanonicalItem) {
+	t.Helper()
+	first, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	second, err := BuildSemanticUnits(items)
+	require.NoError(t, err)
+	assert.Equal(t, first, second)
+}

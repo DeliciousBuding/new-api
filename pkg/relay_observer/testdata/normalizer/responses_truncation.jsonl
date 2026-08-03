@@ -1,0 +1,2 @@
+{"kind":"gap","logical_bytes":164,"hmac":"291933398c1f7a36d117b0c97511e8c1978f0f4cb7c2ccf8795df6e11e9d95ab","truncated":true,"gap":{"position":"head","reason":"capture_budget","omitted_items":2,"logical_bytes":164}}
+{"kind":"message","role":"user","content":[{"type":"text","text":"charlie charlie charlie charlie"}],"logical_bytes":90,"hmac":"e877232ba9bf559cad3816c87c5513ee5557a78c44492b513a1a6e01adf92213"}

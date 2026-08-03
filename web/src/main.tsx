@@ -106,6 +106,11 @@ declare module '@tanstack/react-router' {
   interface Register {
     router: typeof router
   }
+  // Route-level static metadata (replaces the removed `meta` route option
+  // in this router version). Consumed by route.tsx files via staticData.
+  interface StaticDataRouteOption {
+    title?: string
+  }
 }
 
 // Render the app

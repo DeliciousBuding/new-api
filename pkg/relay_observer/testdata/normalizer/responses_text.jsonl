@@ -1,0 +1,3 @@
+{"kind":"system","content":[{"type":"text","text":"Be brief."}],"logical_bytes":11,"hmac":"447c4cff75b42c825d5cf43bb6b01d99b7b1efa05d144537b73be0f2da12f206"}
+{"kind":"message","role":"user","content":[{"type":"text","text":"hello world"}],"logical_bytes":70,"hmac":"633b894e1099f3641101e53c3199911db3d591c6ac70acfaa4da1bd0cf523905"}
+{"kind":"message","role":"assistant","content":[{"type":"text","text":"hi there"}],"logical_bytes":73,"hmac":"2ad3da470d4c03701365101d9a294cdde0cc94626b3a7303a462368d88a9c08f"}
