@@ -122,6 +122,7 @@ type CanonicalItem struct {
 	LogicalBytes int64           `json:"logical_bytes"`
 	Hmac         string          `json:"hmac"`
 	Truncated    bool            `json:"truncated,omitempty"`
+	Gap          *GapInfo        `json:"gap,omitempty"`
 }
 
 // CanonicalPart is one whitelisted content part of a canonical item.
