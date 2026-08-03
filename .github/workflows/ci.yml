@@ -18,10 +18,10 @@ concurrency:
 jobs:
   backend:
     name: Backend vet, build, and test
-    # 产品分支 CI 使用 GitHub-hosted runner；保留同仓库 PR gate，
-    # fork PR 继续跳过，避免改变既有资源与审查边界。
+    # 私有仓库只在长期 us1 自托管 runner 上执行同仓库代码；
+    # fork PR 继续跳过，避免把外部代码送入内网 runner。
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, us1, new-api]
     timeout-minutes: 15
     env:
       GOWORK: 'off'
@@ -62,9 +62,9 @@ jobs:
 
   frontend:
     name: Frontend typecheck, test, and build
-    # 同 backend：fork PR 继续跳过。
+    # 同 backend：只使用 us1 repo runner，fork PR 继续跳过。
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, us1, new-api]
     timeout-minutes: 10
     defaults:
       run:
