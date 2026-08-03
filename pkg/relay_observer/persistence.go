@@ -256,6 +256,12 @@ func appendTurnsTx(ctx context.Context, tx contentTx, turns []ContentInput) erro
 	return nil
 }
 
+// testAppendHook is a test-only pause inside appendTurnTx. When non-nil it
+// runs after the turn claim, while the append transaction still holds the
+// session row lock and has committed nothing. Production builds keep it nil:
+// the hook costs one branch and never runs.
+var testAppendHook func()
+
 // appendTurnTx persists one turn inside the caller's transaction: session
 // resolution, idempotency check, content dedup, head serialization, context
 // insert, head advance, and session counters. The session contract is
@@ -273,14 +279,27 @@ func appendTurnTx(ctx context.Context, tx contentTx, in *ContentInput) error {
 	if err != nil {
 		return err
 	}
-	// Backfill the turn's session binding: the turn row is written
-	// metadata-only by WriteBatch with a NULL session_id, but session-scoped
-	// queries (sessions/:id/turns and the session EXISTS filters) join on it.
-	// The idempotency guard keeps the first binding; concurrent or repeated
-	// appends of the same turn never rebind it.
-	if _, err := tx.Exec(ctx, `UPDATE observer_turns SET session_id = $1 WHERE id = $2 AND session_id IS NULL`,
-		sessionID.String(), in.TurnID.String()); err != nil {
-		return fmt.Errorf("relayobserver: append content: backfill turn session: %w", err)
+	// Claim the turn for its resolved session inside the transaction. The
+	// claim is the durable exactly-once marker of every append path: the
+	// UPDATE binds the turn row (written metadata-only by WriteBatch with a
+	// NULL session_id) only while it is still unbound, and the affected-row
+	// count is checked. A turn whose claim touches no row was already appended
+	// — either the context-idempotent content path committed, or the
+	// session-only path (which creates no context row and therefore has no
+	// UNIQUE (turn_id) row to lean on) did — so the whole append is a no-op:
+	// no counter bump, no context write. Claim, bump, and context writes share
+	// one transaction: a failed append rolls the claim back with everything
+	// else and the retry claims fresh; a committed append is never
+	// double-counted by a replay or a concurrent duplicate.
+	claimed, err := claimTurnForSessionTx(ctx, tx, in.TurnID, sessionID)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		return nil
+	}
+	if testAppendHook != nil {
+		testAppendHook()
 	}
 	if len(in.Items) == 0 {
 		// Session-only append: the turn has an identity but capture produced
@@ -337,6 +356,30 @@ func appendTurnTx(ctx context.Context, tx contentTx, in *ContentInput) error {
 		return err
 	}
 	return bumpSessionTx(ctx, tx, in, sessionID, meta.hasGap)
+}
+
+// claimTurnForSessionTx claims one turn for its resolved session inside the
+// caller's transaction and reports whether this call made the binding. The
+// claim is the `UPDATE observer_turns SET session_id = $1 WHERE id = $2 AND
+// session_id IS NULL` backfill made authoritative: its affected-row count is
+// the durable exactly-once marker of an append. A fresh turn (written
+// metadata-only by WriteBatch with a NULL session_id) claims one row; an
+// already-bound turn — a replay of the same event, a duplicate enqueue, or a
+// concurrent duplicate append — claims zero rows and must make the whole
+// append a no-op. RowsAffected is the only reliable signal for the guarded
+// UPDATE (PostgreSQL reports the real count); when the driver cannot report
+// it the claim fails closed instead of guessing.
+func claimTurnForSessionTx(ctx context.Context, tx contentTx, turnID, sessionID uuid.UUID) (bool, error) {
+	res, err := tx.Exec(ctx, `UPDATE observer_turns SET session_id = $1 WHERE id = $2 AND session_id IS NULL`,
+		sessionID.String(), turnID.String())
+	if err != nil {
+		return false, fmt.Errorf("relayobserver: append content: backfill turn session: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("relayobserver: append content: claim rows affected: %w", err)
+	}
+	return n == 1, nil
 }
 
 // resolveSessionTx resolves the primary alias to a session id, creating the

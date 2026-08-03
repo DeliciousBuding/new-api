@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -149,8 +150,11 @@ func (r *fakeRows) Scan(dest ...any) error {
 func (r *fakeRows) Err() error { return nil }
 
 // fakeContentTx implements contentTx and contentQuerier over in-memory maps.
-// It routes by the operation the SQL expresses, not by parsing SQL.
+// It routes by the operation the SQL expresses, not by parsing SQL. A mutex
+// makes it safe for the concurrent-append scenario tests; the serial
+// scenarios never contend.
 type fakeContentTx struct {
+	mu           sync.Mutex
 	aliases      map[string]string // "node|user|ver|digesthex|scope" -> session id
 	sessions     map[string]bool
 	heads        map[string]*fakeHead
@@ -158,8 +162,12 @@ type fakeContentTx struct {
 	objects      map[string]bool         // "session|digesthex"
 	objectsData  map[string]contentObjectRow
 	counts       map[string][2]int64 // session -> {turns, gaps}
-	turnSessions map[string]string   // turn id -> session id (backfill)
+	turnSessions map[string]string   // turn id -> session id (claim)
 	nextID       int64
+	// failBumpOnce makes the next session-counters upsert fail once: it
+	// simulates a mid-transaction failure after the claim, which the real
+	// adapter turns into a full rollback of the append transaction.
+	failBumpOnce bool
 }
 
 func newFakeContentTx() *fakeContentTx {
@@ -194,6 +202,8 @@ func toInt64(v any) int64 {
 }
 
 func (f *fakeContentTx) QueryRow(ctx context.Context, query string, args ...any) rowScanner {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	switch {
 	case strings.Contains(query, "turn_id") && !strings.Contains(query, "INSERT"):
 		// Two shapes: the idempotency probe (SELECT id ... turn_id = $1) and
@@ -266,10 +276,16 @@ func (f *fakeContentTx) QueryRow(ctx context.Context, query string, args ...any)
 }
 
 func (f *fakeContentTx) Exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	switch {
 	case strings.Contains(query, "ON CONFLICT (id) DO UPDATE"):
 		// The session counter upsert: INSERT ... ON CONFLICT (id) DO UPDATE.
 		// It must match before the plain session-insert branch below.
+		if f.failBumpOnce {
+			f.failBumpOnce = false
+			return nil, fmt.Errorf("fake: injected bump failure")
+		}
 		sid := args[0].(string)
 		c := f.counts[sid]
 		c[0]++                       // turns
@@ -336,10 +352,15 @@ func (f *fakeContentTx) Exec(ctx context.Context, query string, args ...any) (sq
 		h.ordinal = sql.NullInt64{Int64: int64(args[2].(int)), Valid: true}
 		return fakeResult{n: 1}, nil
 	case strings.Contains(query, "UPDATE observer_turns SET session_id"):
-		// Backfill of the turn's session binding: record it so tests can
-		// assert the turn is queryable by session.
-		sid := args[0].(string)
-		f.turnSessions[args[1].(string)] = sid
+		// The turn claim: binds a turn to its session at most once. An
+		// already-bound turn reports 0 affected rows, exactly like the real
+		// guarded predicate (session_id IS NULL) — this is the exactly-once
+		// gate of the append paths.
+		turn := args[1].(string)
+		if _, bound := f.turnSessions[turn]; bound {
+			return fakeResult{n: 0}, nil
+		}
+		f.turnSessions[turn] = args[0].(string)
 		return fakeResult{n: 1}, nil
 	}
 	return nil, fmt.Errorf("fake: unhandled exec %q", query)
@@ -347,6 +368,8 @@ func (f *fakeContentTx) Exec(ctx context.Context, query string, args ...any) (sq
 
 // Query implements the multi-row read surface of contentQuerier.
 func (f *fakeContentTx) Query(ctx context.Context, query string, args ...any) (rowIter, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	switch {
 	case strings.Contains(query, "FROM observer_content_objects"):
 		sid := args[0].(string)
@@ -540,6 +563,101 @@ func TestAppendTurnGroupRotation(t *testing.T) {
 	assert.Equal(t, 1, rotatedItems, "group 1's full holds only its first item")
 	require.True(t, f.tx.heads[sid.String()].ordinal.Valid)
 	assert.Equal(t, int64(0), f.tx.heads[sid.String()].ordinal.Int64, "head points at the new full")
+}
+
+// TestAppendTurnSessionOnlyReplayExactlyOnce locks the session-only exactly-
+// once claim (PR #14): a gap session-only turn creates no context row, so the
+// observer_contexts UNIQUE (turn_id) row cannot back its idempotency — the
+// turn claim's affected-row count is the marker. Appending the same turn
+// twice must count the session exactly once: turn_count=1, gap_count=1.
+func TestAppendTurnSessionOnlyReplayExactlyOnce(t *testing.T) {
+	f := newFakeFixture(t, "exactly-once-gap")
+	turn := ContentInput{NodeScope: f.node, UserID: f.user, Aliases: []Alias{f.alias}, TurnID: uuid.New(), ContentState: ContentStateGap}
+	require.NoError(t, appendTurnTx(context.Background(), f.tx, &turn))
+	require.NoError(t, appendTurnTx(context.Background(), f.tx, &turn))
+
+	sid := f.sessionID()
+	assert.Equal(t, [2]int64{1, 1}, f.tx.counts[sid.String()], "the replayed gap turn must count exactly once")
+	assert.Equal(t, sid.String(), f.tx.turnSessions[turn.TurnID.String()], "the turn must be bound to the session")
+	assert.Empty(t, f.tx.contexts, "session-only appends never create context rows")
+}
+
+// TestAppendTurnMetadataOnlyReplayExactlyOnce locks the metadata-only variant
+// of the claim: a session-only turn without a gap marker replays with
+// turn_count=1 and gap_count=0.
+func TestAppendTurnMetadataOnlyReplayExactlyOnce(t *testing.T) {
+	f := newFakeFixture(t, "exactly-once-meta")
+	turn := ContentInput{NodeScope: f.node, UserID: f.user, Aliases: []Alias{f.alias}, TurnID: uuid.New(), ContentState: ContentStateMetadataOnly}
+	require.NoError(t, appendTurnTx(context.Background(), f.tx, &turn))
+	require.NoError(t, appendTurnTx(context.Background(), f.tx, &turn))
+
+	sid := f.sessionID()
+	assert.Equal(t, [2]int64{1, 0}, f.tx.counts[sid.String()], "a metadata-only outcome is not a capture gap")
+}
+
+// TestAppendTurnSessionOnlyConcurrentClaimExactlyOnce locks the concurrent
+// duplicate: two appends of the same session-only turn racing on the fake
+// data layer both succeed, but the claim binds the turn once and the counters
+// advance once. (The real two-connection race — where the session row lock
+// serializes the transactions — is exercised by the PG integration suite.)
+func TestAppendTurnSessionOnlyConcurrentClaimExactlyOnce(t *testing.T) {
+	f := newFakeFixture(t, "exactly-once-race")
+	turn := ContentInput{NodeScope: f.node, UserID: f.user, Aliases: []Alias{f.alias}, TurnID: uuid.New(), ContentState: ContentStateGap}
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = appendTurnTx(context.Background(), f.tx, &turn)
+		}(i)
+	}
+	wg.Wait()
+	require.NoError(t, errs[0], "both racing appends must succeed")
+	require.NoError(t, errs[1], "both racing appends must succeed")
+
+	sid := f.sessionID()
+	assert.Equal(t, [2]int64{1, 1}, f.tx.counts[sid.String()], "the racing appends must count exactly once")
+	assert.Equal(t, sid.String(), f.tx.turnSessions[turn.TurnID.String()])
+}
+
+// TestAppendTurnFailedBumpRollsBackClaimAndRetrySucceeds locks the rollback
+// semantics of the claim: a transaction that fails after the claim (here the
+// bump injection) leaves nothing durable — the claim, the session, and the
+// counters roll back with it — so the retry claims fresh and counts exactly
+// once.
+func TestAppendTurnFailedBumpRollsBackClaimAndRetrySucceeds(t *testing.T) {
+	f := newFakeFixture(t, "exactly-once-retry")
+	turn := ContentInput{NodeScope: f.node, UserID: f.user, Aliases: []Alias{f.alias}, TurnID: uuid.New(), ContentState: ContentStateGap}
+
+	f.tx.failBumpOnce = true
+	require.Error(t, appendTurnTx(context.Background(), f.tx, &turn), "the injected bump failure must abort the append")
+	// The real adapter rolls the whole transaction back: the claim binding,
+	// the session row, and the counters disappear. Simulate the rolled-back
+	// state with a fresh data layer and retry the same turn.
+	f.tx = newFakeContentTx()
+	require.NoError(t, appendTurnTx(context.Background(), f.tx, &turn))
+
+	sid := f.sessionID()
+	assert.Equal(t, [2]int64{1, 1}, f.tx.counts[sid.String()], "the retry must count exactly once")
+	assert.Equal(t, sid.String(), f.tx.turnSessions[turn.TurnID.String()], "the retry must claim the turn")
+}
+
+// TestAppendTurnContentReplayExactlyOnce locks the content-bearing variant:
+// a replayed turn with items still lands one context row and one counter
+// increment. The claim now gates the whole append (the context-idempotency
+// checks remain as the backstop), so the replay is a no-op end to end.
+func TestAppendTurnContentReplayExactlyOnce(t *testing.T) {
+	f := newFakeFixture(t, "exactly-once-content")
+	turn := f.turn("x")
+	require.NoError(t, appendTurnTx(context.Background(), f.tx, &turn))
+	require.NoError(t, appendTurnTx(context.Background(), f.tx, &turn))
+
+	sid := f.sessionID()
+	assert.Len(t, f.tx.contexts, 1, "the replay must not duplicate the context row")
+	assert.Len(t, f.tx.objects, 1, "the replay must not duplicate the content object")
+	assert.Equal(t, [2]int64{1, 0}, f.tx.counts[sid.String()], "the replay must count exactly once")
 }
 
 // TestAppendTurnNoSessionOrItemsIsNoop locks the fail-open seam and the T2
