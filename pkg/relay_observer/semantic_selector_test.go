@@ -429,18 +429,20 @@ func TestSelectFullFit(t *testing.T) {
 
 func TestSelectTruncatesMiddle(t *testing.T) {
 	items := []CanonicalItem{
-		mkItem(CanonicalKindSystem, "", "", 5, sp("sys")),
-		mkMsg("user", "old", 100),
-		mkCallItem("call_A", 100),
-		mkResultItem("call_A", 100),
-		mkMsg("user", "newest", 100),
+		mkItem(CanonicalKindSystem, "", "", 5, sp(strings.Repeat("s", 500))),
+		mkMsg("user", strings.Repeat("u", 1000), 1000),
+		mkCallItem("call_A", 500),
+		mkResultItem("call_A", 500),
+		mkMsg("user", strings.Repeat("n", 500), 500),
 	}
 	units, err := BuildSemanticUnits(items)
 	require.NoError(t, err)
+	// 4 units: system(anchor), old user, toolExchange(call+result merged), newest.
+	require.Len(t, units, 4)
 	total := unitTotal(units)
 	// The limit is one byte short of the full total: only the old middle user
 	// message is omitted — system anchor, tool chain, and newest user message
-	// are retained.
+	// are retained. Marker ~140B fits because the content is large enough.
 	limit := total - 1
 	res, err := SelectEvidence(units, testPolicy(limit))
 	require.NoError(t, err)
@@ -517,10 +519,10 @@ func TestSelectParallelPairAtomic(t *testing.T) {
 
 func TestSelectOrphanResultNearTail(t *testing.T) {
 	items := []CanonicalItem{
-		mkItem(CanonicalKindSystem, "", "", 5, sp("sys")),
-		mkMsg("user", "old", 10),
-		mkResultItem("call_orphan", 50),
-		mkMsg("user", "newest", 10),
+		mkItem(CanonicalKindSystem, "", "", 5, sp(strings.Repeat("s", 2000))),
+		mkMsg("user", strings.Repeat("u", 1000), 1000),
+		mkResultItem("call_orphan", 1000),
+		mkMsg("user", strings.Repeat("n", 500), 500),
 	}
 	units, err := BuildSemanticUnits(items)
 	require.NoError(t, err)
@@ -710,8 +712,8 @@ func TestSelectAnchorBudgetCap(t *testing.T) {
 func TestSelectAnchorBudgetUnusedReturned(t *testing.T) {
 	// No anchors at all: tail should be able to use the full limit.
 	items := []CanonicalItem{
-		mkMsg("user", "old", 6000),
-		mkMsg("user", "newest", 6000),
+		mkMsg("user", strings.Repeat("u", 6000), 6000),
+		mkMsg("user", strings.Repeat("n", 6000), 6000),
 	}
 	units, err := BuildSemanticUnits(items)
 	require.NoError(t, err)

@@ -285,23 +285,17 @@ func finalizeUnit(comp *component, items []CanonicalItem, cls []itemClass) (Sema
 }
 
 // flagAnchorCandidates marks the anchor candidates on the final units.
-// The selector (D7) applies its own continuous-prefix + compact-summary-at-0
-// filter; the unit-level Anchor flag is a hint for the selector.
+// D7: only system/developer directives and compact summaries (at the head of
+// the stream) are anchor candidates. The latest user instruction is NOT one —
+// it is naturally retained by the tail selector. The unit-level Anchor flag
+// is a hint for the selector, which applies its own continuous-prefix +
+// compact-summary-at-0 filter.
 func flagAnchorCandidates(units []SemanticUnit) {
 	for i := range units {
 		u := &units[i]
 		if u.Kind == SemanticUnitAnchor || u.Kind == SemanticUnitCompactSummary || isSystemDeveloperMessage(u) {
 			u.Anchor = true
 		}
-	}
-	latestUser := -1
-	for i := range units {
-		if units[i].Kind == SemanticUnitMessage && isUserMessage(&units[i]) {
-			latestUser = i
-		}
-	}
-	if latestUser >= 0 {
-		units[latestUser].Anchor = true
 	}
 }
 

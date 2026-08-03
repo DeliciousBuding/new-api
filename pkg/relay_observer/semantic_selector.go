@@ -2,6 +2,8 @@ package relayobserver
 
 import (
 	"fmt"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 // This file implements the semantic evidence selector (P0-C, PR #17A): the
@@ -57,8 +59,8 @@ const (
 
 // Gap reasons.
 const (
-	GapReasonBudget       = "budget_exceeded"
-	GapReasonOversized    = "oversized_semantic_unit"
+	GapReasonBudget        = "budget_exceeded"
+	GapReasonOversized     = "oversized_semantic_unit"
 	GapReasonLimitTooSmall = "capture_limit_too_small"
 )
 
@@ -98,7 +100,10 @@ func DefaultSelectionPolicy(limit int64) SelectionPolicy {
 
 func defaultMeasureGap(g GapInfo) (CanonicalItem, int64, error) {
 	it := CanonicalItem{Kind: CanonicalKindGap, LogicalBytes: g.LogicalBytes, Truncated: true}
-	payload := []byte(fmt.Sprintf(`{"kind":"gap","logical_bytes":%d,"truncated":true}`, g.LogicalBytes))
+	payload, err := common.Marshal(it)
+	if err != nil {
+		return it, 0, err
+	}
 	return it, int64(len(payload)), nil
 }
 
@@ -207,11 +212,17 @@ func SelectEvidence(units []SemanticUnit, policy SelectionPolicy) (SelectionResu
 			break // stop at the first non-anchor — continuous prefix (D7)
 		}
 		if u.CanonicalBytes > anchorBudget {
+			// An oversized anchor cannot fit the anchor share. Recording it
+			// and continuing would create an anchor island inside the gap
+			// (D7 forbids a retained anchor between two omitted ranges), so
+			// the continuous prefix ends here.
 			res.Oversized = append(res.Oversized, oversizedInfo(u, OversizedReasonAnchor))
-			continue
+			break
 		}
 		if anchorBytes+u.CanonicalBytes > anchorBudget {
-			continue
+			// The anchor share is exhausted: the prefix must stay continuous,
+			// so no later unit can be an anchor either.
+			break
 		}
 		selected[i] = true
 		anchorBytes += u.CanonicalBytes
@@ -233,14 +244,17 @@ func SelectEvidence(units []SemanticUnit, policy SelectionPolicy) (SelectionResu
 		tailBytes += u.CanonicalBytes
 	}
 
-	// Step 3e: build the gap info over the omitted interval.
+	// Step 3e: build the gap info over the omitted interval. Excluded
+	// oversized units are also omitted evidence: they are recorded in
+	// Oversized AND carried by the gap (their bytes and item count appear
+	// here), so reconstruction sees the full extent of the loss.
 	firstOmitted, lastOmitted := -1, -1
 	gap := GapInfo{Reason: GapReasonBudget}
 	if excluded[n-1] {
 		gap.Reason = GapReasonOversized
 	}
 	for i := range units {
-		if selected[i] || excluded[i] {
+		if selected[i] {
 			continue
 		}
 		if firstOmitted < 0 {
@@ -319,56 +333,13 @@ func SelectEvidence(units []SemanticUnit, policy SelectionPolicy) (SelectionResu
 		return res, nil
 	}
 
-	// Step 4: assemble in strict protocol order (D5).
-	// Collect all selected item indexes, sort globally, then build the output.
-	indexSet := make(map[int]bool)
-	for i := range units {
-		if selected[i] {
-			for _, idx := range units[i].ItemIndexes {
-				indexSet[idx] = true
-			}
-		}
-	}
-	// Also include the gap marker at the position of the first omitted unit's
-	// first item index.
-	gapPos := -1
-	if firstOmitted >= 0 {
-		// The gap marker goes at the position of the first item of the first
-		// omitted unit.
-		units[firstOmitted].ItemIndexes[0] // just for safety; we need the actual first omitted index
-	}
-	// Actually, we need to find the first omitted item index across all items.
-	firstOmittedItemIdx := -1
-	// Map from global item index to unit index.
-	itemToUnit := make(map[int]int)
-	for i := range units {
-		for _, idx := range units[i].ItemIndexes {
-			itemToUnit[idx] = i
-		}
-	}
-	// Find the first omitted item index.
-	for i := 0; i < len(units); i++ {
-		if !selected[i] && !excluded[i] {
-			firstOmittedItemIdx = units[i].ItemIndexes[0]
-			break
-		}
-	}
-
-	// Expand the full item list and filter.
-	allItems := make([]CanonicalItem, 0, countUnitItems(units))
-	for i := range units {
-		if selected[i] {
-			allItems = append(allItems, units[i].Items...)
-		}
-		// We'll insert the gap marker at the correct position below.
-	}
-	// Actually, the gap marker goes between the anchor part and the tail part.
-	// The anchor part is the selected items from the beginning up to (but not
-	// including) the first omitted unit. The tail part is the selected items
-	// after the last omitted unit.
-	// Build in three passes: anchors (selected before firstOmitted), gap marker,
-	// tail (selected after lastOmitted).
-	out := make([]CanonicalItem, 0, len(units)*2)
+	// Step 4: assemble in strict protocol order (D5). The gap marker goes
+	// between the anchor part and the tail part: at the position of the
+	// first omitted unit. Items of each selected unit are in original
+	// protocol order (ItemIndexes are sorted), and units themselves are
+	// sorted by their first item index, so flattening selected units in
+	// unit order yields the global protocol order.
+	out := make([]CanonicalItem, 0, countUnitItems(units)+1)
 	for i := 0; i < n; i++ {
 		if i == firstOmitted {
 			out = append(out, gapMarker)
