@@ -258,9 +258,17 @@ function TurnRow({
   return (
     <TableRow
       onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onSelect()
+        }
+      }}
+      role='button'
+      tabIndex={0}
       aria-selected={selected}
       className={cn(
-        'cursor-pointer transition-colors',
+        'cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
         selected && 'bg-accent hover:bg-accent'
       )}
     >

@@ -247,7 +247,16 @@ function SessionTable(props: SessionTableProps) {
           key={row.id}
           row={row}
           onClick={() => props.onSelectSession(row.original.session_id)}
-          className='cursor-pointer'
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              props.onSelectSession(row.original.session_id)
+            }
+          }}
+          role='button'
+          tabIndex={0}
+          aria-selected={row.getIsSelected()}
+          className='cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset'
         />
       )}
     />

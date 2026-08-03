@@ -223,6 +223,14 @@ function clickEvent(): Event {
   return new domWindow.Event('click', { bubbles: true }) as unknown as Event
 }
 
+function keyEvent(key: 'Enter' | ' '): KeyboardEvent {
+  return new domWindow.KeyboardEvent('keydown', {
+    bubbles: true,
+    cancelable: true,
+    key,
+  }) as unknown as KeyboardEvent
+}
+
 function clickButton(host: HTMLElement, label: string) {
   const button = [...host.querySelectorAll('button')].find((b) =>
     b.textContent?.includes(label)
@@ -398,6 +406,31 @@ describe('SessionsTab', () => {
       row.dispatchEvent(clickEvent())
     })
     assert.equal(row.dataset.state, undefined, 'second click deselects')
+  })
+
+  test('session rows are keyboard-selectable with Enter and Space', async () => {
+    handler = pageHandler
+    const selected: (string | null)[] = []
+    const { host } = renderTab({
+      selectedSessionId: null,
+      onSelectSession: (id) => selected.push(id),
+    })
+    await waitForText(host, '11111111-1111-4111-8111-111111111111')
+
+    const first = findRow(host, '11111111-1111-4111-8111-111111111111')
+    const second = findRow(host, '22222222-2222-4222-8222-222222222222')
+    assert.equal(first.getAttribute('role'), 'button')
+    assert.equal(first.getAttribute('tabindex'), '0')
+
+    act(() => {
+      first.dispatchEvent(keyEvent('Enter'))
+      second.dispatchEvent(keyEvent(' '))
+    })
+
+    assert.deepEqual(selected, [
+      '11111111-1111-4111-8111-111111111111',
+      '22222222-2222-4222-8222-222222222222',
+    ])
   })
 
   test('reports selection changes through the controlled props (T4.3 seam)', async () => {
