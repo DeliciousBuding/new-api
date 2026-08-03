@@ -629,4 +629,11 @@ ModelRatio                  = {"deepseek-v4-flash": 1.0, "gemma-4-31b": 1.0}（�
 
 ### 22.4 设置 UI（用户要求，2026-08-03）
 
-模型设置页新增 **Vision Relay 独立模块**（a5ceda30d）：`web/src/features/system-settings/models/vision-relay-settings-card.tsx` + section-registry + ModelSettings 类型/默认值。字段：enabled 开关、target_models/models（JSON 数组编辑器）、base_url、api_key/sidecall_secret（敏感键：后端不显示现有值，留空=不修改，照 ionet 模式）、prompt、timeout_sec。**阶段 1 不再是无 UI**。
+模型设置页新增 **Vision Relay 独立模块**（a5ceda30d）：`web/src/features/system-settings/models/vision-relay-settings-card.tsx` + section-registry + ModelSettings 类型/默认值。字段：enabled 开关、target_models/models（JSON 数组编辑器）、base_url、api_key/sidecall_secret（敏感键：后端不显示现有值，留空=不修改，照 ionet 模式）、prompt、timeout_sec。**阶段 1 不再是无 UI**。表单校验测试 3 用例（a0d26ed7e）。
+
+### 22.5 最终发布面（终审步骤 10-13）
+
+- **最终 SHA**：`4ca3cf8e4`（feat/vision-relay-merge，PR #12 Ready，CI Backend+Frontend+CodeRabbit 全绿）
+- **最终镜像**：`ghcr.io/tokendancelab/observer-test:vision-relay-final`，**digest `sha256:20e0ccfa8564cba55fb095ae75918f3e74186959d52de15c179f809e69cba962`**（2026-08-03 构建）
+- **HK3 部署 = 同一 digest**（终审裁决：HK3 只部署 sgp2 测过的同一 digest）
+- **HK3 前置状态**：sgp2 矩阵全过 ✅；**Cerebras 渠道恢复待用户决策**（2026-08-03 15:10 压测事故，29 条 status=3）；gemma 上游健康恢复后走 §20.3 S1-S4 四步放量
