@@ -135,7 +135,6 @@ func TestGetVisionRelaySnapshotStrict(t *testing.T) {
 		value   string
 		wantErr string
 	}{
-		{"malformed enabled", "vision_relay.enabled", "yes", "enabled"},
 		{"malformed target_models", "vision_relay.target_models", `["unclosed`, "target_models"},
 		{"malformed models", "vision_relay.models", `{not-array`, "models"},
 		{"timeout 非整数", "vision_relay.timeout_sec", "abc", "timeout_sec"},
@@ -162,6 +161,97 @@ func TestGetVisionRelaySnapshotStrict(t *testing.T) {
 				t.Fatalf("expected error containing %q, got: %v", tc.wantErr, err)
 			}
 		})
+	}
+}
+
+// enabled 键自身 malformed → 降级为 disabled（v0.2.3：残留坏配置不打全局 5xx；
+// 与 disabled 语义一致 = 零行为，其余字段不解析）
+func TestGetVisionRelaySnapshotMalformedEnabledDegradesToDisabled(t *testing.T) {
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap = map[string]string{
+		"vision_relay.enabled":       "yes",
+		"vision_relay.target_models": `["unclosed`, // 即便其他键也 malformed 也不报错
+		"vision_relay.base_url":      "://bad",
+	}
+	common.OptionMapRWMutex.Unlock()
+	snap, err := GetVisionRelaySnapshot()
+	if err != nil {
+		t.Fatalf("malformed enabled must degrade to disabled without error, got: %v", err)
+	}
+	if snap.Enabled {
+		t.Fatal("snapshot must be disabled when enabled key is malformed")
+	}
+}
+
+// 写时校验（controller/option.go 挂载）：格式非法在写入面拦截
+func TestValidateVisionRelayWrite(t *testing.T) {
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap = map[string]string{
+		"vision_relay.enabled":       "false",
+		"vision_relay.target_models": `["deepseek*"]`,
+		"vision_relay.models":        `["grok-4.5"]`,
+		"vision_relay.base_url":      "https://api.tokendancelab.com",
+		"vision_relay.api_key":       "sk-test",
+		"vision_relay.sidecall_secret": "abc123",
+		"vision_relay.timeout_sec":   "15",
+	}
+	common.OptionMapRWMutex.Unlock()
+
+	valid := []struct{ key, value string }{
+		{"vision_relay.enabled", "false"},
+		{"vision_relay.enabled", "true"},
+		{"vision_relay.target_models", `["deepseek*", "qwen*"]`},
+		{"vision_relay.target_models", ""},
+		{"vision_relay.models", `["grok-4.5"]`},
+		{"vision_relay.timeout_sec", "30"},
+		{"vision_relay.base_url", "http://127.0.0.1:3000"},
+		{"vision_relay.api_key", "sk-anything"}, // 自由格式键不校验
+	}
+	for _, tc := range valid {
+		if err := ValidateVisionRelayWrite(tc.key, tc.value); err != nil {
+			t.Errorf("ValidateVisionRelayWrite(%q, %q) unexpected error: %v", tc.key, tc.value, err)
+		}
+	}
+
+	invalid := []struct{ key, value string }{
+		{"vision_relay.enabled", "yes"},
+		{"vision_relay.target_models", `["unclosed`},
+		{"vision_relay.models", `{not-array`},
+		{"vision_relay.timeout_sec", "0"},
+		{"vision_relay.timeout_sec", "-1"},
+		{"vision_relay.timeout_sec", "abc"},
+		{"vision_relay.base_url", "ftp://example.com"},
+		{"vision_relay.base_url", "://bad"},
+	}
+	for _, tc := range invalid {
+		if err := ValidateVisionRelayWrite(tc.key, tc.value); err == nil {
+			t.Errorf("ValidateVisionRelayWrite(%q, %q) expected error, got nil", tc.key, tc.value)
+		}
+	}
+}
+
+// 自环防线：base_url 指向 loopback 且 sidecall_secret 为空 → enabled=true 拒写
+func TestValidateVisionRelayWriteSelfLoopRequiresSecret(t *testing.T) {
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap = map[string]string{
+		"vision_relay.enabled":       "false",
+		"vision_relay.target_models": `["deepseek*"]`,
+		"vision_relay.models":        `["grok-4.5"]`,
+		"vision_relay.base_url":      "http://127.0.0.1:3000",
+		"vision_relay.api_key":       "sk-test",
+		"vision_relay.timeout_sec":   "15",
+	}
+	common.OptionMapRWMutex.Unlock()
+
+	if err := ValidateVisionRelayWrite("vision_relay.enabled", "true"); err == nil {
+		t.Fatal("self-loop without sidecall_secret must be rejected")
+	}
+
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap["vision_relay.sidecall_secret"] = "secret-48-hex"
+	common.OptionMapRWMutex.Unlock()
+	if err := ValidateVisionRelayWrite("vision_relay.enabled", "true"); err != nil {
+		t.Fatalf("self-loop with sidecall_secret must pass, got: %v", err)
 	}
 }
 
