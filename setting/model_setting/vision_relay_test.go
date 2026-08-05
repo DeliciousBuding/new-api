@@ -187,13 +187,13 @@ func TestGetVisionRelaySnapshotMalformedEnabledDegradesToDisabled(t *testing.T) 
 func TestValidateVisionRelayWrite(t *testing.T) {
 	common.OptionMapRWMutex.Lock()
 	common.OptionMap = map[string]string{
-		"vision_relay.enabled":       "false",
-		"vision_relay.target_models": `["deepseek*"]`,
-		"vision_relay.models":        `["grok-4.5"]`,
-		"vision_relay.base_url":      "https://api.tokendancelab.com",
-		"vision_relay.api_key":       "sk-test",
+		"vision_relay.enabled":         "false",
+		"vision_relay.target_models":   `["deepseek*"]`,
+		"vision_relay.models":          `["grok-4.5"]`,
+		"vision_relay.base_url":        "https://api.tokendancelab.com",
+		"vision_relay.api_key":         "sk-test",
 		"vision_relay.sidecall_secret": "abc123",
-		"vision_relay.timeout_sec":   "15",
+		"vision_relay.timeout_sec":     "15",
 	}
 	common.OptionMapRWMutex.Unlock()
 
