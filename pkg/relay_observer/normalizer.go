@@ -69,27 +69,45 @@ const maxNormalizedItems = 2048
 // (RELAY_OBSERVER_MAX_CAPTURE_BYTES_PER_TURN) — decoupled from the queue
 // admission estimate, which only bounds queue memory (P0-B). MaxRequestBytes
 // is the global RELAY_OBSERVER_MAX_REQUEST_BYTES cap; the effective limit is
-// min(captureLimit, maxRequestBytes). MinCaptureEnvelopeBytes reserves the
-// worst-case gap marker inside the limit, so a truncated capture always
-// closes with an explicit marker. HMACKey is the observer key used for item
-// digests; it must never be written into canonical output.
+// min(captureLimit, maxRequestBytes). HMACKey is the observer key used for
+// item digests; it must never be written into canonical output. There is no
+// configurable gap-marker envelope: the marker is charged its exact
+// serialized size when truncation actually happens, content that fits the
+// cap is never truncated (P0-B boundary contract), and a prefix that would
+// crowd the marker out backtracks so the marker still lands whenever the
+// limit can hold it.
 type NormalizeOptions struct {
-	CaptureLimit           int64
-	MaxRequestBytes        int64
-	MinCaptureEnvelopeBytes int64
-	HMACKey                string
+	CaptureLimit    int64
+	MaxRequestBytes int64
+	HMACKey         string
 }
 
 // NormalizeResult is the outcome of one normalization. ContentState reuses the
 // frozen Event content states: ContentStateFull, ContentStateGap (unknown
 // items or a truncated tail), or ContentStateMetadataOnly (fail-open: unknown
-// format, nil request, or panic).
+// format, nil request, or panic). Gap mirrors the selector's structured
+// explanation. For ordinary truncation the same value is also embedded in the
+// canonical marker; for the out-of-band degenerate case where the limit cannot
+// hold even that marker, Gap remains available to the immediate caller while
+// ContentStateGap keeps identity tracking independent of content capture.
 type NormalizeResult struct {
 	Items          []CanonicalItem
 	ContentState   string
 	CanonicalBytes int64
+	Gap            *GapInfo
 	OmittedItems   int
+	GapReason      string // "" | "capture_budget" | "oversized_semantic_unit" | "capture_limit_too_small"
+	MarkerOmitted  bool   // true when the gap marker could not fit the limit
 }
+
+// GapReason values for NormalizeResult.GapReason.
+const (
+	// GapReasonCaptureLimitTooSmall marks an over-limit capture whose limit
+	// cannot hold even the gap marker alone: no items and no marker are
+	// emitted, and the reason is carried on the result instead of silently
+	// losing the tail. Set together with MarkerOmitted.
+	GapReasonCaptureLimitTooSmall = "capture_limit_too_small"
+)
 
 // CanonicalItem is one ordered top-level message/item of a normalized request.
 // Hmac is the keyed digest of the item's content layer (all fields except the
@@ -102,6 +120,7 @@ type CanonicalItem struct {
 	LogicalBytes int64           `json:"logical_bytes"`
 	Hmac         string          `json:"hmac"`
 	Truncated    bool            `json:"truncated,omitempty"`
+	Gap          *GapInfo        `json:"gap,omitempty"`
 }
 
 // CanonicalPart is one whitelisted content part of a canonical item.
@@ -181,65 +200,49 @@ func NormalizeRequest(relayFormat string, req dto.Request, opts NormalizeOptions
 }
 
 // finishNormalize applies the canonical byte cap and assembles the result.
-// The effective cap is min(captureLimit, maxRequestBytes). The selection
-// budget reserves the worst-case gap marker (MinCaptureEnvelopeBytes) inside
-// the cap, so an over-limit tail is always closed by an explicit gap marker
-// that stays structurally valid JSON — the marker is data, not silent loss,
-// and never competes with item selection for the last bytes.
+// The effective cap is min(captureLimit, maxRequestBytes). The full-fit check
+// runs first: content that fits the cap is kept whole, no matter how close it
+// sits to the boundary — the previous fixed-envelope reservation truncated
+// the (limit - envelope, limit] band that should have been kept (P0-B). Only
+// a capture that really exceeds the cap is truncated. Selection is delegated
+// to the semantic selector: tool call/result units stay atomic, overlapping
+// spans are closed into safe cut blocks, the latest evidence outranks optional
+// anchors, and output remains a strict subsequence of the original canonical
+// stream with at most one structured gap marker. The marker is HMACed first
+// and then measured by the selector, so final bytes — not an estimate or an
+// empty-HMAC placeholder — are charged to the same cap.
 func finishNormalize(items []CanonicalItem, protocolGap bool, opts NormalizeOptions) NormalizeResult {
 	limit := opts.CaptureLimit
 	if opts.MaxRequestBytes < limit {
 		limit = opts.MaxRequestBytes
 	}
-	envelope := opts.MinCaptureEnvelopeBytes
-	if envelope < 0 {
-		envelope = 0
+	units, err := BuildSemanticUnits(items)
+	if err != nil {
+		return NormalizeResult{ContentState: ContentStateMetadataOnly}
 	}
-	if envelope > limit {
-		envelope = limit
+	selection, err := SelectEvidence(units, DefaultSelectionPolicy(limit, func(gap GapInfo) (CanonicalItem, error) {
+		return withHmac(GapMarker(gap), opts), nil
+	}))
+	if err != nil {
+		return NormalizeResult{ContentState: ContentStateMetadataOnly}
 	}
-	selectionLimit := limit - envelope
-	res := NormalizeResult{ContentState: ContentStateFull}
-	var total int64
-	var i int
-	for ; i < len(items); i++ {
-		payload, err := common.Marshal(items[i])
-		if err != nil {
-			return NormalizeResult{ContentState: ContentStateMetadataOnly}
-		}
-		if total+int64(len(payload)) > selectionLimit {
-			break
-		}
-		res.Items = append(res.Items, items[i])
-		total += int64(len(payload))
+
+	res := NormalizeResult{
+		Items:          selection.Items,
+		ContentState:   ContentStateFull,
+		CanonicalBytes: selection.TotalBytes,
+		Gap:            selection.Gap,
 	}
-	if i < len(items) {
-		res.ContentState = ContentStateGap
-		res.OmittedItems = len(items) - i
-		var droppedLogical int64
-		for j := i; j < len(items); j++ {
-			droppedLogical += items[j].LogicalBytes
-		}
-		// The marker's digest is its own content digest, never the digest of a
-		// dropped item: T2.3 dedups content objects on (session, digest), so a
-		// marker keyed by a real item's digest would silently collide with
-		// that item's stored object and the marker (data, not silent loss)
-		// would disappear from reconstruction — or replace the real item.
-		gap := CanonicalItem{
-			Kind:         CanonicalKindGap,
-			LogicalBytes: droppedLogical,
-			Truncated:    true,
-		}
-		gap.Hmac = withHmac(gap, opts).Hmac
-		if gapPayload, err := common.Marshal(gap); err == nil && total+int64(len(gapPayload)) <= limit {
-			res.Items = append(res.Items, gap)
-			total += int64(len(gapPayload))
-		}
-	}
-	if protocolGap {
+	if protocolGap || selection.Gap != nil {
 		res.ContentState = ContentStateGap
 	}
-	res.CanonicalBytes = total
+	if selection.Gap != nil {
+		res.OmittedItems = selection.Gap.OmittedItems
+		res.GapReason = selection.Gap.Reason
+		if selection.Gap.Reason == GapReasonLimitTooSmall {
+			res.MarkerOmitted = true
+		}
+	}
 	return res
 }
 
@@ -298,7 +301,7 @@ func normalizeResponses(req *dto.OpenAIResponsesRequest, opts NormalizeOptions) 
 		}
 		for i, item := range rawItems {
 			if len(items) >= maxNormalizedItems {
-				items = append(items, tailGapItem(rawItems[i:], opts))
+				items = append(items, tailGapItem(rawItems[i:], len(rawItems)-i, opts))
 				hasGap = true
 				break
 			}
@@ -491,7 +494,7 @@ func normalizeChat(req *dto.GeneralOpenAIRequest, opts NormalizeOptions) ([]Cano
 	hasGap := false
 	for i, msg := range req.Messages {
 		if len(items) >= maxNormalizedItems {
-			items = append(items, tailGapItem(req.Messages[i:], opts))
+			items = append(items, tailGapItem(req.Messages[i:], len(req.Messages)-i, opts))
 			hasGap = true
 			break
 		}
@@ -708,7 +711,7 @@ func normalizeClaude(req *dto.ClaudeRequest, opts NormalizeOptions) ([]Canonical
 
 	for i, msg := range req.Messages {
 		if len(items) >= maxNormalizedItems {
-			items = append(items, tailGapItem(req.Messages[i:], opts))
+			items = append(items, tailGapItem(req.Messages[i:], len(req.Messages)-i, opts))
 			hasGap = true
 			break
 		}
@@ -953,16 +956,22 @@ func unknownItem(rawBytes []byte) CanonicalItem {
 	return CanonicalItem{Kind: CanonicalKindUnknown, LogicalBytes: int64(len(rawBytes))}
 }
 
-// tailGapItem collapses an over-limit item tail (beyond maxNormalizedItems)
-// into one explicit gap marker: LogicalBytes covers the whole dropped tail and
-// the digest authenticates the dropped tail as a whole. The gap marker is
-// built at cap time, so the tail is never expanded item by item.
-func tailGapItem(tail any, opts NormalizeOptions) CanonicalItem {
-	rawBytes, err := common.Marshal(tail)
-	if err != nil {
-		return CanonicalItem{Kind: CanonicalKindGap, Truncated: true}
+// tailGapItem collapses the tail beyond maxNormalizedItems into one
+// structured item-count marker. The omitted tail is never expanded item by
+// item; only its count and serialized logical size are recorded. A marshal
+// failure keeps the reason/count evidence with LogicalBytes=0 instead of
+// emitting an unauthenticated bare marker.
+func tailGapItem(tail any, omittedItems int, opts NormalizeOptions) CanonicalItem {
+	var logicalBytes int64
+	if rawBytes, err := common.Marshal(tail); err == nil {
+		logicalBytes = int64(len(rawBytes))
 	}
-	return withHmac(CanonicalItem{Kind: CanonicalKindGap, LogicalBytes: int64(len(rawBytes)), Truncated: true}, opts)
+	return withHmac(GapMarker(GapInfo{
+		Position:     GapPositionTail,
+		Reason:       GapReasonItemCount,
+		OmittedItems: omittedItems,
+		LogicalBytes: logicalBytes,
+	}), opts)
 }
 
 // hmacDigest returns the hex keyed digest of raw; an absent key yields the

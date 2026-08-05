@@ -669,7 +669,7 @@ func (d *Dispatcher) planContent(batch []queuedEvent) []ContentInput {
 		if ev == nil {
 			continue
 		}
-		plan := d.normalizeOne(ev, qe.reservation)
+		plan := d.normalizeOne(ev)
 		ev.ContentState = plan.state
 		if plan.state == ContentStateGap || plan.state == ContentStateMetadataOnly {
 			// ContentGapsTotal counts turns whose capture ended with a gap
@@ -709,22 +709,28 @@ type contentPlan struct {
 	items []CanonicalItem
 }
 
-// normalizeOne normalizes one event's parsed request with the event's own
-// admission reservation as the canonical byte budget. A panic inside the
-// normalizer is absorbed here (the normalizer also recovers internally, so
-// this is the outer fail-open boundary of the worker call site): the event
-// degrades to metadata-only and the worker keeps running.
-func (d *Dispatcher) normalizeOne(ev *Event, reservation int64) (plan contentPlan) {
+// normalizeOne normalizes one event's parsed request with the observer's
+// configured canonical capture cap. CaptureRelayFormat is the original client
+// format paired with the retained request DTO; RelayFormat remains the final
+// upstream format stored on the turn. Queue reservation remains admission-only:
+// it bounds queued raw request bytes and never changes which evidence the
+// semantic selector retains. A panic inside the normalizer is absorbed here
+// (the normalizer also recovers internally), so the event degrades to
+// metadata-only and the worker keeps running.
+func (d *Dispatcher) normalizeOne(ev *Event) (plan contentPlan) {
 	defer func() {
 		if recover() != nil {
 			plan = contentPlan{state: ContentStateMetadataOnly}
 		}
 	}()
-	res := NormalizeRequest(ev.RelayFormat, *ev.Request, NormalizeOptions{
-		CaptureLimit:           d.cfg.MaxCaptureBytesPerTurn,
-		MaxRequestBytes:        d.cfg.MaxRequestBytes,
-		MinCaptureEnvelopeBytes: d.cfg.MinCaptureEnvelopeBytes,
-		HMACKey:                d.cfg.HMACKey,
+	captureFormat := ev.CaptureRelayFormat
+	if captureFormat == "" {
+		captureFormat = ev.RelayFormat
+	}
+	res := NormalizeRequest(captureFormat, *ev.Request, NormalizeOptions{
+		CaptureLimit:    d.cfg.MaxCaptureBytesPerTurn,
+		MaxRequestBytes: d.cfg.MaxRequestBytes,
+		HMACKey:         d.cfg.HMACKey,
 	})
 	return contentPlan{state: res.ContentState, items: res.Items}
 }

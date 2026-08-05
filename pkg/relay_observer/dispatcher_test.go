@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1240,4 +1242,30 @@ func TestTryEnqueuePanicAfterReserveReleasesBudget(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return d.pendingBytes.Load() == 0 && d.pendingCount.Load() == 0
 	}, 2*time.Second, time.Millisecond)
+}
+
+// TestNormalizeOneUsesOriginalCaptureFormat reproduces a real Claude-to-OpenAI
+// conversion chain: the persisted RelayFormat is OpenAI, but the retained DTO
+// is Claude. The worker must select CaptureRelayFormat or the type switch would
+// degrade an otherwise valid turn to metadata_only.
+func TestNormalizeOneUsesOriginalCaptureFormat(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.HMACKey = testHMACKey
+	d := &Dispatcher{cfg: cfg}
+	req := dto.Request(&dto.ClaudeRequest{
+		Model:    "claude-test",
+		Messages: []dto.ClaudeMessage{{Role: "user", Content: "LATEST_CLAUDE_CAPTURE"}},
+	})
+	ev := Event{
+		RelayFormat:        string(types.RelayFormatOpenAI),
+		CaptureRelayFormat: string(types.RelayFormatClaude),
+		Request:            &req,
+	}
+
+	plan := d.normalizeOne(&ev)
+	assert.Equal(t, ContentStateFull, plan.state)
+	require.Len(t, plan.items, 1)
+	assert.Equal(t, "user", plan.items[0].Role)
+	require.Len(t, plan.items[0].Content, 1)
+	assert.Equal(t, "LATEST_CLAUDE_CAPTURE", plan.items[0].Content[0].Text)
 }

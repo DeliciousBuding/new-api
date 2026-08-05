@@ -64,7 +64,14 @@ type Event struct {
 	ClientProfile string
 	Model         string
 	UpstreamModel string
-	RelayFormat   string
+	// RelayFormat is the final upstream request format persisted on the turn.
+	RelayFormat string
+	// CaptureRelayFormat is the original client request format paired with
+	// Request. It is worker-only and is not persisted; conversion chains may
+	// leave Request as a Claude/Responses DTO while RelayFormat records the
+	// final OpenAI upstream format. Empty falls back to RelayFormat for events
+	// created outside the request path and for backward-compatible tests.
+	CaptureRelayFormat string
 
 	Success    bool
 	StatusCode int

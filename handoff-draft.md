@@ -51,6 +51,7 @@
 | `RELAY_OBSERVER_QUEUE_SIZE` | 512 | 4096 | 队列事件上限 |
 | `RELAY_OBSERVER_QUEUE_BYTES` | 16MiB | 64MiB | 队列保留字节预算 |
 | `RELAY_OBSERVER_MAX_REQUEST_BYTES` | 8MiB | 16MiB | 单请求内容捕获上限 |
+| `RELAY_OBSERVER_MAX_CAPTURE_BYTES_PER_TURN` | 8MiB | 16MiB | 单 turn canonical evidence 预算；与 queue reservation 解耦 |
 | `RELAY_OBSERVER_BATCH_SIZE` | 32 | 128 | 写批大小 |
 | `RELAY_OBSERVER_FLUSH_MS` | 1000 | 5000 | 刷盘间隔 |
 | `RELAY_OBSERVER_WRITE_TIMEOUT_MS` | 2000 | 5000 | 单批写超时 |
