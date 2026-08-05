@@ -181,6 +181,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}()
 
+	// Vision Relay：预扣费后、retry 前单点钩子（默认关闭，
+	// 配置见 setting/model_setting/vision_relay.go；失败 = 5xx，绝不 fail-open）
+	if visionErr := service.PrepareVisionRelayRequest(c, relayInfo); visionErr != nil {
+		newAPIError = visionErr
+		return
+	}
+
 	retryParam := &service.RetryParam{
 		Ctx:         c,
 		TokenGroup:  relayInfo.TokenGroup,

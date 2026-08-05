@@ -247,3 +247,21 @@ export interface ObserverResponse<T> {
   message?: string
   data?: T | ObserverDegraded
 }
+
+/** Parse one observer response at the network boundary. The feature used to
+ * export schemas but only cast Axios data at compile time, so a malformed or
+ * drifted backend payload could reach React components and fail far from the
+ * request that caused it. Keeping validation here turns contract drift into a
+ * normal query error handled by the existing error states. */
+export function parseObserverResponse<T>(
+  dataSchema: z.ZodType<T>,
+  value: unknown
+): ObserverResponse<T> {
+  return z
+    .object({
+      success: z.boolean(),
+      message: z.string().optional(),
+      data: z.union([dataSchema, observerDegradedSchema]).optional(),
+    })
+    .parse(value)
+}

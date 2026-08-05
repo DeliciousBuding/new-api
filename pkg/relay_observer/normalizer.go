@@ -354,9 +354,11 @@ func responsesItem(item map[string]any, opts NormalizeOptions) (CanonicalItem, b
 		}
 		return finishItem(it, item, opts), false
 	}
-	if typ != "" {
+	if typ != "" && typ != "message" {
 		// Unknown item type: carry it as an explicit gap instead of guessing
-		// which fields are safe to forward.
+		// which fields are safe to forward. Responses message items may carry
+		// the explicit type="message" discriminator; it is equivalent to the
+		// legacy omitted-type shape handled below.
 		return withHmac(unknownItemFrom(item), opts), true
 	}
 	role := str(item["role"])

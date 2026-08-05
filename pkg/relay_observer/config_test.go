@@ -150,6 +150,18 @@ func TestConfigClampsUpper(t *testing.T) {
 		{"query timeout", "RELAY_OBSERVER_QUERY_TIMEOUT_MS", "60000", func(t *testing.T, c Config) {
 			assert.Equal(t, MaxQueryTimeout, c.QueryTimeout)
 		}},
+		{"hmac key version", "RELAY_OBSERVER_HMAC_KEY_VERSION", "1000000", func(t *testing.T, c Config) {
+			assert.Equal(t, MaxHMACKeyVersion, c.HMACKeyVersion)
+		}},
+		{"previous hmac key version", "RELAY_OBSERVER_PREVIOUS_HMAC_KEY_VERSION", "1000000", func(t *testing.T, c Config) {
+			assert.Equal(t, MaxHMACKeyVersion, c.PreviousHMACKeyVersion)
+		}},
+		{"retention turn days", "RELAY_OBSERVER_RETENTION_TURN_DAYS", "1000000", func(t *testing.T, c Config) {
+			assert.Equal(t, MaxRetentionDays, c.RetentionTurnDays)
+		}},
+		{"retention content days", "RELAY_OBSERVER_RETENTION_CONTENT_DAYS", "1000000", func(t *testing.T, c Config) {
+			assert.Equal(t, MaxRetentionDays, c.RetentionContentDays)
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

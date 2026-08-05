@@ -330,6 +330,40 @@ func TestNormalizerStable(t *testing.T) {
 	}
 }
 
+// TestResponsesExplicitMessageType locks the real Responses API item shape:
+// message inputs commonly carry type="message" beside role/content. That
+// discriminator must not turn an otherwise complete request into a protocol
+// gap, and tool call/result siblings must remain canonical and ordered.
+func TestResponsesExplicitMessageType(t *testing.T) {
+	req := &dto.OpenAIResponsesRequest{
+		Model: "gpt-5",
+		Input: raw(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"use the tool"}]},
+			{"type":"function_call","call_id":"call_A","name":"lookup","arguments":"{\"q\":\"x\"}"},
+			{"type":"function_call_output","call_id":"call_A","output":"{\"ok\":true}"}
+		]`),
+	}
+
+	res := NormalizeRequest(string(types.RelayFormatOpenAIResponses), req, roomyOpts())
+	require.Equal(t, ContentStateFull, res.ContentState)
+	require.Len(t, res.Items, 3)
+	assert.Equal(t, []string{CanonicalKindMessage, CanonicalKindToolCall, CanonicalKindToolResult}, []string{
+		res.Items[0].Kind,
+		res.Items[1].Kind,
+		res.Items[2].Kind,
+	})
+	require.Len(t, res.Items[1].Content, 1)
+	require.NotNil(t, res.Items[1].Content[0].Call)
+	assert.Equal(t, "call_A", res.Items[1].Content[0].Call.ID)
+	require.Len(t, res.Items[2].Content, 1)
+	require.NotNil(t, res.Items[2].Content[0].Result)
+	assert.Equal(t, "call_A", res.Items[2].Content[0].Result.ToolCallID)
+	for _, item := range res.Items {
+		assert.NotEqual(t, CanonicalKindUnknown, item.Kind)
+		assert.NotEmpty(t, item.Hmac)
+	}
+}
+
 // TestNormalizerTruncationBounds drives the canonical byte cap around its exact
 // boundary without assuming a head-first layout. Full-fit remains byte exact;
 // any truncated capture is bounded, structurally valid, and carries either one

@@ -9,6 +9,7 @@ package relayobserver
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"time"
@@ -138,6 +139,12 @@ const (
 	MaxWriteTimeout      = 5 * time.Second
 	DefaultQueryTimeout  = 500 * time.Millisecond
 	MaxQueryTimeout      = 2 * time.Second
+	// MaxHMACKeyVersion matches observer_session_aliases.key_version
+	// (SMALLINT). Config must never admit a value PostgreSQL cannot store.
+	MaxHMACKeyVersion = math.MaxInt16
+	// MaxRetentionDays is a practical and overflow-safe upper bound. Ten
+	// years already exceeds the observer's intended operational horizon.
+	MaxRetentionDays = 3650
 
 	DefaultRetentionTurnDays    = 30
 	DefaultRetentionContentDays = 14
@@ -146,19 +153,19 @@ const (
 // DefaultConfig returns the SSOT defaults for every field.
 func DefaultConfig() Config {
 	return Config{
-		Enabled:               false,
-		SchemaMode:            SchemaModeVerify,
-		HMACKeyVersion:        1,
-		QueueSize:             DefaultQueueSize,
-		QueueBytes:            DefaultQueueBytes,
-		MaxRequestBytes:       DefaultMaxRequestBytes,
+		Enabled:                false,
+		SchemaMode:             SchemaModeVerify,
+		HMACKeyVersion:         1,
+		QueueSize:              DefaultQueueSize,
+		QueueBytes:             DefaultQueueBytes,
+		MaxRequestBytes:        DefaultMaxRequestBytes,
 		MaxCaptureBytesPerTurn: DefaultMaxCaptureBytesPerTurn,
-		BatchSize:             DefaultBatchSize,
-		FlushInterval:         DefaultFlushInterval,
-		WriteTimeout:          DefaultWriteTimeout,
-		QueryTimeout:          DefaultQueryTimeout,
-		RetentionTurnDays:     DefaultRetentionTurnDays,
-		RetentionContentDays:  DefaultRetentionContentDays,
+		BatchSize:              DefaultBatchSize,
+		FlushInterval:          DefaultFlushInterval,
+		WriteTimeout:           DefaultWriteTimeout,
+		QueryTimeout:           DefaultQueryTimeout,
+		RetentionTurnDays:      DefaultRetentionTurnDays,
+		RetentionContentDays:   DefaultRetentionContentDays,
 	}
 }
 
@@ -183,11 +190,11 @@ func ConfigFromEnv() (Config, error) {
 	}
 
 	cfg.HMACKey = os.Getenv("RELAY_OBSERVER_HMAC_KEY")
-	if cfg.HMACKeyVersion, err = envInt("RELAY_OBSERVER_HMAC_KEY_VERSION", cfg.HMACKeyVersion, 0, 1<<30); err != nil {
+	if cfg.HMACKeyVersion, err = envInt("RELAY_OBSERVER_HMAC_KEY_VERSION", cfg.HMACKeyVersion, 0, MaxHMACKeyVersion); err != nil {
 		return Config{}, err
 	}
 	cfg.PreviousHMACKey = os.Getenv("RELAY_OBSERVER_PREVIOUS_HMAC_KEY")
-	if cfg.PreviousHMACKeyVersion, err = envInt("RELAY_OBSERVER_PREVIOUS_HMAC_KEY_VERSION", 0, 0, 1<<30); err != nil {
+	if cfg.PreviousHMACKeyVersion, err = envInt("RELAY_OBSERVER_PREVIOUS_HMAC_KEY_VERSION", 0, 0, MaxHMACKeyVersion); err != nil {
 		return Config{}, err
 	}
 	if cfg.RecordIP, err = envBool("RELAY_OBSERVER_RECORD_IP", cfg.RecordIP); err != nil {
@@ -218,10 +225,10 @@ func ConfigFromEnv() (Config, error) {
 	if cfg.QueryTimeout, err = envDurationMS("RELAY_OBSERVER_QUERY_TIMEOUT_MS", cfg.QueryTimeout, time.Millisecond, MaxQueryTimeout); err != nil {
 		return Config{}, err
 	}
-	if cfg.RetentionTurnDays, err = envInt("RELAY_OBSERVER_RETENTION_TURN_DAYS", cfg.RetentionTurnDays, 1, 1<<30); err != nil {
+	if cfg.RetentionTurnDays, err = envInt("RELAY_OBSERVER_RETENTION_TURN_DAYS", cfg.RetentionTurnDays, 1, MaxRetentionDays); err != nil {
 		return Config{}, err
 	}
-	if cfg.RetentionContentDays, err = envInt("RELAY_OBSERVER_RETENTION_CONTENT_DAYS", cfg.RetentionContentDays, 1, 1<<30); err != nil {
+	if cfg.RetentionContentDays, err = envInt("RELAY_OBSERVER_RETENTION_CONTENT_DAYS", cfg.RetentionContentDays, 1, MaxRetentionDays); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil

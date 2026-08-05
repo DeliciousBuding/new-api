@@ -3,7 +3,7 @@
 > 本文档是 fork 治理的长期 SSOT：每个产品线的自有目录、上游覆盖层、重放顺序与验收命令。
 > 配套文件：`UPSTREAM_BASE`（基线 SHA）、`.github/workflows/upstream-check.yml`（落后检测）、
 > `.github/scripts/verify-td-release.sh`（release 验证）、`docs/session-reports/`（会话记录）。
-> 最后更新：2026-08-03
+> 最后更新：2026-08-05
 
 ## 0. 当前状态快照
 
@@ -11,10 +11,16 @@
 |------|-----|
 | UPSTREAM_BASE | `9724ef1b248a436ea47270bb5b394a0fdb013a6c` |
 | 官方 main HEAD | `0ab02020`（落后 2 个实质 commit，均未 patch-equivalent） |
-| fork 本地提交数 | ~102（自 BASE） |
-| fork 新增文件 | 120 |
-| fork 修改的上游文件 | 66 |
-| 与官方 BASE..main 的交集文件 | 20（冲突热点，见 §3） |
+| 主线 | `main`（public 远端），合流点见 §4a |
+| fork 分支策略 | 单主线 + topic 分支，功能收口 = 合入 main + 删分支（2026-08-05 起强制） |
+
+### 4a. 2026-08-05 合流记录（observer + vision-relay 收口）
+
+- **observer（P4）终审修复 6 提交**（typed Responses、identity schema、UI 契约、concurrency race、v4 migration）经 PR #12 合入主线；T5.2 hardening 批次已由整合提交 `0c78fd75c` 先前进入 main，未重复携带
+- **vision-relay（P8）** 全部开发（v0.2.1 → v0.2.2 → 终审修复 + 设置 UI）经 PR #12 合入主线
+- **DeepSeek relay ci 提交**（us1 runner 迁移，原在 audit 分支）不属于本线，走 `codex/sgp2-deepseek` 线
+- **CI runner**：`ci.yml`/`docker-build.yml` 由退役 sgp2 迁至 us1（`[self-hosted, Linux, X64, us1]`）
+- 已删除 37 个本地旧分支（observer p1-p5 系列、semantic-selector、vision-relay 三代、fix/p0-* 等），保留 `main`/release 线/`codex/sgp2-deepseek`/`rebuild/upstream-20260803`
 
 官方待引入的 2 个 commit：
 
@@ -29,7 +35,7 @@
 
 ### P1 · Fork release / Docker / CI
 - **自有目录**：`.github/`、`Dockerfile`、`VERSION`、`NOTICE`、`THIRD-PARTY-LICENSES.md`、`AGENTS.md`、`UPSTREAM_BASE`
-- **上游覆盖**：ci.yml / docker-build.yml / release.yml（self-hosted sgp2 runner、GHCR 个人 owner、node 22 钉版）；pr-check.yml 已删（2026-08-03，外部审核建议）
+- **上游覆盖**：ci.yml / docker-build.yml / release.yml（self-hosted **us1** runner（2026-08-05 从退役 sgp2 迁移）、GHCR 个人 owner、node 22 钉版）；pr-check.yml 已删（2026-08-03，外部审核建议）
 - **上游等价**：无（纯 fork 侧）
 - **重放**：最先（与上游零交集）
 
@@ -55,7 +61,7 @@
 - **重放**：见 §2 seam 方案；分 4 个 topic：core+storage → lifecycle seam+bridge → Root API → frontend
 
 ### P5 · Dashboard / cache / keys UI
-- **上游覆盖**：`web/src/features/dashboard/*`（3）、`web/src/features/keys/*`（3）、`web/src/features/system-settings/*`（4）、`web/src/features/channels/*`（2）、`web/src/features/auth/*`（2）、`web/src/features/profile/*`（2）
+- **上游覆盖**：`web/src/features/dashboard/*`（3）、`web/src/features/keys/*`（3）、`web/src/features/system-settings/*`（4+models/ 卡片与 types 扩展）、`web/src/features/channels/*`（2）、`web/src/features/auth/*`（2）、`web/src/features/profile/*`（2）、`web/src/features/models/components/drawers/model-mutate-drawer.tsx`（ModelSettings 类型完整性）
 - **冲突热点**：keys api/columns、system-settings/types 与官方 #6590 直接重叠
 - **上游等价**：无
 
@@ -68,10 +74,14 @@
 - **冲突热点**：6 个 locale 与官方重叠；上游每次整理 locale 都会撞
 - **计划**（外部审核建议）：observer 翻译迁到 `web/src/features/observability/i18n/{en,zh}.json` + `addResourceBundle` 合入；其余语言 fallback 英文。此后自有 key 不再碰原生 locale 文件
 
-### P8 · Vision-relay（另一会话在途）
-- **自有目录**：`relay/vision/**`、`setting/model_setting/vision*.go`（未提交至 main，feat/vision-relay 分支）
-- **上游覆盖**：`constant/context_key.go`（+1）
-- **状态**：设计文档 `docs/plan/vision-relay.md` 已评审（v0.2），代码在途
+### P8 · Vision Relay
+- **自有目录**：`pkg/vision_relay/**`、`setting/model_setting/vision_relay.go`、`service/vision_relay.go`
+- **上游覆盖**：`controller/relay.go`（单点钩子 4 行：预扣费后、retry 循环前调 `service.PrepareVisionRelayRequest`）——**修改预算硬规则：仅此一个上游文件**
+- **依赖方向**：`controller → service/vision_relay.go（Gin/RelayInfo/BodyStorage 事务+错误映射）→ pkg/vision_relay（核心包无 NewAPI 运行时层依赖，仅依赖 common 基础 JSON wrapper、x/image、gjson/sjson；禁止依赖 controller/service/model/setting/relay/Gin/RelayInfo）`
+- **禁止修改**（阶段 1）：`relay/**`、`relaykit/**`、`common/body_storage.go`、`constant/context_key.go`、`model/option.go`、`controller/option.go`、`main.go`、`web/**`
+- **配置**：注册名 `vision_relay`（DB keys `vision_relay.*`，JSON 数组字段）；安全限制为包内常量（MaxImages=6/MaxDecodedBytes=15MB/MaxPixels=12M/并发 2/解码闸 2/调用闸 8）
+- **状态**：**✅ 已完成并合入主线（2026-08-05，PR #12）**。T1–T6 全绿（T5 长稳 109/109 + T6 回归 8 项复验）、终审/团队审查修复完成（sidecall_secret 防泄露、A6 敏感词、出站 marker 接线、请求级熔断、严格解析）、设置 UI 已交付（模型设置页 Vision Relay 独立模块卡片）。**HK3 部署未执行**（用户指示不部署；前置阻塞仍为 Cerebras 29 渠道 auto-disable + gemma 上游不可用，见 `projects/gateway/STATE.md`）
+- **上游等价**：核心可独立评估（核心包无 NewAPI 运行时层依赖——仅 common JSON wrapper，未来可上游化）
 
 ## 2. Relay Observability 接缝收缩方案（W0 设计）
 

@@ -25,6 +25,7 @@ import { GeminiSettingsCard } from './gemini-settings-card'
 import { GlobalSettingsCard } from './global-settings-card'
 import { GrokSettingsCard } from './grok-settings-card'
 import { RoutingReliabilitySection } from './routing-reliability-section'
+import { VisionRelaySettingsCard } from './vision-relay-settings-card'
 
 function formatJsonForEditor(value: string, fallback: string) {
   const raw = (value ?? '').toString().trim()
@@ -141,6 +142,24 @@ const MODELS_SECTIONS = [
             settings['grok.violation_deduction_enabled'] ?? true,
           'grok.violation_deduction_amount':
             settings['grok.violation_deduction_amount'] ?? 0.05,
+        }}
+      />
+    ),
+  },
+  {
+    id: 'vision-relay',
+    titleKey: 'Vision Relay',
+    build: (settings: ModelSettings) => (
+      <VisionRelaySettingsCard
+        defaultValues={{
+          enabled: settings['vision_relay.enabled'],
+          target_models: settings['vision_relay.target_models'],
+          models: settings['vision_relay.models'],
+          base_url: settings['vision_relay.base_url'],
+          api_key: settings['vision_relay.api_key'],
+          prompt: settings['vision_relay.prompt'],
+          timeout_sec: settings['vision_relay.timeout_sec'],
+          sidecall_secret: settings['vision_relay.sidecall_secret'],
         }}
       />
     ),
