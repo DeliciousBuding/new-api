@@ -3,7 +3,7 @@
 > 本文档是 fork 治理的长期 SSOT：每个产品线的自有目录、上游覆盖层、重放顺序与验收命令。
 > 配套文件：`UPSTREAM_BASE`（基线 SHA）、`.github/workflows/upstream-check.yml`（落后检测）、
 > `.github/scripts/verify-td-release.sh`（release 验证）、`docs/session-reports/`（会话记录）。
-> 最后更新：2026-08-03
+> 最后更新：2026-08-05
 
 ## 0. 当前状态快照
 
@@ -11,10 +11,16 @@
 |------|-----|
 | UPSTREAM_BASE | `9724ef1b248a436ea47270bb5b394a0fdb013a6c` |
 | 官方 main HEAD | `0ab02020`（落后 2 个实质 commit，均未 patch-equivalent） |
-| fork 本地提交数 | ~102（自 BASE） |
-| fork 新增文件 | 120 |
-| fork 修改的上游文件 | 66 |
-| 与官方 BASE..main 的交集文件 | 20（冲突热点，见 §3） |
+| 主线 | `main`（public 远端），合流点见 §4a |
+| fork 分支策略 | 单主线 + topic 分支，功能收口 = 合入 main + 删分支（2026-08-05 起强制） |
+
+### 4a. 2026-08-05 合流记录（observer + vision-relay 收口）
+
+- **observer（P4）终审修复 6 提交**（typed Responses、identity schema、UI 契约、concurrency race、v4 migration）经 PR #12 合入主线；T5.2 hardening 批次已由整合提交 `0c78fd75c` 先前进入 main，未重复携带
+- **vision-relay（P8）** 全部开发（v0.2.1 → v0.2.2 → 终审修复 + 设置 UI）经 PR #12 合入主线
+- **DeepSeek relay ci 提交**（us1 runner 迁移，原在 audit 分支）不属于本线，走 `codex/sgp2-deepseek` 线
+- **CI runner**：`ci.yml`/`docker-build.yml` 由退役 sgp2 迁至 us1（`[self-hosted, Linux, X64, us1]`）
+- 已删除 37 个本地旧分支（observer p1-p5 系列、semantic-selector、vision-relay 三代、fix/p0-* 等），保留 `main`/release 线/`codex/sgp2-deepseek`/`rebuild/upstream-20260803`
 
 官方待引入的 2 个 commit：
 
@@ -29,7 +35,7 @@
 
 ### P1 · Fork release / Docker / CI
 - **自有目录**：`.github/`、`Dockerfile`、`VERSION`、`NOTICE`、`THIRD-PARTY-LICENSES.md`、`AGENTS.md`、`UPSTREAM_BASE`
-- **上游覆盖**：ci.yml / docker-build.yml / release.yml（self-hosted sgp2 runner、GHCR 个人 owner、node 22 钉版）；pr-check.yml 已删（2026-08-03，外部审核建议）
+- **上游覆盖**：ci.yml / docker-build.yml / release.yml（self-hosted **us1** runner（2026-08-05 从退役 sgp2 迁移）、GHCR 个人 owner、node 22 钉版）；pr-check.yml 已删（2026-08-03，外部审核建议）
 - **上游等价**：无（纯 fork 侧）
 - **重放**：最先（与上游零交集）
 
@@ -74,7 +80,7 @@
 - **依赖方向**：`controller → service/vision_relay.go（Gin/RelayInfo/BodyStorage 事务+错误映射）→ pkg/vision_relay（核心包无 NewAPI 运行时层依赖，仅依赖 common 基础 JSON wrapper、x/image、gjson/sjson；禁止依赖 controller/service/model/setting/relay/Gin/RelayInfo）`
 - **禁止修改**（阶段 1）：`relay/**`、`relaykit/**`、`common/body_storage.go`、`constant/context_key.go`、`model/option.go`、`controller/option.go`、`main.go`、`web/**`
 - **配置**：注册名 `vision_relay`（DB keys `vision_relay.*`，JSON 数组字段）；安全限制为包内常量（MaxImages=6/MaxDecodedBytes=15MB/MaxPixels=12M/并发 2/解码闸 2/调用闸 8）
-- **状态**：v0.2.1 设计 → v0.2.2 Stabilization → issue #11 收口 + PR #12 draft（feat/vision-relay-merge，diff 仅允许文件）——**PR #12 CI（Backend+Frontend）已通过**；终审/团队审查修复已完成（sidecall_secret 防泄露、A6 敏感词、出站 marker 接线、请求级熔断、严格解析）；**设置 UI 已交付**（模型设置页 Vision Relay 独立模块卡片，a5ceda30d，含开关 + 全配置项，api_key/sidecall_secret 敏感键留空不修改）；**sgp2 T1-T4 已通过**（自回环双格式/计费双账户/marker 三场景/并发五场景）；**T5 长稳执行中**；**HK3 部署前置阻塞**：Cerebras 29 渠道被 S5 压测 429 打爆 auto-disable（2026-08-03 15:10，待用户决策恢复），gemma 上游当前不可用；最终生产候选镜像待 T1-T6 全过后从最终 SHA 生成。HK3 冻结（完整矩阵通过前零变更）
+- **状态**：**✅ 已完成并合入主线（2026-08-05，PR #12）**。T1–T6 全绿（T5 长稳 109/109 + T6 回归 8 项复验）、终审/团队审查修复完成（sidecall_secret 防泄露、A6 敏感词、出站 marker 接线、请求级熔断、严格解析）、设置 UI 已交付（模型设置页 Vision Relay 独立模块卡片）。**HK3 部署未执行**（用户指示不部署；前置阻塞仍为 Cerebras 29 渠道 auto-disable + gemma 上游不可用，见 `projects/gateway/STATE.md`）
 - **上游等价**：核心可独立评估（核心包无 NewAPI 运行时层依赖——仅 common JSON wrapper，未来可上游化）
 
 ## 2. Relay Observability 接缝收缩方案（W0 设计）
