@@ -172,7 +172,7 @@ export function VisionRelaySettingsCard({
       .filter((key) => normalized[key] !== normalizedDefaultsRef.current[key])
       // enabled 最后提交：后端 enabled=true 守卫校验已存端点配置
       // （base_url/api_key/models/sidecall_secret）完整性，先写字段再开开关
-      .sort((a, b) => (a === 'vision_relay.enabled' ? 1 : -1))
+      .sort((a) => (a === 'vision_relay.enabled' ? 1 : -1))
 
     if (updates.length === 0) {
       toast.info(t('No changes to save'))
