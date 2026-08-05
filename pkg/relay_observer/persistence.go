@@ -17,7 +17,7 @@ import (
 // (types.go: "Query and retention surfaces are additive extensions of this
 // port added by their owning phases"); the concrete adapter extends the
 // existing *pgStore so content persistence shares the single dedicated
-// observer pool, its 2/1/60s tuning, and the v1 schema with the turn
+// observer pool, its 2/1/60s tuning, and the versioned schema with the turn
 // writer. Core logic (group planning, reconstruction, classification) lives
 // in content.go and codec.go as pure functions; the append orchestration in
 // this file is tested against a row-access seam (contentTx) with a fake,
@@ -258,9 +258,9 @@ func appendTurnsTx(ctx context.Context, tx contentTx, turns []ContentInput) erro
 
 // SessionResolution is the outcome of resolving a primary alias to a session.
 // SessionID is the resolved session; Created is true when this call created
-// the session row inside the current transaction (the primary binding may
-// still have collided cross-profile, in which case the created session is
-// unbound and a rejected claim must delete it).
+// the session row inside the current transaction. A concurrent same-profile
+// insert may still win the alias binding race, in which case the losing fresh
+// session is deleted before the transaction commits.
 type SessionResolution struct {
 	SessionID uuid.UUID
 	Created   bool
@@ -408,13 +408,8 @@ func claimTurnForSessionTx(ctx context.Context, tx contentTx, turnID, sessionID 
 // (they bind in bindAuxiliaryTx, after the claim succeeds).
 //
 // Lookup is scoped by the alias's profile (the provider column): an alias is
-// an identity of all four fields, so equal raw values across profiles stay
-// separate sessions even though the v1 UNIQUE key
-// (node_scope, user_id, key_version, alias_digest) cannot hold both
-// bindings. When a primary binding collides with a binding of another
-// profile, the new session stays unbound and the conflicting alias keeps its
-// existing binding (SSOT: conflicting aliases remain separate in v1; the
-// worker never merges).
+// an identity of all five fields, so equal raw values across profiles stay
+// separate sessions. Schema v4 enforces that same identity in PostgreSQL.
 func resolvePrimarySessionTx(ctx context.Context, tx contentTx, in *ContentInput) (SessionResolution, error) {
 	primary := in.Aliases[0]
 	sid, err := lookupAliasSessionTx(ctx, tx, in.NodeScope, in.UserID, primary, true)
@@ -436,11 +431,9 @@ func resolvePrimarySessionTx(ctx context.Context, tx contentTx, in *ContentInput
 		return SessionResolution{}, err
 	}
 	if !bound {
-		// The binding collided: either a concurrent append bound the same
-		// (scope, digest) first, or another profile bound the same digest
-		// (cross-profile equal value). Re-look-up by scope: a same-scope
-		// race adopts the winning session; a cross-profile conflict leaves
-		// the new session unbound (remain separate in v1).
+		// The binding collided because a concurrent append bound the exact
+		// same provider-scoped identity first. Re-look-up adopts the winning
+		// session and deletes the losing fresh row.
 		existing, err := lookupAliasSessionTx(ctx, tx, in.NodeScope, in.UserID, primary, true)
 		if err == nil {
 			if existing != sid {
@@ -476,8 +469,8 @@ func deleteOrphanSessionTx(ctx context.Context, tx contentTx, sessionID uuid.UUI
 }
 
 // bindAuxiliaryTx binds every auxiliary alias to sid when it is free. An
-// alias already bound to the same session is idempotent; an alias bound to a
-// different session is a v1 conflict and is left separate.
+// alias already bound to the same session is idempotent; an alias already
+// bound to another session keeps its existing provider-scoped identity.
 func bindAuxiliaryTx(ctx context.Context, tx contentTx, in *ContentInput, sid uuid.UUID) error {
 	for _, a := range in.Aliases[1:] {
 		bound, err := lookupAliasSessionTx(ctx, tx, in.NodeScope, in.UserID, a, false)
@@ -485,7 +478,7 @@ func bindAuxiliaryTx(ctx context.Context, tx contentTx, in *ContentInput, sid uu
 			if bound == sid {
 				continue // already bound to this session: idempotent
 			}
-			continue // bound to another session: v1 conflict, remain separate
+			continue // bound to another session: keep the existing identity
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
@@ -502,7 +495,7 @@ func bindAuxiliaryTx(ctx context.Context, tx contentTx, in *ContentInput, sid uu
 				return fmt.Errorf("relayobserver: append content: auxiliary alias raced without a binding: %w", err)
 			}
 			if bound != sid {
-				continue // v1 conflict: remain separate
+				continue // another session won the exact auxiliary identity
 			}
 		}
 	}
@@ -551,7 +544,7 @@ func bindAliasRowTx(ctx context.Context, tx contentTx, nodeScope string, userID 
 	if err != nil {
 		return false, fmt.Errorf("relayobserver: append content: invalid alias digest: %w", err)
 	}
-	res, err := tx.Exec(ctx, `INSERT INTO observer_session_aliases (node_scope, user_id, key_version, provider, source, alias_digest, session_id, first_seen, last_seen) VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now()) ON CONFLICT (node_scope, user_id, key_version, alias_digest) DO NOTHING`,
+	res, err := tx.Exec(ctx, `INSERT INTO observer_session_aliases (node_scope, user_id, key_version, provider, source, alias_digest, session_id, first_seen, last_seen) VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now()) ON CONFLICT (node_scope, user_id, key_version, alias_digest, provider) DO NOTHING`,
 		nodeScope, userID, a.Version, string(a.Scope), string(a.Source), raw, sid.String())
 	if err != nil {
 		return false, fmt.Errorf("relayobserver: append content: insert alias binding: %w", err)

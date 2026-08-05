@@ -34,9 +34,19 @@ const {
 
 const calls: string[] = []
 const originalGet = api.get
+const degradedResponse = {
+  success: true,
+  message: '',
+  data: {
+    degraded: true,
+    reason: 'unavailable',
+    message: 'test fixture',
+  },
+}
+let responseData: unknown = degradedResponse
 api.get = (async (url: unknown) => {
   calls.push(String(url))
-  return { data: { success: true, message: '', data: {} } }
+  return { data: responseData }
 }) as typeof api.get
 
 after(() => {
@@ -45,12 +55,51 @@ after(() => {
 
 afterEach(() => {
   calls.length = 0
+  responseData = degradedResponse
 })
 
 describe('observability api endpoints', () => {
   test('getStatus hits the status route without query params', async () => {
     await getStatus()
     assert.deepEqual(calls, ['/api/relay-observer/status'])
+  })
+
+  test('getStatus validates a healthy status payload', async () => {
+    responseData = {
+      success: true,
+      message: '',
+      data: {
+        Enabled: true,
+        ReasonCode: '',
+        IPTrust: 'none',
+        QueueCount: 0,
+        QueueBytes: 0,
+        AcceptedTotal: 1,
+        WrittenTotal: 1,
+        DroppedTotal: 0,
+        CircuitOpen: false,
+        CircuitCooldown: 0,
+        PGLatencyMS: 1,
+        ContentGapsTotal: 0,
+        RecentVolume: 1,
+        LastRetentionPass: '0001-01-01T00:00:00Z',
+        RetentionTurnsDeleted: 0,
+        RetentionSessionsDeleted: 0,
+        RetentionObjectsDeleted: 0,
+        RetentionFailures: 0,
+      },
+    }
+    const result = await getStatus()
+    assert.ok(result.data && 'Enabled' in result.data)
+    assert.equal(result.data.Enabled, true)
+  })
+
+  test('getStatus rejects malformed backend contract data', async () => {
+    responseData = {
+      success: true,
+      data: { Enabled: 'yes' },
+    }
+    await assert.rejects(() => getStatus())
   })
 
   test('getOverview serializes window params', async () => {

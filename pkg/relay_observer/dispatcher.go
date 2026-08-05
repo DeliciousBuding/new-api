@@ -39,6 +39,15 @@ const retentionInterval = 6 * time.Hour
 // gaps (fail-open extreme protection; the metadata rows stay written).
 const maxPendingAppendEvents = 4 * MaxBatchSize
 
+// recentVolume packs a fixed one-second admission bucket into one atomic
+// word: the upper bits hold Unix seconds and the lower 24 bits the count.
+// A packed CAS keeps requests on opposite sides of a second boundary from
+// being mixed by a reset race. The count saturates at ~16.7M admissions/s.
+const (
+	recentVolumeCountBits = 24
+	recentVolumeCountMask = uint64(1<<recentVolumeCountBits) - 1
+)
+
 // circuitStateVal is the atomic state of the write circuit. The worker
 // transitions open -> half-open when the cooldown expires; the request path
 // transitions half-open -> probing with a single CAS that admits exactly one
@@ -158,7 +167,7 @@ type Dispatcher struct {
 	writtenTotal  atomic.Int64
 	droppedTotal  atomic.Int64
 	contentGaps   atomic.Int64
-	recentVolume  atomic.Int64
+	recentVolume  atomic.Uint64
 	pgLatencyMS   atomic.Int64
 
 	// circuitState is the atomic circuit state machine; circuitCooldown is the
@@ -367,8 +376,37 @@ func (d *Dispatcher) TryEnqueue(ev *Event, reservation int64) (ok bool) {
 		}
 	}
 	d.acceptedTotal.Add(1)
-	d.recentVolume.Add(1)
+	d.recordRecentVolume(d.clock.Now())
 	return true
+}
+
+func (d *Dispatcher) recordRecentVolume(now time.Time) {
+	second := uint64(now.Unix())
+	for {
+		old := d.recentVolume.Load()
+		oldSecond := old >> recentVolumeCountBits
+		oldCount := old & recentVolumeCountMask
+		var next uint64
+		if oldSecond == second {
+			if oldCount == recentVolumeCountMask {
+				return
+			}
+			next = second<<recentVolumeCountBits | (oldCount + 1)
+		} else {
+			next = second<<recentVolumeCountBits | 1
+		}
+		if d.recentVolume.CompareAndSwap(old, next) {
+			return
+		}
+	}
+}
+
+func (d *Dispatcher) recentVolumeAt(now time.Time) int64 {
+	packed := d.recentVolume.Load()
+	if packed>>recentVolumeCountBits != uint64(now.Unix()) {
+		return 0
+	}
+	return int64(packed & recentVolumeCountMask)
 }
 
 // Stop shuts the dispatcher down. It is idempotent. The enqueue channels are
@@ -420,7 +458,7 @@ func (d *Dispatcher) Status() Status {
 		DroppedTotal:     d.droppedTotal.Load(),
 		PGLatencyMS:      d.pgLatencyMS.Load(),
 		ContentGapsTotal: d.contentGaps.Load(),
-		RecentVolume:     d.recentVolume.Load(),
+		RecentVolume:     d.recentVolumeAt(d.clock.Now()),
 
 		RetentionTurnsDeleted:    d.retentionTurnsDeleted.Load(),
 		RetentionSessionsDeleted: d.retentionSessionsDeleted.Load(),
@@ -541,7 +579,6 @@ func (d *Dispatcher) loop() (normalStop bool) {
 					}
 				}
 			case <-flushTimer.C():
-				d.recentVolume.Store(0)
 				flushTimer.Reset(d.cfg.FlushInterval)
 				if len(batch) > 0 {
 					if err := d.flush(&batch); err != nil {

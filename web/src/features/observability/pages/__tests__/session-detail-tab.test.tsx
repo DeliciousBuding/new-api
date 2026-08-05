@@ -423,6 +423,24 @@ function clickRow(host: HTMLElement, rowIndex: number): void {
   })
 }
 
+function pressRow(
+  host: HTMLElement,
+  rowIndex: number,
+  key: 'Enter' | ' '
+): void {
+  const row = host.querySelectorAll('tbody tr')[rowIndex]
+  assert.ok(row, 'expected a turn row to activate')
+  act(() => {
+    row.dispatchEvent(
+      new domWindow.KeyboardEvent('keydown', {
+        bubbles: true,
+        cancelable: true,
+        key,
+      }) as unknown as KeyboardEvent
+    )
+  })
+}
+
 function clickButton(host: HTMLElement, index: number): void {
   const button = host.querySelectorAll('button')[index]
   assert.ok(button, 'expected a button to click')
@@ -692,6 +710,41 @@ describe('SessionDetailTab — on-demand turn context', () => {
         '/api/relay-observer/turns/turn-1/context?session_id=session-abc'
       ),
       'context request carries turn id and mandatory session_id'
+    )
+  })
+
+  test('turn rows are keyboard-selectable with Enter and Space', async () => {
+    handlers.set(
+      '/api/relay-observer/turns/turn-1/context',
+      () => CONTEXT_PAYLOAD
+    )
+    handlers.set(
+      '/api/relay-observer/turns/turn-2/context',
+      () => EMPTY_CONTEXT_PAYLOAD
+    )
+    const { host } = renderTab('session-abc')
+    await waitFor(host, () => textOf(host).includes('gpt-4o'))
+
+    const rows = host.querySelectorAll('tbody tr')
+    assert.equal(rows[0]?.getAttribute('role'), 'button')
+    assert.equal(rows[0]?.getAttribute('tabindex'), '0')
+
+    pressRow(host, 0, 'Enter')
+    await waitFor(host, () => textOf(host).includes('Hello observer'))
+    assert.ok(
+      calls.includes(
+        '/api/relay-observer/turns/turn-1/context?session_id=session-abc'
+      )
+    )
+
+    pressRow(host, 1, ' ')
+    await waitFor(host, () =>
+      textOf(host).includes('No content captured for this turn.')
+    )
+    assert.ok(
+      calls.includes(
+        '/api/relay-observer/turns/turn-2/context?session_id=session-abc'
+      )
     )
   })
 
