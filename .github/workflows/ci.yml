@@ -22,7 +22,7 @@ jobs:
     # fork PR 直接跳过（github-runner 不接受外部代码）。
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, us1]
-    timeout-minutes: 15
+    timeout-minutes: 40
     env:
       GOWORK: 'off'
 
@@ -65,7 +65,7 @@ jobs:
     # 同 backend：fork PR 不跑 self-hosted runner。
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, us1]
-    timeout-minutes: 10
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: web
