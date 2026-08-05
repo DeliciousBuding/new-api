@@ -19,8 +19,9 @@
 - **observer（P4）终审修复 6 提交**（typed Responses、identity schema、UI 契约、concurrency race、v4 migration）经 PR #12 合入主线；T5.2 hardening 批次已由整合提交 `0c78fd75c` 先前进入 main，未重复携带
 - **vision-relay（P8）** 全部开发（v0.2.1 → v0.2.2 → 终审修复 + 设置 UI）经 PR #12 合入主线
 - **DeepSeek relay ci 提交**（us1 runner 迁移，原在 audit 分支）不属于本线，走 `codex/sgp2-deepseek` 线
-- **CI runner**：`ci.yml`/`docker-build.yml` 由退役 sgp2 迁至 us1（`[self-hosted, Linux, X64, us1]`）
-- **上游同步（2026-08-05）**：合并官方 #6589（Bedrock 断开取消）+ #6590（token auto-groups，57 文件）零冲突；修复官方 #6590 半成品 bug（`api-key-group-cell` 注释掉 `AutoGroupBadge` 致前端测试 3 失败，官方 CI 不跑测试未暴露）；UPSTREAM_BASE 推进至 `0ab02020`
+- **CI runner**：`ci.yml` 用本地 WSL runner（`wsl-newapi`）；`docker-build.yml` 用 hosted ubuntu-latest（release 构建）；us1 上的 `us1-newapi` runner 仍注册但不再被 new-api workflow 引用
+- **上游同步（2026-08-05）**：合并官方 #6589（Bedrock 断开取消）+ #6590（token auto-groups，57 文件）零冲突；修复官方 #6590 半成品 bug（`api-key-group-cell` 注释掉 `AutoGroupBadge` 致前端测试 3 失败，官方 CI 不跑测试未暴露）；UPSTREAM_BASE 推进至 `0ab02020`（PR #21）
+- **CI runner 迁移（2026-08-05）**：hosted runner 在 private 仓库无步骤失败（billing 层拒绝）→ us1 4 核过载 → 最终 **本地 WSL runner（`wsl-newapi`，28 核）**：预装 go/bun/node 跳过 toolchain 下载（WSL→GitHub 下载不稳），CI 全绿
 - 已删除 37 个本地旧分支（observer p1-p5 系列、semantic-selector、vision-relay 三代、fix/p0-* 等），保留 `main`/release 线/`codex/sgp2-deepseek`/`rebuild/upstream-20260803`
 
 官方已同步（2026-08-05）：#6589 Bedrock 断开取消 + #6590 token auto-groups 均已并入 main（合并 commit `539924adb`），UPSTREAM_BASE 已推进至 `0ab02020`，当前落后 0。
@@ -29,7 +30,7 @@
 
 ### P1 · Fork release / Docker / CI
 - **自有目录**：`.github/`、`Dockerfile`、`VERSION`、`NOTICE`、`THIRD-PARTY-LICENSES.md`、`AGENTS.md`、`UPSTREAM_BASE`
-- **上游覆盖**：ci.yml / docker-build.yml / release.yml（self-hosted **us1** runner（2026-08-05 从退役 sgp2 迁移）、GHCR 个人 owner、node 22 钉版）；pr-check.yml 已删（2026-08-03，外部审核建议）
+- **上游覆盖**：ci.yml / docker-build.yml / release.yml（CI 用**本地 WSL runner `wsl-newapi`**（28 核，2026-08-05 起）、release 构建用 hosted ubuntu-latest、GHCR 个人 owner、node 22 钉版）；pr-check.yml 已删（2026-08-03，外部审核建议）
 - **上游等价**：无（纯 fork 侧）
 - **重放**：最先（与上游零交集）
 
