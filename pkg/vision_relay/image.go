@@ -54,12 +54,17 @@ func PrepareImage(ctx context.Context, p Patch, fetcher ImageFetcher, maxBytes i
 			img.Err = fmt.Errorf("%w: no fetcher configured", ErrDownload)
 			return img
 		}
-		data, _, err := fetcher.Fetch(ctx, p.Source.URL, maxBytes)
+		data, mediaType, err := fetcher.Fetch(ctx, p.Source.URL, maxBytes)
 		if err != nil {
 			img.Err = err
 			return img
 		}
 		img.Data = data
+		if mediaType != "" {
+			// 回填真实 Content-Type：OpenAI URL 块默认 image/png（transform.go），
+			// 实际可能是 JPEG/WebP——小图透传分支按真实 mime 发给视觉端点
+			p.Source.MediaType = mediaType
+		}
 	} else {
 		img.Err = fmt.Errorf("%w: block has neither data nor url", ErrExtract)
 		return img

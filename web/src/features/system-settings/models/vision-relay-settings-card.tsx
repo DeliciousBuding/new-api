@@ -168,7 +168,11 @@ export function VisionRelaySettingsCard({
 
     const updates = (
       Object.keys(normalized) as Array<keyof FlatVisionRelaySettings>
-    ).filter((key) => normalized[key] !== normalizedDefaultsRef.current[key])
+    )
+      .filter((key) => normalized[key] !== normalizedDefaultsRef.current[key])
+      // enabled 最后提交：后端 enabled=true 守卫校验已存端点配置
+      // （base_url/api_key/models/sidecall_secret）完整性，先写字段再开开关
+      .sort((a) => (a === 'vision_relay.enabled' ? 1 : -1))
 
     if (updates.length === 0) {
       toast.info(t('No changes to save'))
@@ -178,6 +182,22 @@ export function VisionRelaySettingsCard({
     for (const key of updates) {
       await updateOption.mutateAsync({ key, value: String(normalized[key]) })
     }
+
+    // 保存成功后同步 baseline（对齐 grok 卡收尾）：连点保存不重复提交已存键；
+    // 敏感键保持空（后端不回显现有值，空=不修改）
+    normalizedDefaultsRef.current = normalized
+    form.reset(
+      buildFormDefaults({
+        enabled: normalized['vision_relay.enabled'],
+        target_models: normalized['vision_relay.target_models'],
+        models: normalized['vision_relay.models'],
+        base_url: normalized['vision_relay.base_url'],
+        api_key: '',
+        prompt: normalized['vision_relay.prompt'],
+        timeout_sec: normalized['vision_relay.timeout_sec'],
+        sidecall_secret: '',
+      })
+    )
   }
 
   return (

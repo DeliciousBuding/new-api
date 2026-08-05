@@ -254,6 +254,16 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
+	case "vision_relay.enabled", "vision_relay.target_models", "vision_relay.models",
+		"vision_relay.timeout_sec", "vision_relay.base_url":
+		err = model_setting.ValidateVisionRelayWrite(option.Key, option.Value.(string))
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
 	case operation_setting.ToolPriceOptionKey:
 		err = operation_setting.ValidateToolPricesJSON(option.Value.(string))
 		if err != nil {

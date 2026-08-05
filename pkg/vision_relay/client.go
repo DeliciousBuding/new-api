@@ -4,14 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/QuantumNous/new-api/common"
 )
 
 // 旁路错误哨兵（错误矩阵，门槛七）
@@ -134,7 +133,7 @@ func buildVisionPayload(model, instruction string, data []byte, mediaType string
 			},
 		},
 	}
-	return common.Marshal(payload)
+	return json.Marshal(payload)
 }
 
 func (c *VisionClient) doRequest(ctx context.Context, client *http.Client, model, baseURL, apiKey, sidecallSecret string, body []byte, timeout time.Duration) (string, error) {
@@ -171,7 +170,7 @@ func (c *VisionClient) doRequest(ctx context.Context, client *http.Client, model
 				} `json:"message"`
 			} `json:"choices"`
 		}
-		if err := common.Unmarshal(respBody, &result); err != nil {
+		if err := json.Unmarshal(respBody, &result); err != nil {
 			return "", fmt.Errorf("invalid vision response: %v", err)
 		}
 		if len(result.Choices) == 0 {
