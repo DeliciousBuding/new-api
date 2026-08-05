@@ -1,6 +1,6 @@
 # Vision Relay — 网关层原生图片识图替换 设计文档（v0.2.1）
 
-最后更新：2026-08-03
+最后更新：2026-08-05
 
 > **v0.2.1 工程边界调整**（GPT 复审追加，功能语义不变，只改代码落位）：
 > - **模块边界**：核心 `pkg/vision_relay/`（无 NewAPI 运行时层依赖，仅依赖
@@ -462,43 +462,53 @@ fallback_count/cache_hits + 旁路 token usage（响应有 usage 则记录）。
 
 **部署配置**（observer-test options）：enabled=true、target_models=`["deepseek*"]`、models=`["gemma-4-31b"]`、base_url=https://api.tokendancelab.com、api_key=vision-bridge 同款、timeout_sec=15、sidecall_secret=随机 48 hex。
 
-## 20. HK3 生产部署计划（用户拍板：一切先在 sgp2 测试完整，HK3 零试错）
+## 20. HK3 生产部署计划（用户拍板：HK3 零试错，一切先完整验证再部署）
 
-> 状态：**计划**（2026-08-03）。HK3 是生产主实例（api.tokendancelab.com）；本计划所有步骤在 sgp2 完整测试通过 + 用户逐项确认后执行。
+> 状态：**待执行**（2026-08-05 更新）。HK3 是生产主实例（api.tokendancelab.com）；
+> 前置验证原定 sgp2（§22），**sgp2 已退役（2026-08）**——前置验证改由 **WSL 28 核 E2E
+> 环境完成（2026-08-05，§23）**，矩阵等效。剩余差距与部署设计见 §20.3/§20.5 及
+> tokendance-deploy 部署准备文档。
 
 ### 20.1 原则
 
-1. **sgp2 完整测试是 HK3 前置条件**——任何未在 sgp2 验证的配置/场景不得上 HK3
+1. **完整验证是 HK3 前置条件**——任何未经验证的配置/场景不得上 HK3（WSL E2E 已覆盖，见 §23）
 2. HK3 生产变更逐项确认（配置级小步：先零行为 → 再小流量 → 再放量）
 3. 回滚首选配置级（`enabled=false` 即时零行为），镜像回滚为后备
 
-### 20.2 sgp2 补测矩阵（HK3 前必须完成）
+### 20.2 验证矩阵（2026-08-05：sgp2 退役，WSL E2E 承接）
 
-| # | 场景 | 当前状态 | 说明 |
-|---|------|---------|------|
-| T1 | **自回环完整链路** | ❌ 未测（最大缺口） | observer-test 的 base_url 指向**自己**（http://127.0.0.1:3100）+ 新增 gemma 渠道（上游 HK3）+ vision token 授权 gemma → 带图 deepseek 请求 → 旁路回环自己 → marker 校验通过跳过 Enhance → gemma 渠道 → 描述注入。**这精确复现 HK3 场景**（sgp2 此前测的是"旁路到 HK3"而非"旁路到自己"） |
-| T2 | marker 一致性 | ❌ 未测 | sidecall_secret 配置一致 → 回环跳过；token 被清 → 旁路回环不触发 Enhance（gemma 不在 target_models，第二层防护） |
-| T3 | 计费核对 | ❌ 未测 | vision token 配额按 gemma 单价扣减；用户 token 只按 deepseek 计费（预扣-退还一致） |
-| T4 | 并发压力 | ❌ 未测 | 多并发带图请求：decode/call 闸门、401 熔断、占位降级不阻塞 |
-| T5 | 长期观察 | ❌ 未测 | 连续请求：vision 日志稳定、无 fd/内存泄漏、耗时分布 |
-| T6 | 8 项复验回归 | ✅ 已过 | 保持通过（任何代码改动后重跑） |
+> sgp2 补测记录（§22）保留为历史证据。以下矩阵对应项已在 WSL E2E（§23）实测定格，
+> 除 T5 长稳（sgp2 30min 已过，WSL 未重跑）外全部 ✅。
+
+| # | 场景 | 状态 | 验证来源 |
+|---|------|------|---------|
+| T1 | 自回环完整链路（双端点格式） | ✅ | WSL E2E：OpenAI 端点 "White" / Claude 端点 "Blue"，1 outer deepseek + 1 inner grok + 0 第三层，marker 跳过 Enhance（§23.2） |
+| T2 | marker 一致性/防伪/纵深 | ✅ | §22.2 T2a/T2b/T2c（sgp2）；WSL 侧 sidecall_secret 写入生效复验 |
+| T3 | 计费核对 | ✅ | WSL E2E：主库 quota 扣减与 observer turns 一致（143,518）；sgp2 双账户核对 §22.2 T3 |
+| T4 | 并发/熔断/降级 | ✅ | §22.2 T4-S1..S5（sgp2）；WSL 侧降级占位复验（images_failed=1 fallback_count=1） |
+| T5 | 长期观察 | ✅ | §22.2 T5（sgp2 30min，RSS 无单调增长）；WSL 未重跑，HK3 放量观察窗承担 |
+| T6 | 8 项复验回归 | ✅ | §22.2 T6 + WSL 全量回归（35 后端包 + 前端 284 测试全绿） |
 
 ### 20.3 HK3 部署步骤（逐步放量）
 
 **前置准备**
-1. gemma 渠道健康检查（HK3 主栈渠道：上游 PicPi/tokendance，模型 gemma-4-31b 可用）
-2. 签发 **vision token**：授权 gemma-4-31b/step-3.7-flash/grok-4.5、足够配额、group 命中 gemma 渠道（sgp2 教训：token 模型限制不放行 gemma 会导致 Invalid token）
-3. 回环路径决策：**内网直连优先**（nginx 放行自身来源或内部端口）vs 公网回环（CF 限流风险）；sgp2 已验公网可行，HK3 生产建议内网
-4. 生成 sidecall_secret（随机 48 hex，仅写 DB options，不回显）
+1. **镜像**：main（含 PR #12/#21/#22）→ 构建 `v1.0.0-td-20260801.3` → GHCR push → 记录 digest（旧 digest `7e383898…` 为回滚 pin）
+2. **observer 库**：HK3 pg-local（PG16）新建独立库 `newapi_observer` + 独立 role（CONNECTION LIMIT 4，独立密码，与主库逻辑隔离）；compose 增 `RELAY_OBSERVER_*` env（详见 tokendance-deploy 部署准备文档）
+3. **渠道健康检查**：Cerebras 29 渠道 status=3（§22.3 事故，恢复待用户决策）→ **grok-4.5 可用**（WSL E2E 实测）；gemma-4-31b 恢复前 models 链 grok 优先
+4. 签发 **vision token**：授权 grok-4.5/gemma-4-31b、足够配额、group 命中对应渠道（sgp2 教训：token 模型限制不放行会导致 Invalid token）
+5. 回环路径（定稿 §21.3）：**容器内 `http://127.0.0.1:3000`**（Dockerfile EXPOSE 3000；宿主机 3017 是映射端口容器内不可达）；HK3 禁止公网回环（§21.2）
+6. 生成 sidecall_secret（随机 48 hex，仅写 DB options，不回显）
+7. 生产发现（WSL E2E §23.3）：hk3 auto 组缺 deepseek-v4-flash/gemma-4 渠道 → target_models 用 `["deepseek-v3.2*"]`（E2E 实测可用）
 
 **功能启用（四步，每步观察 ≥ 观察窗）**
-- S1：写全部配置但 `enabled=false` → 零行为确认（含 sidecall_secret 写入无副作用）
+- S1：写全部配置但 `enabled=false` → 零行为确认（含 sidecall_secret 写入无副作用）+ observer `/api/relay-observer/status` = Enabled + Accepted=Written
 - S2：`enabled=true` + `target_models=[]` → 无模型命中，零行为
-- S3：`target_models=["deepseek*"]` + 内部测试 key 走自回环链路验证（对应 sgp2 T1 复验）
-- S4：放量 → 观察 TTFT 增加、识图成本（vision token 配额消耗速率）、错误率、gemma 渠道健康
+- S3：`target_models=["deepseek-v3.2*"]` + 内部测试 key 走自回环链路验证（WSL E2E 复验）
+- S4：放量 → 观察 TTFT 增加、识图成本（vision token 配额消耗速率）、错误率、grok/gemma 渠道健康、observer turns 写入稳定
 
 **回滚手册**
 - 即时回滚：`enabled=false`（配置级，秒级生效，零行为）
+- observer 回滚：`RELAY_OBSERVER_ENABLED=false` + 重启（fail-open 设计，主链路不受影响）
 - 镜像回滚：HK3 compose 恢复旧镜像（部署前备份 compose + 记录旧 digest）
 
 ### 20.4 HK3 上线验收清单
@@ -510,16 +520,28 @@ fallback_count/cache_hits + 旁路 token usage（响应有 usage 则记录）。
 - [ ] 回滚手册演练过（配置级回滚实测）
 - [ ] 部署记录 + server docs/log.md 更新（含 commit SHA/image digest/回滚目标，不记录 key/token）
 
-### 20.5 HK3 生产配置（目标值）
+### 20.5 HK3 生产配置（目标值，2026-08-05 更新）
 
 ```text
 vision_relay.enabled         = true
-vision_relay.target_models   = ["deepseek*", "qwen3-coder*", ...]  // 只列纯文本模型
-vision_relay.models          = ["gemma-4-31b", "step-3.7-flash", "grok-4.5"]
-vision_relay.base_url        = <内网直连优先，回环本实例>
-vision_relay.api_key         = <HK3 专用 vision token：授权 gemma 系 + 配额 + group>
-vision_relay.sidecall_secret  = <随机 48 hex>
+vision_relay.target_models   = ["deepseek-v3.2*"]        // 只列纯文本模型（E2E 实测可用线）
+vision_relay.models          = ["grok-4.5", "gemma-4-31b"]  // grok 优先（Cerebras 恢复后 gemma 兜底）
+vision_relay.base_url        = http://127.0.0.1:3000     // 容器内自回环（§21.3；宿主机 3017 容器内不可达）
+vision_relay.api_key         = <HK3 专用 vision token：授权 grok-4.5/gemma-4-31b + 配额 + group>
+vision_relay.sidecall_secret = <随机 48 hex>
 vision_relay.timeout_sec     = 15
+```
+
+**Observer 目标 env（compose，新增）**：
+
+```text
+RELAY_OBSERVER_ENABLED            = true
+RELAY_OBSERVER_SQL_DSN            = postgresql://newapi_observer:<独立密码>@pg-local:5432/newapi_observer?sslmode=disable
+RELAY_OBSERVER_SCHEMA_MODE        = bootstrap     # 首次建 v1-v4；幂等
+RELAY_OBSERVER_HMAC_KEY           = <随机 48 hex>  # secrets env，禁入 git
+RELAY_OBSERVER_HMAC_KEY_VERSION   = 1
+RELAY_OBSERVER_RECORD_IP          = true          # 用户已拍板（2026-08-05）
+# 其余用默认：queue 1024 / queue_bytes / max_request 16MiB / capture budget / batch / retention 30/14
 ```
 
 ## 21. 终审修正（2026-08-03，PR #12 终审评论 + 团队审查）
@@ -637,3 +659,44 @@ ModelRatio                  = {"deepseek-v4-flash": 1.0, "gemma-4-31b": 1.0}（�
 - **最终镜像**：`ghcr.io/tokendancelab/observer-test:vision-relay-final`，**digest `sha256:20e0ccfa8564cba55fb095ae75918f3e74186959d52de15c179f809e69cba962`**（2026-08-03 构建）
 - **HK3 部署 = 同一 digest**（终审裁决：HK3 只部署 sgp2 测过的同一 digest）
 - **HK3 前置状态**：sgp2 矩阵全过 ✅；**Cerebras 渠道恢复待用户决策**（2026-08-03 15:10 压测事故，29 条 status=3）；gemma 上游健康恢复后走 §20.3 S1-S4 四步放量
+
+## 23. WSL E2E 验证记录（2026-08-05，替代已退役 sgp2 作为 HK3 前置验证）
+
+> sgp2 退役后，HK3 前置验证改由 **WSL2 28 核 E2E 环境**承担（用户要求本地实测，
+> 上游直连生产网关 api.tokendancelab.com 真实 key）。本节约 2026-08-05 全量实测，
+> 与 §20.2 矩阵对应。部署准备资产见 tokendance-deploy 部署准备文档。
+
+### 23.1 测试环境
+
+```text
+WSL2（28 核）：newapi-bin（main 构建，systemd 服务 newapi-e2e）
+PG16 双库（严格分离）：newapi_test（主）+ newapi_observer（observer，独立 role）
+Redis 本地 6379
+上游：生产网关 api.tokendancelab.com（真实 key，deepseek-v3.2 纯文本 / grok-4.5 视觉）
+vision relay options：enabled=true / target_models=["deepseek-v3.2"] / models=["grok-4.5"]
+  / base_url=api.tokendancelab.com / sidecall_secret=e2e-test-hmac-key / timeout_sec=15
+observer env：RELAY_OBSERVER_ENABLED=true / SCHEMA_MODE=bootstrap / RECORD_IP=true
+```
+
+### 23.2 结果矩阵
+
+| # | 场景 | 结果 | 证据 |
+|---|------|------|------|
+| VR-1 | OpenAI 端点（image_url 格式） | ✅ | grok-4.5 识图 → deepseek-v3.2 答 "White"；vision_calls=1 |
+| VR-2 | Claude 端点（/v1/messages） | ✅ | 答 "Blue"；双格式均验证 |
+| VR-3 | disabled 零行为 | ✅ | 200 原样透传，vision 日志零新增 |
+| VR-4 | 降级占位 | ✅ | 上游 5xx → 200 + 占位；`images_failed=1 fallback_count=1 description_bytes=75` |
+| VR-5 | 重复请求幂等 | ✅ | 同图两次各 vision_calls=1，产物一致 |
+| OB-1 | turns 全量记录 | ✅ | 19+ turns 全部 event_id 唯一；字段完整 |
+| OB-2 | session 聚合 | ✅ | Claude CLI 头（session-id + app）3 turns → 1 session |
+| OB-3 | 管理 API | ✅ | /status（Enabled, Accepted=Written）、/overview、/sessions、/turns、/context + HMAC 全通 |
+| OB-4 | 计费联动 | ✅ | 主库 quota 扣 143,518 与 observer turns 一致；主库 0 observer 表（严格隔离） |
+| OB-5 | schema 迁移 | ✅ | v1→v4 全建（bootstrap） |
+| OB-6 | 故障隔离 | ✅ | 坏 DSN → status 200（fail-open），主链路无影响 |
+| REG | 全量回归 | ✅ | 后端 35 包 0 FAIL；前端 284/0；CI（本地 WSL runner）绿 |
+
+### 23.3 生产发现（HK3 部署输入）
+
+- hk3 网关 `auto` 组**缺 deepseek-v4-flash / gemma-4 渠道**（直测 500）；可用：
+  deepseek-v3.2 / grok-4.5 / glm-5.2 → §20.3/§20.5 以 deepseek-v3.2* 为 target_models
+- grok-4.5 视觉可用（VR-1/VR-2 验证）；gemma-4-31b 待 Cerebras 渠道恢复（§22.3）
