@@ -9,27 +9,21 @@
 
 | 指标 | 值 |
 |------|-----|
-| UPSTREAM_BASE | `9724ef1b248a436ea47270bb5b394a0fdb013a6c` |
-| 官方 main HEAD | `0ab02020`（落后 2 个实质 commit，均未 patch-equivalent） |
+| UPSTREAM_BASE | `0ab02020603d22e5613bc4cf46bfab06f8567769`（= 官方 #6590，2026-08-05 同步） |
+| 官方 main HEAD | `0ab02020`（已全部吸收，落后 0） |
 | 主线 | `main`（public 远端），合流点见 §4a |
 | fork 分支策略 | 单主线 + topic 分支，功能收口 = 合入 main + 删分支（2026-08-05 起强制） |
 
-### 4a. 2026-08-05 合流记录（observer + vision-relay 收口）
+### 4a. 2026-08-05 合流记录（observer + vision-relay 收口 + 上游同步）
 
 - **observer（P4）终审修复 6 提交**（typed Responses、identity schema、UI 契约、concurrency race、v4 migration）经 PR #12 合入主线；T5.2 hardening 批次已由整合提交 `0c78fd75c` 先前进入 main，未重复携带
 - **vision-relay（P8）** 全部开发（v0.2.1 → v0.2.2 → 终审修复 + 设置 UI）经 PR #12 合入主线
 - **DeepSeek relay ci 提交**（us1 runner 迁移，原在 audit 分支）不属于本线，走 `codex/sgp2-deepseek` 线
 - **CI runner**：`ci.yml`/`docker-build.yml` 由退役 sgp2 迁至 us1（`[self-hosted, Linux, X64, us1]`）
+- **上游同步（2026-08-05）**：合并官方 #6589（Bedrock 断开取消）+ #6590（token auto-groups，57 文件）零冲突；修复官方 #6590 半成品 bug（`api-key-group-cell` 注释掉 `AutoGroupBadge` 致前端测试 3 失败，官方 CI 不跑测试未暴露）；UPSTREAM_BASE 推进至 `0ab02020`
 - 已删除 37 个本地旧分支（observer p1-p5 系列、semantic-selector、vision-relay 三代、fix/p0-* 等），保留 `main`/release 线/`codex/sgp2-deepseek`/`rebuild/upstream-20260803`
 
-官方待引入的 2 个 commit：
-
-| commit | 内容 | 与本地交集 |
-|--------|------|-----------|
-| `0ab02020` Feat/auto group (#6590) | token auto-groups（controller/token.go +132、model.go、auth middleware、i18n） | `constant/context_key.go`（+1 行本地 context key）、keys/system-settings 前端、i18n locales |
-| `bd585d78e` fix(aws): cancel Bedrock on disconnect (#6589) | relay-aws 取消传播 + billing_usage | 无直接文件交集（relay-aws.go、billing_usage.go 本地未改） |
-
-`git cherry` 确认官方 BASE..main 其余 commit（含 #6518/#6570）在 fork 中已有 patch-equivalent 重放，同步时不可按 SHA 机械重复。
+官方已同步（2026-08-05）：#6589 Bedrock 断开取消 + #6590 token auto-groups 均已并入 main（合并 commit `539924adb`），UPSTREAM_BASE 已推进至 `0ab02020`，当前落后 0。
 
 ## 1. 产品线清单（重放顺序即编号）
 
