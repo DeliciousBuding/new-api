@@ -733,6 +733,7 @@ SCHEMA_MODE=bootstrap / RECORD_IP=true / HMAC_KEY 48 hex（env 注入）。
 | Observer 端点 | `/api/relay-observer/*` 存在，RootAuth 保护（401 未登录） | 路由 `router/api-router.go` |
 | Vision 修复前 | target 零命中；官方 #15 对带图请求报错重试 3 次落 SenseNova #6211 静默丢图（prompt_tokens=19） | consume log + 探针响应 |
 | Vision 修复后 | `images_success=1 images_failed=0 vision_calls=1 fallback_count=0 models_used=step-3.7-flash elapsed_ms=5615 description_bytes=412`，外环答 **"red"** | `vision:` 日志 + 探针响应（prompt_tokens=190） |
+| **Responses 复验（.5）** | `/v1/responses` + data URI 红图 → deepseek-v4-flash；`images_success=1 images_failed=0 vision_calls=1 fallback_count=0 models_used=step-3.7-flash elapsed_ms=5786 description_bytes=277`，外环答 **"red"**；`input_image` data+mime_type 形态覆盖 | `vision:` 日志（2026-08-06 23:11:52）+ 探针响应；外链图（dummyimage）hk3 拉取失败 `images_failed`——带图走 data URI 或可达图床 |
 
 ### 24.3 生产落地修复项（2026-08-06）
 1. **target_models 漂移**：hk3 已无 deepseek-v3.2 渠道（全线 v4-flash/v4-pro，#15 活跃）→
@@ -770,8 +771,10 @@ Responses 请求直接 no-op → 带图请求零拦截（线上 30min 298 条 re
 - 测试：`transform_responses_test.go`（golden 3 图 + 无图 no-op + 占位隐私 +
   arguments 防误改 + 零 image 残留）；`go test ./pkg/vision_relay/ ./service/` 全绿
 
-**待办**：构建 `v1.0.0-td-20260801.5` 部署后，以真实 `/v1/responses` 带图探针复验
-（预期 `vision:` 命中 `models_used=step-3.7-flash`），并回写 §24 验证表。
+**结果（2026-08-06 23:11）**：`.5` 部署后探针复验通过——`/v1/responses` +
+data URI 红图 → deepseek-v4-flash，`vision:` 命中
+`images_success=1 vision_calls=1 fallback_count=0 models_used=step-3.7-flash
+elapsed 5.8s`，外环答 **"red"**；§24.2 已回写。
 
 **已知边界（阶段 2 扩展，不静默）**：`conversation` 对象字段内的图片
 （`conversation.input[i]`）未覆盖——当前 Cursor/Codex 均走 `previous_response_id`
