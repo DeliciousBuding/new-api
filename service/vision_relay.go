@@ -79,7 +79,7 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 	if !visionRelayMatchPatterns(patterns, relayInfo.OriginModelName) {
 		return nil
 	}
-	// 4. 格式判定（Claude/OpenAI；未知格式不处理）——先于端点必填校验：
+	// 4. 格式判定（Claude/OpenAI/Responses；未知格式不处理）——先于端点必填校验：
 	//    本来就不处理的协议不得因缺 key 被误报 5xx（审核 P0-2 §4）
 	format, ok := visionRelayFormat(relayInfo.RelayFormat)
 	if !ok {
