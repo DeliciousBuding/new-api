@@ -772,3 +772,8 @@ Responses 请求直接 no-op → 带图请求零拦截（线上 30min 298 条 re
 
 **待办**：构建 `v1.0.0-td-20260801.5` 部署后，以真实 `/v1/responses` 带图探针复验
 （预期 `vision:` 命中 `models_used=step-3.7-flash`），并回写 §24 验证表。
+
+**已知边界（阶段 2 扩展，不静默）**：`conversation` 对象字段内的图片
+（`conversation.input[i]`）未覆盖——当前 Cursor/Codex 均走 `previous_response_id`
+模式不受影响；如遇客户端传 conversation 对象带图，需在 `discoverResponses`
+补扫该路径（与 input 同构）。
