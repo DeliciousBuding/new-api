@@ -1,6 +1,6 @@
 # Vision Relay — 网关层原生图片识图替换 设计文档（v0.2.1）
 
-最后更新：2026-08-05
+最后更新：2026-08-06
 
 > **v0.2.1 工程边界调整**（GPT 复审追加，功能语义不变，只改代码落位）：
 > - **模块边界**：核心 `pkg/vision_relay/`（无 NewAPI 运行时层依赖，仅依赖
@@ -464,7 +464,7 @@ fallback_count/cache_hits + 旁路 token usage（响应有 usage 则记录）。
 
 ## 20. HK3 生产部署计划（用户拍板：HK3 零试错，一切先完整验证再部署）
 
-> 状态：**待执行**（2026-08-05 更新）。HK3 是生产主实例（api.tokendancelab.com）；
+> 状态：**已执行**（2026-08-06，线上验证记录见 §24）。HK3 是生产主实例（api.tokendancelab.com）；
 > 前置验证原定 sgp2（§22），**sgp2 已退役（2026-08）**——前置验证改由 **WSL 28 核 E2E
 > 环境完成（2026-08-05，§23）**，矩阵等效。剩余差距与部署设计见 §20.3/§20.5 及
 > tokendance-deploy 部署准备文档。
@@ -700,3 +700,31 @@ observer env：RELAY_OBSERVER_ENABLED=true / SCHEMA_MODE=bootstrap / RECORD_IP=t
 - hk3 网关 `auto` 组**缺 deepseek-v4-flash / gemma-4 渠道**（直测 500）；可用：
   deepseek-v3.2 / grok-4.5 / glm-5.2 → §20.3/§20.5 以 deepseek-v3.2* 为 target_models
 - grok-4.5 视觉可用（VR-1/VR-2 验证）；gemma-4-31b 待 Cerebras 渠道恢复（§22.3）
+
+> ⚠️ 2026-08-06 生产落地时本页前提已漂移（v3.2 渠道退役、grok-4.5 计费缺配、
+> StepFun 订阅渠道全挂），实际落地值以 **§24** 为准。
+
+## 24. HK3 生产部署与线上验证记录（2026-08-06）
+
+> 部署镜像 `ghcr.io/tokendancelab/new-api:v1.0.0-td-20260801.4`
+> （digest `e6bc2eaea37a…`，build 2026-08-06 01:04 HKT、push 01:13，含 PR #12/#21-#24；
+> 前置 `.3` 为 00:05 构建未部署）。容器 2026-08-06 19:48 HKT 启动，restart=0，healthy。
+
+### 24.1 上线配置（与 §20.5 的差异即 §24.2 修复项）
+
+```text
+vision_relay.enabled          = true
+vision_relay.target_models    = ["deepseek-v4*","glm-5.2"]   // v3.2 已退役；glm-5.2 纯文本
+vision_relay.models           = ["step-3.7-flash","qwen3.7-plus","qwen3.6-plus",
+                                  "qwen3.7-flash","qwen3.6-flash","gemma-4-31b"]  // 识图链，见 24.2-4
+vision_relay.base_url         = http://127.0.0.1:3000        // 容器内自回环（§21.3）
+vision_relay.timeout_sec      = 15
+```
+
+**Observer**（compose env，与 §20.5 一致）：ENABLED=true / DSN=newapi_observer@pg-local /
+SCHEMA_MODE=bootstrap / RECORD_IP=true / HMAC_KEY 48 hex（env 注入）。
+
+### 24.2 线上验证（探针：token #485 sgp2-test-acp，红图 → deepseek-v4-flash）
+
+| 阶段 | 结果 | 证据 |
+|---|---|---|
