@@ -79,7 +79,7 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 	if !visionRelayMatchPatterns(patterns, relayInfo.OriginModelName) {
 		return nil
 	}
-	// 4. 格式判定（Claude/OpenAI；未知格式不处理）——先于端点必填校验：
+	// 4. 格式判定（Claude/OpenAI/Responses；未知格式不处理）——先于端点必填校验：
 	//    本来就不处理的协议不得因缺 key 被误报 5xx（审核 P0-2 §4）
 	format, ok := visionRelayFormat(relayInfo.RelayFormat)
 	if !ok {
@@ -191,6 +191,8 @@ func visionRelayFormat(format types.RelayFormat) (vision_relay.Format, bool) {
 		return vision_relay.FormatClaude, true
 	case types.RelayFormatOpenAI:
 		return vision_relay.FormatOpenAI, true
+	case types.RelayFormatOpenAIResponses:
+		return vision_relay.FormatResponses, true
 	}
 	return 0, false
 }
@@ -206,6 +208,12 @@ func visionRelayDecodeRequest(enhanced []byte, original dto.Request) (dto.Reques
 		return &req, nil
 	case *dto.GeneralOpenAIRequest:
 		var req dto.GeneralOpenAIRequest
+		if err := common.Unmarshal(enhanced, &req); err != nil {
+			return nil, err
+		}
+		return &req, nil
+	case *dto.OpenAIResponsesRequest:
+		var req dto.OpenAIResponsesRequest
 		if err := common.Unmarshal(enhanced, &req); err != nil {
 			return nil, err
 		}
