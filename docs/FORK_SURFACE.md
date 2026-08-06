@@ -3,14 +3,14 @@
 > 本文档是 fork 治理的长期 SSOT：每个产品线的自有目录、上游覆盖层、重放顺序与验收命令。
 > 配套文件：`UPSTREAM_BASE`（基线 SHA）、`.github/workflows/upstream-check.yml`（落后检测）、
 > `.github/scripts/verify-td-release.sh`（release 验证）、`docs/session-reports/`（会话记录）。
-> 最后更新：2026-08-05
+> 最后更新：2026-08-07
 
 ## 0. 当前状态快照
 
 | 指标 | 值 |
 |------|-----|
-| UPSTREAM_BASE | `0ab02020603d22e5613bc4cf46bfab06f8567769`（= 官方 #6590，2026-08-05 同步） |
-| 官方 main HEAD | `0ab02020`（已全部吸收，落后 0） |
+| UPSTREAM_BASE | `0cd9dc85e334018d15c5a480e39753d0866e2035`（= 官方 2026-08-07 快照） |
+| 官方 main HEAD | `0cd9dc85e`（已全部吸收，落后 0，PR #29） |
 | 主线 | `main`（public 远端），合流点见 §4a |
 | fork 分支策略 | 单主线 + topic 分支，功能收口 = 合入 main + 删分支（2026-08-05 起强制） |
 
@@ -22,9 +22,16 @@
 - **CI runner**：`ci.yml` 用本地 WSL runner（`wsl-newapi`）；`docker-build.yml` 用 hosted ubuntu-latest（release 构建）；us1 上的 `us1-newapi` runner 仍注册但不再被 new-api workflow 引用
 - **上游同步（2026-08-05）**：合并官方 #6589（Bedrock 断开取消）+ #6590（token auto-groups，57 文件）零冲突；修复官方 #6590 半成品 bug（`api-key-group-cell` 注释掉 `AutoGroupBadge` 致前端测试 3 失败，官方 CI 不跑测试未暴露）；UPSTREAM_BASE 推进至 `0ab02020`（PR #21）
 - **CI runner 迁移（2026-08-05）**：hosted runner 在 private 仓库无步骤失败（billing 层拒绝）→ us1 4 核过载 → 最终 **本地 WSL runner（`wsl-newapi`，28 核）**：预装 go/bun/node 跳过 toolchain 下载（WSL→GitHub 下载不稳），CI 全绿
-- 已删除 37 个本地旧分支（observer p1-p5 系列、semantic-selector、vision-relay 三代、fix/p0-* 等），保留 `main`/release 线/`codex/sgp2-deepseek`/`rebuild/upstream-20260803`
+- 已删除 37 个本地旧分支（observer p1-p5 系列、semantic-selector、vision-relay 三代、fix/p0-* 等），保留 `main`/release 线
 
 官方已同步（2026-08-05）：#6589 Bedrock 断开取消 + #6590 token auto-groups 均已并入 main（合并 commit `539924adb`），UPSTREAM_BASE 已推进至 `0ab02020`，当前落后 0。
+
+### 4b. 2026-08-07 合流记录（上游同步 + 分支清理）
+
+- **上游同步（2026-08-07）**：merge 式合并官方 main 3 commit（`d6b5ce99d` relay #6249 GetBody HTTP/2 重试、`ea4f02101` replay metadata 重构、`0cd9dc85e` 上游 merge 回 fork 的 user/router）**零冲突**（24 files, +1173）；controller/relay.go 的 vision relay hook 红线校验通过（PR #29）
+- **同步方式定规**：统一 merge 式（保留上游 SHA，账目真实；cherry-pick 会产生"内容在但 SHA 差"的假落后）。自动化脚本 `scripts/sync-upstream.sh`（fetch → sync/<date> 分支 → merge → 红线校验 → push → PR）
+- **分支清理（2026-08-07）**：按"功能收口 = 合入 main + 删分支"策略清掉已合并分支（feat/vision-relay-responses、docs/vision-relay-prod-20260806、fix/vision-relay-hardening、style/gofmt-vision-test、docs/hk3-deploy-plan）+ 废弃分支（rebuild/upstream-20260803、codex/sgp2-deepseek、codex/release-* 本地副本）；远端保留 `main` + `fix/responses-data-uri-prefix`（#28 在途）+ 受保护 `codex/release-*`（仓库规则保护，GH013）
+- **响应格式收尾（#28）**：`input_image.data` 容错 data URI 前缀（codex_cli 生产实证），本地 WSL E2E 五形态全绿后提交（详见 `docs/plan/vision-relay.md` §25）
 
 ## 1. 产品线清单（重放顺序即编号）
 
