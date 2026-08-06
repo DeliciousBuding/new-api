@@ -728,3 +728,47 @@ SCHEMA_MODE=bootstrap / RECORD_IP=true / HMAC_KEY 48 hex（env 注入）。
 
 | 阶段 | 结果 | 证据 |
 |---|---|---|
+| 部署核查 | version `v1.0.0-td-20260801.4`；digest pin；restart=0 | `/api/status` + compose + `docker inspect` |
+| Observer 数据流 | schema v1→v4 启动即建；turns 1700+ / sessions 33 / contexts 1571；max(occurred_at) 距 now <5s | pg-local `newapi_observer` 库 |
+| Observer 端点 | `/api/relay-observer/*` 存在，RootAuth 保护（401 未登录） | 路由 `router/api-router.go` |
+| Vision 修复前 | target 零命中；官方 #15 对带图请求报错重试 3 次落 SenseNova #6211 静默丢图（prompt_tokens=19） | consume log + 探针响应 |
+| Vision 修复后 | `images_success=1 images_failed=0 vision_calls=1 fallback_count=0 models_used=step-3.7-flash elapsed_ms=5615 description_bytes=412`，外环答 **"red"** | `vision:` 日志 + 探针响应（prompt_tokens=190） |
+
+### 24.3 生产落地修复项（2026-08-06）
+1. **target_models 漂移**：hk3 已无 deepseek-v3.2 渠道（全线 v4-flash/v4-pro，#15 活跃）→
+   `["deepseek-v4*","glm-5.2"]`
+2. **vision token（#492）model_limits 格式**：误存 JSON 数组 `["grok-4.5",…]`，而
+   `GetModelLimitsMap` 按逗号切分 → 改逗号分隔并覆盖全链 6 模型
+3. **user 124（vision-service）分组 `default`→`svip`**：default 组不可见 StepFun/Cerebras/Bailian
+   组 → auto 组展开为空 → `No available channel under group auto`
+4. **grok-4.5 计费缺配**（#8042 报"价格未配置"，#8266 500）→ 链改用识图模型，grok 出链
+5. **step-3.7-flash 定价**：按官方牌价（$0.20 入 / $1.15 出 / $0.04 缓存，¥1.35/¥8.1）
+   补 `ModelRatio=0.1`、`CompletionRatio=5.75`、`CacheRatio=0.02`
+6. **StepFun 订阅渠道 2026-08-06 21:16 实测全挂**（#7959/#7960/#7965：无订阅/无效 key，
+   自动禁用 #3-#8）→ 保留 #7955 订阅 #2 + #7961 welfare free；订阅恢复后再扩充
+
+### 24.4 观察窗与收口
+- S4 放量观察窗 ≥24h：TTFT 增量、vision token 配额消耗速率、错误率、grok/gemma 渠道健康
+- StepFun 订阅线恢复后补测活并加回 #3-#8
+- 回滚手册（§20.3）保持：`enabled=false` 秒级零行为；compose 回退 `.2` digest（`7e383898…`）
+- 已并入生产：Observer + Vision Relay 全量；Git 侧 `main` == `public/main`（PR #12/#21-#25 已合入推送）
+
+## 25. Responses 格式支持补丁（2026-08-06，生产验证中发现）
+
+**背景**：§24 上线核查后确认——Cursor/Codex CLI 主路径走 `/v1/responses`
+（`RelayFormatOpenAIResponses`），而 `visionRelayFormat` 只覆盖 Claude/OpenAI 两种，
+Responses 请求直接 no-op → 带图请求零拦截（线上 30min 298 条 responses 流量、
+`vision:` 命中 0）。用户 Cursor 发图实测静默丢图。
+
+**改动**：
+- `pkg/vision_relay` 新增 `FormatResponses`：`Discover` 扫
+  `input[i].content[j]` / `function_call_output.output[j]`（一层递归）/
+  `instructions[j]`，识别 `input_image` 双形态（`image_url.url` 与 `data`+`mime_type`），
+  替换块类型 `input_text`；`function_call.arguments` 不扫描（路径感知防误改）
+- `service/vision_relay.go`：`visionRelayFormat` 补 `RelayFormatOpenAIResponses`；
+  `visionRelayDecodeRequest` 补 `OpenAIResponsesRequest` 分支
+- 测试：`transform_responses_test.go`（golden 3 图 + 无图 no-op + 占位隐私 +
+  arguments 防误改 + 零 image 残留）；`go test ./pkg/vision_relay/ ./service/` 全绿
+
+**待办**：构建 `v1.0.0-td-20260801.5` 部署后，以真实 `/v1/responses` 带图探针复验
+（预期 `vision:` 命中 `models_used=step-3.7-flash`），并回写 §24 验证表。
