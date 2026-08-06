@@ -119,3 +119,44 @@ func TestDiscoverResponsesNoImage(t *testing.T) {
 		t.Fatalf("expected 0 patches, got %d", len(patches))
 	}
 }
+
+// codex_cli 实测形态：data 字段塞完整 data URI（data:image/png;base64,...）。
+// 必须容错解析，且与裸 base64 形态 digest 一致（生产实证 2026-08-06）。
+func TestDiscoverResponsesDataURIPrefix(t *testing.T) {
+	raw := `{
+		"model":"deepseek-v4-flash",
+		"input":[
+			{"role":"user","content":[
+				{"type":"input_image","data":"data:image/png;base64,QUJD","mime_type":"image/png"}
+			]}
+		]
+	}`
+	patches, err := Discover([]byte(raw), FormatResponses)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(patches) != 1 {
+		t.Fatalf("expected 1 patch, got %d", len(patches))
+	}
+	img := PrepareImage(t.Context(), patches[0], nil, MaxDecodedBytes)
+	if img.Err != nil {
+		t.Fatalf("data URI prefix should be tolerated, got: %v", img.Err)
+	}
+	// 与裸 base64 形态 digest 一致
+	rawPlain := `{
+		"model":"deepseek-v4-flash",
+		"input":[
+			{"role":"user","content":[
+				{"type":"input_image","data":"QUJD","mime_type":"image/png"}
+			]}
+		]
+	}`
+	patchesPlain, err := Discover([]byte(rawPlain), FormatResponses)
+	if err != nil {
+		t.Fatalf("discover plain: %v", err)
+	}
+	imgPlain := PrepareImage(t.Context(), patchesPlain[0], nil, MaxDecodedBytes)
+	if img.Digest != imgPlain.Digest {
+		t.Fatal("data URI prefix form and plain base64 form should share digest")
+	}
+}
