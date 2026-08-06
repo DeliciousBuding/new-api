@@ -191,6 +191,8 @@ func visionRelayFormat(format types.RelayFormat) (vision_relay.Format, bool) {
 		return vision_relay.FormatClaude, true
 	case types.RelayFormatOpenAI:
 		return vision_relay.FormatOpenAI, true
+	case types.RelayFormatOpenAIResponses:
+		return vision_relay.FormatResponses, true
 	}
 	return 0, false
 }
@@ -206,6 +208,12 @@ func visionRelayDecodeRequest(enhanced []byte, original dto.Request) (dto.Reques
 		return &req, nil
 	case *dto.GeneralOpenAIRequest:
 		var req dto.GeneralOpenAIRequest
+		if err := common.Unmarshal(enhanced, &req); err != nil {
+			return nil, err
+		}
+		return &req, nil
+	case *dto.OpenAIResponsesRequest:
+		var req dto.OpenAIResponsesRequest
 		if err := common.Unmarshal(enhanced, &req); err != nil {
 			return nil, err
 		}

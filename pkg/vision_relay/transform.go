@@ -14,6 +14,8 @@ import (
 // 只扫描协议允许的位置：
 //   Claude:  messages[i].content[j] / messages[i].content[j].content[k]（仅 tool_result）/ system[j]
 //   OpenAI:  messages[i].content[j]
+//   Responses: input[i].content[j] / input[i].output[j]（仅 function_call_output）/
+//              instructions[j]
 // 绝对不做全局递归搜 {"type":"image"}——tool_use.input、普通用户 JSON、代码示例
 // 里同名字段都不会被误改。未修改部分不经任何 DTO 往返，字节保留。
 
@@ -23,6 +25,7 @@ type Format int
 const (
 	FormatClaude Format = iota
 	FormatOpenAI
+	FormatResponses
 )
 
 // Patch 协议路径上的图片块定位
@@ -31,6 +34,7 @@ type Patch struct {
 	Source       ImageSource     // 图片来源（base64 data 或 URL）
 	Index        int             // 图序号（1 起，用于占位/边界文本）
 	CacheControl json.RawMessage // 原块 cache_control（替换时平移到 text 块）
+	TextType     string          // 替换块类型（Claude/OpenAI="text"；Responses="input_text"）
 }
 
 // PatchedImage 识别前的图片单元（engine 组装：prepare 后填 Digest/Err）
@@ -48,6 +52,8 @@ func Discover(raw []byte, format Format) ([]Patch, error) {
 		return discoverClaude(raw)
 	case FormatOpenAI:
 		return discoverOpenAI(raw)
+	case FormatResponses:
+		return discoverResponses(raw)
 	}
 	return nil, fmt.Errorf("unknown format %d", format)
 }
@@ -142,12 +148,63 @@ func discoverOpenAI(raw []byte) ([]Patch, error) {
 	return patches, nil
 }
 
+func discoverResponses(raw []byte) ([]Patch, error) {
+	var patches []Patch
+	// instructions（数组形式，可含 input_image）
+	if ins := gjson.GetBytes(raw, "instructions"); ins.IsArray() {
+		patches = append(patches, discoverResponsesContent(ins, "instructions", len(patches))...)
+	}
+	// input[]：message 的 content 数组 + function_call_output 的 output 数组（一层递归）
+	input := gjson.GetBytes(raw, "input")
+	if !input.IsArray() {
+		return patches, nil
+	}
+	input.ForEach(func(ik, item gjson.Result) bool {
+		path := fmt.Sprintf("input.%d", ik.Int())
+		if content := item.Get("content"); content.IsArray() {
+			patches = append(patches, discoverResponsesContent(content, path+".content", len(patches))...)
+			return true
+		}
+		if item.Get("type").String() == "function_call_output" {
+			if out := item.Get("output"); out.IsArray() {
+				patches = append(patches, discoverResponsesContent(out, path+".output", len(patches))...)
+			}
+		}
+		return true
+	})
+	return patches, nil
+}
+
+// discoverResponsesContent 扫描 content/output 数组中的 input_image 块。
+// 路径前缀如 "input.0.content"；startIndex 用于图序号续接（跨数组统一编号）。
+func discoverResponsesContent(content gjson.Result, pathPrefix string, startIndex int) []Patch {
+	var patches []Patch
+	content.ForEach(func(ck, block gjson.Result) bool {
+		if !isResponsesImageBlock(block) {
+			return true
+		}
+		patches = append(patches, Patch{
+			Path:     fmt.Sprintf("%s.%d", pathPrefix, ck.Int()),
+			Source:   imageSourceFromResponsesBlock(block),
+			Index:    startIndex + len(patches) + 1,
+			TextType: "input_text",
+		})
+		return true
+	})
+	return patches
+}
+
 func isClaudeImageBlock(block gjson.Result) bool {
 	return block.Get("type").String() == "image" && block.Get("source").Exists()
 }
 
 func isOpenAIImageBlock(block gjson.Result) bool {
 	return block.Get("type").String() == "image_url" && block.Get("image_url").Exists()
+}
+
+func isResponsesImageBlock(block gjson.Result) bool {
+	return block.Get("type").String() == "input_image" &&
+		(block.Get("image_url").Exists() || block.Get("data").Exists())
 }
 
 func imageSourceFromClaudeBlock(block gjson.Result) ImageSource {
@@ -172,6 +229,24 @@ func imageSourceFromOpenAIBlock(block gjson.Result) ImageSource {
 		return ImageSource{Data: data, MediaType: mime}
 	}
 	return ImageSource{URL: url, MediaType: "image/png"}
+}
+
+// imageSourceFromResponsesBlock 支持两种 input_image 形态：
+// image_url.url（http 或 data:）与 data+mime_type（原生 base64）。
+func imageSourceFromResponsesBlock(block gjson.Result) ImageSource {
+	if iu := block.Get("image_url"); iu.Exists() {
+		url := iu.Get("url").String()
+		if len(url) > 5 && url[:5] == "data:" {
+			mime, data, _ := parseDataURL(url)
+			return ImageSource{Data: data, MediaType: mime}
+		}
+		return ImageSource{URL: url, MediaType: "image/png"}
+	}
+	mime := block.Get("mime_type").String()
+	if mime == "" {
+		mime = "image/png"
+	}
+	return ImageSource{Data: block.Get("data").String(), MediaType: mime}
 }
 
 // blockCacheControl 原块 cache_control（有则平移，无则 nil）
@@ -201,7 +276,7 @@ func Apply(raw []byte, images []*PatchedImage, results map[string]string) ([]byt
 		} else {
 			desc = wrapResult(img.Patch.Index, len(images), desc)
 		}
-		replacement, err := replacementBlock(body, img.Patch.Path, desc)
+		replacement, err := replacementBlock(body, img.Patch, desc)
 		if err != nil {
 			return nil, err
 		}
@@ -213,16 +288,26 @@ func Apply(raw []byte, images []*PatchedImage, results map[string]string) ([]byt
 	return body, nil
 }
 
-// replacementBlock 构造替换文本块：type=text + 描述 + 原块未知字段
+// replacementBlock 构造替换文本块：type=text/input_text + 描述 + 原块未知字段
 // （含 cache_control）按原顺序保留。块 JSON 从当前 body 路径读取
 // （前面 patch 已替换过的块结构不变，路径仍有效）。
-func replacementBlock(body []byte, path, desc string) ([]byte, error) {
-	block := gjson.GetBytes(body, path)
+func replacementBlock(body []byte, patch Patch, desc string) ([]byte, error) {
+	block := gjson.GetBytes(body, patch.Path)
 	if !block.Exists() || !block.IsObject() {
-		return nil, fmt.Errorf("patch path %q not found or not an object", path)
+		return nil, fmt.Errorf("patch path %q not found or not an object", patch.Path)
+	}
+	textType := patch.TextType
+	if textType == "" {
+		textType = "text"
 	}
 	var buf bytes.Buffer
-	buf.WriteString(`{"type":"text","text":`)
+	buf.WriteString(`{"type":`)
+	typeJSON, err := json.Marshal(textType)
+	if err != nil {
+		return nil, err
+	}
+	buf.Write(typeJSON)
+	buf.WriteString(`,"text":`)
 	descJSON, err := json.Marshal(desc)
 	if err != nil {
 		return nil, err
@@ -231,7 +316,7 @@ func replacementBlock(body []byte, path, desc string) ([]byte, error) {
 	block.ForEach(func(key, value gjson.Result) bool {
 		k := key.String()
 		switch k {
-		case "type", "text", "source", "image_url", "detail":
+		case "type", "text", "source", "image_url", "detail", "data", "mime_type":
 			return true // 被替换/删除的字段
 		}
 		keyJSON, err := json.Marshal(k)
