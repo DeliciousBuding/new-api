@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -242,11 +243,20 @@ func imageSourceFromResponsesBlock(block gjson.Result) ImageSource {
 		}
 		return ImageSource{URL: url, MediaType: "image/png"}
 	}
+	data := block.Get("data").String()
+	if strings.HasPrefix(data, "data:") {
+		// 实测 codex_cli 在 data 字段直接塞完整 data URI（data:image/png;base64,...），
+		// 而 OpenAI Responses 规范是裸 base64——两种都容错（2026-08-06 生产实证）
+		mime, raw, _ := parseDataURL(data)
+		if raw != "" {
+			return ImageSource{Data: raw, MediaType: mime}
+		}
+	}
 	mime := block.Get("mime_type").String()
 	if mime == "" {
 		mime = "image/png"
 	}
-	return ImageSource{Data: block.Get("data").String(), MediaType: mime}
+	return ImageSource{Data: data, MediaType: mime}
 }
 
 // blockCacheControl 原块 cache_control（有则平移，无则 nil）
