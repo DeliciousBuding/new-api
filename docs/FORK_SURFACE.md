@@ -3,14 +3,14 @@
 > 本文档是 fork 治理的长期 SSOT：每个产品线的自有目录、上游覆盖层、重放顺序与验收命令。
 > 配套文件：`UPSTREAM_BASE`（基线 SHA）、`.github/workflows/upstream-check.yml`（落后检测）、
 > `.github/scripts/verify-td-release.sh`（release 验证）、`docs/session-reports/`（会话记录）。
-> 最后更新：2026-08-07
+> 最后更新：2026-08-07 20:16
 
 ## 0. 当前状态快照
 
 | 指标 | 值 |
 |------|-----|
-| UPSTREAM_BASE | `0cd9dc85e334018d15c5a480e39753d0866e2035`（= 官方 2026-08-07 快照） |
-| 官方 main HEAD | `0cd9dc85e`（已全部吸收，落后 0，PR #29） |
+| UPSTREAM_BASE | `5c3abffe8572aa8a49f15c3916707d2019d66af4`（= 官方 2026-08-07 v1.0.0-rc.24 快照） |
+| 官方 main HEAD | `5c3abffe8`（已全部吸收，落后 0，PR #32 true merge） |
 | 主线 | `main`（public 远端），合流点见 §4a |
 | fork 分支策略 | 单主线 + topic 分支，功能收口 = 合入 main + 删分支（2026-08-05 起强制） |
 
@@ -32,6 +32,14 @@
 - **同步方式定规**：统一 merge 式（保留上游 SHA，账目真实；cherry-pick 会产生"内容在但 SHA 差"的假落后）。自动化脚本 `scripts/sync-upstream.sh`（fetch → sync/<date> 分支 → merge → 红线校验 → push → PR）
 - **分支清理（2026-08-07）**：按"功能收口 = 合入 main + 删分支"策略清掉已合并分支（feat/vision-relay-responses、docs/vision-relay-prod-20260806、fix/vision-relay-hardening、style/gofmt-vision-test、docs/hk3-deploy-plan）+ 废弃分支（rebuild/upstream-20260803、codex/sgp2-deepseek、codex/release-* 本地副本）；远端保留 `main` + `fix/responses-data-uri-prefix`（#28 在途）+ 受保护 `codex/release-*`（仓库规则保护，GH013）
 - **响应格式收尾（#28）**：`input_image.data` 容错 data URI 前缀（codex_cli 生产实证），本地 WSL E2E 五形态全绿后提交（详见 `docs/plan/vision-relay.md` §25）
+
+### 4c. 2026-08-07 二次合流记录（true merge 上游 8 commit + 账目修正）
+
+- **true merge（PR #32）**：merge 式合并官方 main 8 commit（`d6b5ce99d` #6249 GetBody HTTP/2 重试、`ea4f02101` replay metadata 重构、`0cd9dc85e` user/router、`1da23d6b3` rate-limit middleware、`c9bc03864` #6632 模型分类、`b941253ae` #6698 测活、`e926e5cac` #6685 兑码精度、`5c3abffe8` CI sync-release）
+- **账目修正**：核实 #29 实际为 **squash 式同步**（`c8c425163` 单提交，上游 SHA 不在 dev 线，merge-base 仍为 `0ab02020`）——§4b "merge 式定规" 与事实不符；本次 true merge 后 relay/user 相关文件与官方**逐字节一致**（`git diff official/main` 为空），假落后清零，此后上游同步必须走 true merge（`scripts/sync-upstream.sh`）
+- **冲突 ×1**：`router/api-router.go` `GET /token` 上游新增 `UserCriticalRateLimit("access-token")` → 取官方语义
+- **验证**：`go build ./...` 全绿；`go test ./router ./middleware ./common ./relay/...` 在 Linux（WSL）通过（Windows 本地 2 例 HTTP/2 GOAWAY 测试 `wsarecv: aborted` 为环境差异，CI=Linux 不受影响）；vision relay hook（controller/relay.go）与 `/api/relay-observer` 路由红线保留
+- **UPSTREAM_BASE**：`0cd9dc85e` → `5c3abffe8`（v1.0.0-rc.24）
 
 ## 1. 产品线清单（重放顺序即编号）
 
