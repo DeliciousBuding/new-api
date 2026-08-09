@@ -9,6 +9,11 @@
 # 对不上"的假落后（2026-08-06 实测），merge 保留官方 commit SHA，
 # `git rev-list public/main..official/main` 的账目永远真实。
 #
+# 账目（#46，2026-08-09 起）：
+#   - merge 成功后自动 `git rev-parse official/main > UPSTREAM_BASE`，并入 merge 提交；
+#     若 merge 为快进（无 merge 提交）则单独提交。UPSTREAM_BASE 语义 = 最近一次 sync 的官方 HEAD。
+#   - 校验 `git merge-base HEAD official/main == official/main`（真落后 0），不一致输出告警。
+#
 # fork 红线（docs/FORK_SURFACE.md）：合并后 controller/relay.go 必须保留
 # vision relay hook（4 行）；本脚本合并后自动校验，失败即中止。
 set -euo pipefail
@@ -49,6 +54,28 @@ fi
 echo "同步就绪：$BRANCH"
 echo "  合并提交：$(git log --oneline "$PUBLIC/main..$BRANCH" | wc -l)"
 echo "  落后账目：$(git rev-list --count "$BRANCH..$OFFICIAL/main") 领先：$(git rev-list --count "$OFFICIAL/main..$BRANCH")"
+
+# 6) 账目校验：merge-base 必须等于 official/main HEAD（真落后 0）
+OFFICIAL_HEAD=$(git rev-parse "$OFFICIAL/main")
+if [ "$(git merge-base HEAD "$OFFICIAL/main")" != "$OFFICIAL_HEAD" ]; then
+  echo "账目告警：merge-base != official/main HEAD，sync 流程异常（不应出现），请人工核查" >&2
+else
+  echo "  账目校验：merge-base == official/main（真落后 0）"
+fi
+
+# 7) 自动 bump UPSTREAM_BASE（#46，并入 merge 提交；快进合并则单独提交）
+git rev-parse "$OFFICIAL/main" > UPSTREAM_BASE
+if git diff --quiet -- UPSTREAM_BASE; then
+  echo "  UPSTREAM_BASE 无需更新（已等于官方 HEAD）"
+else
+  git add UPSTREAM_BASE
+  if git rev-parse -q --verify HEAD^2 >/dev/null 2>&1; then
+    git commit --amend --no-edit
+  else
+    git commit -m "docs: bump UPSTREAM_BASE to $(git rev-parse --short "$OFFICIAL/main")"
+  fi
+  echo "  UPSTREAM_BASE → $(cat UPSTREAM_BASE)"
+fi
 
 if [ "${1:-}" = "--push-pr" ]; then
   git push "$PUBLIC" "$BRANCH"

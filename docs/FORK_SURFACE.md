@@ -3,14 +3,14 @@
 > 本文档是 fork 治理的长期 SSOT：每个产品线的自有目录、上游覆盖层、重放顺序与验收命令。
 > 配套文件：`UPSTREAM_BASE`（基线 SHA）、`.github/workflows/upstream-check.yml`（落后检测）、
 > `.github/scripts/verify-td-release.sh`（release 验证）、`docs/session-reports/`（会话记录）。
-> 最后更新：2026-08-07 20:16
+> 最后更新：2026-08-09 15:45
 
 ## 0. 当前状态快照
 
 | 指标 | 值 |
 |------|-----|
-| UPSTREAM_BASE | `5c3abffe8572aa8a49f15c3916707d2019d66af4`（= 官方 2026-08-07 v1.0.0-rc.24 快照） |
-| 官方 main HEAD | `5c3abffe8`（已全部吸收，落后 0，PR #32 true merge） |
+| UPSTREAM_BASE | `823e26304a396854ace30b52b98ec497c2dd9c36`（= 官方 2026-08-09 快照；#46 起语义 = 最近一次 sync 的官方 HEAD，见 §4d） |
+| 官方 main HEAD | `823e26304`（#6674/#6711 未 merge 进 fork，落后 2，待下次 sync 吸收） |
 | 主线 | `main`（public 远端），合流点见 §4a |
 | fork 分支策略 | 单主线 + topic 分支，功能收口 = 合入 main + 删分支（2026-08-05 起强制） |
 
@@ -41,6 +41,18 @@
 - **验证**：`go build ./...` 全绿；`go test ./router ./middleware ./common ./relay/...` 在 Linux（WSL）通过（Windows 本地 2 例 HTTP/2 GOAWAY 测试 `wsarecv: aborted` 为环境差异，CI=Linux 不受影响）；vision relay hook（controller/relay.go）与 `/api/relay-observer` 路由红线保留
 - **UPSTREAM_BASE**：`0cd9dc85e` → `5c3abffe8`（v1.0.0-rc.24）
 
+### 4d. 2026-08-09 账目语义修复（audit-2026-08 #35/#46/#56，治理文档批次）
+
+- **UPSTREAM_BASE 语义定规（#46）**：从"上次合并的官方基线"改为"最近一次 sync 时的官方 HEAD 快照"；
+  `scripts/sync-upstream.sh` merge 成功后自动 `git rev-parse official/main > UPSTREAM_BASE` 并入 merge
+  提交，并校验 `git merge-base HEAD official/main == official/main`（真落后 0），不一致输出告警。
+- **当前快照**：BASE 推进 `5c3abffe8` → `823e26304`（官方 #6674/#6711 尚未 merge 进 fork，落后 2，
+  下次 sync 吸收；语义检测走 upstream-check.yml 的 `git cherry`，不因 BASE 跟随 HEAD 而失真）。
+- **§2 对齐现实（#35）**：W0 seam 收缩方案改写为当前接缝事实描述（main.go 直连注册 + service 层
+  hook 封装 + setting 层配置注入），审计决定不实现 seam 收缩。
+- **§3 幽灵条目清理 + owned dirs 界定（#56）**：删除 5 个无 fork 本地改动的条目（含 context_key/
+  relay_info/billingexpr），补 owned dirs 作用域界定与当前 footprint 数字基线。
+
 ## 1. 产品线清单（重放顺序即编号）
 
 ### P1 · Fork release / Docker / CI
@@ -61,14 +73,14 @@
 
 ### P4 · Relay Observability（observer 核心）
 - **自有目录**：`pkg/relay_observer/**`（120 新增文件的核心）、`controller/relay_observer*.go`、`web/src/features/observability/**`
-- **上游覆盖**（现状，待 §2 收缩后应 ≤8 文件、每处 ≤1 行）：
+- **上游覆盖**（现状，即 §2 描述的接缝边界；2026-08-08 审计决定不做 seam 收缩）：
   - `main.go`（runtime 创建/Init/注入/Close）
   - `controller/relay.go`（attempt hooks 内联）
   - `service/quota.go` + `service/text_quota.go`（settlement 各 1 行 + TurnUsage 组装 5 行）
   - `router/api-router.go`（路由块内联）
-  - `service/relay_observation.go`（当前全部 bridge 逻辑所在）
+  - `service/relay_observation.go`（请求路径 hook 封装：no-op 默认 + 事件组装/发布）
 - **上游等价**：无（私有产品线）
-- **重放**：见 §2 seam 方案；分 4 个 topic：core+storage → lifecycle seam+bridge → Root API → frontend
+- **重放**：见 §2 当前接缝；分 4 个 topic：core+storage → service 层 hook 封装 → Root API → frontend
 
 ### P5 · Dashboard / cache / keys UI
 - **上游覆盖**：`web/src/features/dashboard/*`（3）、`web/src/features/keys/*`（3）、`web/src/features/system-settings/*`（4+models/ 卡片与 types 扩展）、`web/src/features/channels/*`（2）、`web/src/features/auth/*`（2）、`web/src/features/profile/*`（2）、`web/src/features/models/components/drawers/model-mutate-drawer.tsx`（ModelSettings 类型完整性）
@@ -93,54 +105,76 @@
 - **状态**：**✅ 已完成并合入主线（2026-08-05，PR #12）**。T1–T6 全绿（T5 长稳 109/109 + T6 回归 8 项复验）、终审/团队审查修复完成（sidecall_secret 防泄露、A6 敏感词、出站 marker 接线、请求级熔断、严格解析）、设置 UI 已交付（模型设置页 Vision Relay 独立模块卡片）。**HK3 部署未执行**（用户指示不部署；前置阻塞仍为 Cerebras 29 渠道 auto-disable + gemma 上游不可用，见 `projects/gateway/STATE.md`）
 - **上游等价**：核心可独立评估（核心包无 NewAPI 运行时层依赖——仅 common JSON wrapper，未来可上游化）
 
-## 2. Relay Observability 接缝收缩方案（W0 设计）
+## 2. Relay Observability 当前接缝边界（现状）
 
-目标依赖方向（单一消费者、类型化、默认 no-op，不造事件总线）：
+> 2026-08-08 设计审计（audit-2026-08，#35）确认：W0 方案中的 `service/relay_lifecycle.go`、
+> `service/relay_observer_bridge.go`、`router/relay_observer_routes.go` 从未落地，main.go 直接
+> import 核心 overlay 包，原 §2 与代码脱节。审计决定**不实现 seam 收缩**，本节改写为当前实现的事实描述。
+
+实际依赖方向（2026-08-09 实核）：
 
 ```text
-NewAPI 原生 relay / billing
-   │ 5~8 个一行 hook（无 observer 业务逻辑）
+main.go（直连注册：NewRuntime → Init → 双 SetRelayObserverRuntime → Close）
+   │
+   ├─▶ controller.SetRelayObserverRuntime / GetRelayObserver*（controller/relay_observer.go）
+   ├─▶ service.SetRelayObserverRuntime（service/relay_observation.go，请求路径 hook 封装）
+   │        controller/relay.go   → ObserveTurnAttemptBegin/End/Failure（attempt 循环 3 处）
+   │        service/quota.go      → ObserveTurnSettlement（settlement 1 处）
+   │        service/text_quota.go → ObserveTurnSettlement（settlement 1 处）
    ▼
-service/relay_lifecycle.go        ← 中立生命周期接口 + no-op 默认
-   ▼
-service/relay_observer_bridge.go  ← observer 适配层（DTO 转换/运行时持有）
-   ▼
-pkg/relay_observer/               ← 核心（不反向依赖 gin/service/controller）
+pkg/relay_observer/               ← 核心（不 import gin/service/controller/model/setting）
 ```
 
-硬规则：
-1. `pkg/relay_observer` 不 import gin / service / controller。
-2. 原生上游文件不直接 import `pkg/relay_observer`（通过 bridge）。
-3. 原生文件只放一行 `NotifyRelay*` 调用；event 构造、BodyStorage、HMAC、runtime 判断全进 bridge。
-4. 删 observer = 删自有目录 + 移除 5~8 行接线。
-5. PG 特例限制在 `pkg/relay_observer/store_pg.go` 与 migrations，不污染 `model/`。
-6. `relay/common/RelayInfo` 不新增 observer 专用字段。
+当前接缝边界（事实）：
+- **main.go 直连注册**：`var observerRuntime = relayobserver.NewRuntime()`（main.go:54），Init 后
+  `controller.SetRelayObserverRuntime(observerRuntime)` + `service.SetRelayObserverRuntime(observerRuntime)`
+  两行注入（main.go:73-75），退出时 `observerRuntime.Close(observerCtx)`（main.go:255）。main 直接
+  import `pkg/relay_observer`——这就是当前的事实接缝（审计 #35 指出的脱节点）。
+- **service 层 hook 封装**：`service/relay_observation.go` 承载全部请求路径 hook
+  （AttemptBegin/End、Settlement、Failure）；运行时未接线时每个 hook 零开销 no-op，事件构造
+  （buildTurnEvent）与发布（publishTurnEvent）都收在 service 层，controller 只调 `service.ObserveTurn*`。
+- **controller 层接线**：`controller/relay_observer.go` 持 runtime + query surface（/status、/overview、
+  /sessions… 的 GET handler）；`controller/relay.go` 内联 vision relay hook
+  （`service.PrepareVisionRelayRequest` 单点 4 行，relay 失败 = 5xx，绝不 fail-open）。
+- **router**：`router/api-router.go` 内联 `/relay-observer` 路由组（6 个 GET handler）。
+- **setting 层配置注入**：`setting/model_setting/vision_relay.go` `config.Register("vision_relay", …)`
+  → DB option keys `vision_relay.*`（enabled/target_models/models…）；`service/vision_relay.go` 做
+  Gin/RelayInfo/BodyStorage 事务与错误映射，核心逻辑在 `pkg/vision_relay/`（无 NewAPI 运行时层依赖）。
 
-具体动作：
-- 新建 `service/relay_lifecycle.go`：`RelayLifecycleSink`（AttemptBegin/AttemptEnd/Settled/Failed）+ no-op 默认 + `NotifyRelay*` 转发。
-- 新建 `service/relay_observer_bridge.go`：observer 运行时持有、settlement DTO 转换、query surface 窄接口。
-- `controller/relay.go`：attempt 循环内 3 处 → `service.NotifyRelayAttemptBegin/End/Failed`。
-- `service/quota.go` / `service/text_quota.go`：5 行 TurnUsage 组装 → `NotifyRelaySettled(ctx, info, usage, quota)` 一行。
-- `main.go`：`service.InitOptionalRelayObserver()` + `service.CloseOptionalRelayObserver(ctx)` 两行。
-- `router/relay_observer_routes.go`：路由块移出 api-router.go，`api-router.go` 剩 `registerRelayObserverRoutes(apiRouter)`（沿用 registerChannelRoutes 模式）。
+硬规则（现行，与代码对齐）：
+1. `pkg/relay_observer` 不 import gin / service / controller / model / setting。
+2. `pkg/vision_relay` 不反向依赖 controller/service/model/setting/relay/Gin/RelayInfo（仅 common
+   JSON wrapper、x/image、gjson/sjson）。
+3. 删 observer = 删自有目录 + 移除接线点（main.go 2 行注入 + controller/relay.go 3 行 hook +
+   service/quota.go & text_quota.go 各 1 行 + api-router.go 路由块），无隐式依赖残留。
+4. PG 特例限制在 `pkg/relay_observer/store_pg.go` 与 migrations，不污染 `model/`。
+
+> 演进备注：未来若做 seam 收缩（`service/relay_lifecycle.go` + bridge + 独立 routes），入口见
+> audit-2026-08 #35，本节即为现状基线。
 
 ## 3. 冲突热点（B∩C，20 文件）
+
+> 筛选口径（2026-08-09 起）：`git ls-files` 存在 + `git diff official/main..HEAD` 有本地改动。
+> 审计 #56 清理 5 个幽灵条目（无 fork 本地改动）：`constant/context_key.go`、
+> `relay/common/relay_info.go`、`service/tiered_settle.go`(+test)、`service/billing_session.go`、
+> `pkg/billingexpr/*`（计费层已在上游演进中吸收，见 §1-P2 上游等价）。
 
 按官方 #6590/#6589 引入时的预计冲突强度排序：
 
 | 文件 | 本地改动性质 | 官方改动 | 冲突强度 |
 |------|-------------|---------|---------|
-| `controller/relay.go` | observer hooks 内联 3 处 | 未直接改（邻近） | 中 |
-| `service/tiered_settle.go`(+test) | 自有 billing | #6590 计费邻近 | 中 |
-| `service/billing_session.go` | 自有 billing | 邻近 | 中 |
-| `constant/context_key.go` | +1（vision/observer） | #6590 +1 | 低（追加即可） |
-| `pkg/billingexpr/*` | 自有扩展 | 上游演进 | 低 |
-| `web/src/features/keys/*` | 自有 UI | #6590 token 控制面 | 中高 |
+| `controller/relay.go` | observer hooks 内联 3 处 + vision relay hook 4 行 | 未直接改（邻近） | 中 |
+| `web/src/features/keys/*`（4） | 自有 UI | #6590 token 控制面 | 中高 |
 | `web/src/features/system-settings/types.ts` | 自有扩展 | #6590 | 中 |
-| `web/src/i18n/locales/*` (6) | 自有 key | #6590 新 key | 中（§1-P7 迁移后归零） |
-| `relay/common/relay_info.go` | profile 字段 | 未直接改 | 低 |
-| `router/api-router.go` | observer 路由块 | 未直接改 | 低（§2 提取后归零） |
+| `web/src/i18n/locales/*`（7 语言 + 5 同步报告） | 自有 key | #6590 新 key | 中（§1-P7 迁移后归零） |
+| `router/api-router.go` | observer 路由块内联 | 未直接改 | 低 |
 | `model/option.go` | 自有选项 | 未直接改 | 低 |
+
+**owned dirs 界定**（§4 W3 "outside own dirs ≤8" 的作用域，footprint 审计基线）：
+`pkg/vision_relay/`、`pkg/relay_observer/`、`service/relay_observation*`、
+`web/src/features/observability/`、`web/src/i18n/`。当前 218 文件总 footprint 中 owned 110
+（relay_observer 66 + vision_relay 11 + observability 18 + i18n 13 + relay_observation* 2），
+outside-own-dirs 87（含 docs/.github/根治理 21）；重建目标 outside ≤8。
 
 ## 4. 影子重建流程（下一轮执行）
 
@@ -154,8 +188,8 @@ git switch -c rebuild/upstream-20260803 official/main
 #   P5 dashboard/keys → P6 extensions → P7 i18n → P8 vision
 # 重放前对每线 `git cherry` 去重，已被上游吸收的不重放
 
-# W3 冲突面验收
-git diff --name-only official/main..HEAD | grep -v '^\(pkg/relay_observer\|web/src/features/observability\|controller/relay_observer\|web/src/extensions\|docs/\|\.github/\|AGENTS\|VERSION\|Dockerfile\|NOTICE\|UPSTREAM_BASE\)' \
+# W3 冲突面验收（owned dirs 界定见 §3）
+git diff --name-only official/main..HEAD | grep -v '^\(pkg/relay_observer/\|pkg/vision_relay/\|service/relay_observation\|web/src/features/observability/\|web/src/i18n/\|controller/relay_observer\|web/src/extensions\|docs/\|\.github/\|AGENTS\|VERSION\|Dockerfile\|NOTICE\|UPSTREAM_BASE\)' \
   | sort > overlay-remaining.txt   # 预期 ≤8 文件且每文件为 import/注册/单行 hook
 
 # W4 验证：旧 main 归档
