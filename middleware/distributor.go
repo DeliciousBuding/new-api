@@ -166,6 +166,9 @@ func Distribute() func(c *gin.Context) {
 		c.Next()
 		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
 			service.RecordChannelAffinity(c, channel.Id)
+			// A successful response breaks the affinity soft-failure streak
+			// (issue #39).
+			service.ResetChannelAffinitySoftFailures(c)
 		}
 	}
 }

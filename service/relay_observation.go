@@ -1,7 +1,9 @@
 package service
 
 import (
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -235,13 +237,17 @@ func buildTurnEvent(c *gin.Context, info *relaycommon.RelayInfo, usage TurnUsage
 	// the request path never writes them again, and the worker reads them
 	// through the channel-send happens-before (same rule as Request). A
 	// missing body storage degrades identity resolution, never the event.
+	// Disk-backed bodies are never read wholesale into memory (issue #43):
+	// the event's identity degrades to header-only, so alias sources that
+	// live in the body (prompt_cache_key, claude meta session) are absent.
 	if bs, err := common.GetBodyStorage(c); err == nil && bs != nil {
-		if body, err := bs.Bytes(); err == nil {
-			ev.Identity = relayobserver.IdentityInput{
-				Headers: c.Request.Header,
-				Body:    body,
+		identity := relayobserver.IdentityInput{Headers: c.Request.Header}
+		if !bs.IsDisk() {
+			if body, err := bs.Bytes(); err == nil {
+				identity.Body = body
 			}
 		}
+		ev.Identity = identity
 	}
 	if info.HasSendResponse() {
 		ev.FirstResponseMS = info.FirstResponseTime.Sub(info.StartTime).Milliseconds()
@@ -277,5 +283,40 @@ func publishTurnEvent(c *gin.Context, rt *relayobserver.Runtime, ev relayobserve
 	if bs, err := common.GetBodyStorage(c); err == nil && bs != nil {
 		reservation = bs.Size()
 	}
-	rt.TryPublishTurn(ev, reservation)
+	if !rt.TryPublishTurn(ev, reservation) {
+		// Drops are otherwise only visible through Status.DroppedTotal;
+		// alert when the streak or the cumulative count crosses its
+		// threshold so observation degradation becomes noticeable (issue
+		// #52).
+		if consecutive, cumulative, alert := recordObserverDroppedEvent(); alert {
+			common.SysError(fmt.Sprintf("relay observer: %d consecutive turn events dropped (cumulative %d): observation degraded — check queue capacity, write circuit, or store health", consecutive, cumulative))
+		}
+		return
+	}
+	observerDroppedConsecutive.Store(0)
+}
+
+// observerDropAlertConsecutiveThreshold fires one alert when the consecutive
+// drop streak reaches this count; observerDropAlertCumulativeThreshold
+// re-fires on every multiple of the cumulative drop count, so a sustained
+// outage stays visible (issue #52).
+const (
+	observerDropAlertConsecutiveThreshold = 100
+	observerDropAlertCumulativeThreshold  = 1000
+)
+
+var (
+	observerDroppedConsecutive atomic.Int64
+	observerDroppedCumulative  atomic.Int64
+)
+
+// recordObserverDroppedEvent advances the drop counters and reports whether
+// an alert should fire.
+func recordObserverDroppedEvent() (consecutive int64, cumulative int64, alert bool) {
+	consecutive = observerDroppedConsecutive.Add(1)
+	cumulative = observerDroppedCumulative.Add(1)
+	if consecutive == observerDropAlertConsecutiveThreshold {
+		return consecutive, cumulative, true
+	}
+	return consecutive, cumulative, cumulative%observerDropAlertCumulativeThreshold == 0
 }

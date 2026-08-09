@@ -380,6 +380,14 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		})
 	}
 
+	// affinity 软失败解绑（issue #39）：5xx/超时等软失败不进上面的
+	// ShouldDisableChannel 分支，渠道保持 Enabled；SkipRetry=true 的
+	// affinity 会话会一直绑死到缓存 TTL。连续软失败达到阈值后清掉当前
+	// 绑定，让下一次请求重新选渠道。
+	if !service.ShouldDisableChannel(err) && service.RecordChannelAffinitySoftFailure(c) {
+		service.ClearCurrentChannelAffinityCache(c)
+	}
+
 	if constant.ErrorLogEnabled && types.IsRecordErrorLog(err) {
 		// 保存错误日志到mysql中
 		userId := c.GetInt("id")

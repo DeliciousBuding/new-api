@@ -1,13 +1,16 @@
 package service
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
@@ -331,4 +334,118 @@ func TestChannelAffinityHitCodexTemplatePassHeadersEffective(t *testing.T) {
 	require.False(t, exists)
 	_, exists = info.RuntimeHeadersOverride["x-codex-turn-metadata"]
 	require.False(t, exists)
+}
+
+// testDiskBodyStorage is a minimal common.BodyStorage implementation that
+// reports IsDisk()==true, so tests can exercise the bounded-prefix body paths
+// without a real disk cache file.
+type testDiskBodyStorage struct {
+	data   []byte
+	reader *bytes.Reader
+}
+
+func newTestDiskBodyStorage(data []byte) *testDiskBodyStorage {
+	return &testDiskBodyStorage{data: data, reader: bytes.NewReader(data)}
+}
+
+func (s *testDiskBodyStorage) Read(p []byte) (int, error) { return s.reader.Read(p) }
+func (s *testDiskBodyStorage) Seek(offset int64, whence int) (int64, error) {
+	return s.reader.Seek(offset, whence)
+}
+func (s *testDiskBodyStorage) Close() error                    { return nil }
+func (s *testDiskBodyStorage) Bytes() ([]byte, error)          { return s.data, nil }
+func (s *testDiskBodyStorage) Size() int64                     { return int64(len(s.data)) }
+func (s *testDiskBodyStorage) IsDisk() bool                    { return true }
+func (s *testDiskBodyStorage) NewReader() (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(s.data)), nil
+}
+
+// --- issue #39: affinity 软失败解绑 ---
+
+func newAffinitySoftFailureTestContext(t *testing.T, cacheKey string) *gin.Context {
+	t.Helper()
+	return buildChannelAffinityTemplateContextForTest(channelAffinityMeta{CacheKey: cacheKey})
+}
+
+func clearChannelAffinitySoftFailuresForTest() {
+	channelAffinitySoftFailures.Range(func(k, _ any) bool {
+		channelAffinitySoftFailures.Delete(k)
+		return true
+	})
+}
+
+func TestAffinitySoftFailureUnbindsAfterThreshold(t *testing.T) {
+	t.Cleanup(clearChannelAffinitySoftFailuresForTest)
+	key := "new-api:channel_affinity:v1:rule-soft:gpt-x:default:fp123"
+	require.False(t, RecordChannelAffinitySoftFailure(newAffinitySoftFailureTestContext(t, key)))
+	require.False(t, RecordChannelAffinitySoftFailure(newAffinitySoftFailureTestContext(t, key)))
+	require.True(t, RecordChannelAffinitySoftFailure(newAffinitySoftFailureTestContext(t, key)))
+	// The unbind clears the streak: the next failure starts a fresh streak.
+	require.False(t, RecordChannelAffinitySoftFailure(newAffinitySoftFailureTestContext(t, key)))
+}
+
+func TestAffinitySoftFailureCountsOncePerRequest(t *testing.T) {
+	t.Cleanup(clearChannelAffinitySoftFailuresForTest)
+	ctx := newAffinitySoftFailureTestContext(t, "new-api:channel_affinity:v1:rule-soft:gpt-x:default:fp456")
+	require.False(t, RecordChannelAffinitySoftFailure(ctx))
+	// A multi-attempt request counts once: a second call on the same request
+	// must not advance the streak.
+	require.False(t, RecordChannelAffinitySoftFailure(ctx))
+}
+
+func TestAffinitySoftFailureResetBreaksStreak(t *testing.T) {
+	t.Cleanup(clearChannelAffinitySoftFailuresForTest)
+	key := "new-api:channel_affinity:v1:rule-soft:gpt-x:default:fp789"
+	require.False(t, RecordChannelAffinitySoftFailure(newAffinitySoftFailureTestContext(t, key)))
+	require.False(t, RecordChannelAffinitySoftFailure(newAffinitySoftFailureTestContext(t, key)))
+	// One successful response breaks the streak.
+	ResetChannelAffinitySoftFailures(newAffinitySoftFailureTestContext(t, key))
+	require.False(t, RecordChannelAffinitySoftFailure(newAffinitySoftFailureTestContext(t, key)))
+	require.False(t, RecordChannelAffinitySoftFailure(newAffinitySoftFailureTestContext(t, key)))
+}
+
+func TestAffinitySoftFailureNoopWithoutBinding(t *testing.T) {
+	t.Cleanup(clearChannelAffinitySoftFailuresForTest)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.False(t, RecordChannelAffinitySoftFailure(ctx))
+	require.NotPanics(t, func() { ResetChannelAffinitySoftFailures(ctx) })
+}
+
+// --- issue #43: affinity gjson 提取对磁盘体截断 ---
+
+func TestAffinityGjsonExtractionOnDiskBodyPrefix(t *testing.T) {
+	// Body larger than the 1 MiB prefix: a key near the start resolves, a key
+	// behind the prefix is a miss (truncation hides it), and the storage
+	// cursor is preserved for the request path's later body reads.
+	head := []byte(`{"prompt_cache_key":"cache-early","model":"gpt-x","messages":[`)
+	filler := bytes.Repeat([]byte{'a'}, channelAffinityGjsonPrefixBytes)
+	body := append(append([]byte{}, head...), filler...)
+	body = append(body, []byte(`],"tail_key":"tail-late"}`)...)
+
+	storage := newTestDiskBodyStorage(body)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Set(common.KeyBodyStorage, storage)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	earlySrc := operation_setting.ChannelAffinityKeySource{Type: "gjson", Path: "prompt_cache_key"}
+	require.Equal(t, "cache-early", extractChannelAffinityValue(ctx, earlySrc))
+
+	lateSrc := operation_setting.ChannelAffinityKeySource{Type: "gjson", Path: "tail_key"}
+	require.Equal(t, "", extractChannelAffinityValue(ctx, lateSrc))
+
+	// The prefix read restored the cursor (mirroring diskStorage.Bytes()).
+	pos, err := storage.Seek(0, io.SeekCurrent)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), pos)
+}
+
+func TestAffinityGjsonExtractionOnSmallDiskBody(t *testing.T) {
+	// A disk body within the prefix budget is read fully: tail keys resolve.
+	storage := newTestDiskBodyStorage([]byte(`{"tail_key":"tail-val"}`))
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Set(common.KeyBodyStorage, storage)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	src := operation_setting.ChannelAffinityKeySource{Type: "gjson", Path: "tail_key"}
+	require.Equal(t, "tail-val", extractChannelAffinityValue(ctx, src))
 }
