@@ -5,8 +5,16 @@ on:
     branches:
       - main
       - "codex/release-*"
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '**/docs/**'
   pull_request:
     types: [opened, synchronize, reopened]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '**/docs/**'
 
 permissions:
   contents: read
