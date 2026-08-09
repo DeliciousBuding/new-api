@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/config"
@@ -246,6 +248,8 @@ func (v *VisionRelaySettings) ValidateEndpoint() error {
 //   - 自环场景（base_url 指向 loopback）强制 sidecall_secret 非空：
 //     secret 空时 sidecall 不携带 marker，宽 allowlist 下会无界递归放大
 //   - 数组/数字/URL 键做无状态格式校验（不依赖写入顺序）
+//   - api_key/sidecall_secret 敏感键做最小格式校验（audit-2026-08 #48）：
+//     非空时禁止空白/控制字符 + 长度下限，防手滑/注入直进 DB
 func ValidateVisionRelayWrite(key, value string) error {
 	switch key {
 	case "vision_relay.enabled":
@@ -285,6 +289,12 @@ func ValidateVisionRelayWrite(key, value string) error {
 			return fmt.Errorf("vision_relay.sidecall_secret is required for self-loop base_url (recursion protection)")
 		}
 		return nil
+	case "vision_relay.api_key", "vision_relay.sidecall_secret":
+		// 敏感键最小格式校验（audit-2026-08 #48）；空值放行（前端空值=不修改）
+		if err := validateVisionRelaySensitiveValue(key, value); err != nil {
+			return err
+		}
+		return nil
 	case "vision_relay.target_models", "vision_relay.models":
 		if strings.TrimSpace(value) == "" {
 			return nil
@@ -312,4 +322,32 @@ func ValidateVisionRelayWrite(key, value string) error {
 	default:
 		return nil
 	}
+}
+
+// 敏感字段写时校验的最小长度（audit-2026-08 #48：防手滑的最小集）。
+const (
+	minVisionRelayAPIKeyLength         = 8  // 常见 key 均远长于此；仅拦明显截断/占位符
+	minVisionRelaySidecallSecretLength = 16 // HMAC 认证 marker 密钥，弱密钥可被暴力枚举伪造
+)
+
+// validateVisionRelaySensitiveValue api_key/sidecall_secret 写时最小格式校验
+// （audit-2026-08 #48）：空值放行（前端空值=不修改语义）；非空时禁止空白/
+// 控制字符（防换行/日志注入），且长度达下限。校验失败返回明确错误，写入面拦截。
+func validateVisionRelaySensitiveValue(key, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	if strings.ContainsFunc(value, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) {
+		return fmt.Errorf("%s: must not contain whitespace or control characters", key)
+	}
+	minLen := minVisionRelayAPIKeyLength
+	if key == "vision_relay.sidecall_secret" {
+		minLen = minVisionRelaySidecallSecretLength
+	}
+	if utf8.RuneCountInString(value) < minLen {
+		return fmt.Errorf("%s: must be at least %d characters when set", key, minLen)
+	}
+	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -60,7 +61,7 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 	// 1. 配置快照（OptionMap 同步读取）——递归 marker 校验需要共享 secret
 	cfg, err := model_setting.GetVisionRelaySnapshot()
 	if err != nil {
-		return visionRelayInfraError(fmt.Errorf("vision relay snapshot: %w", err))
+		return visionRelayFail(relayInfo, "snapshot", &cfg, nil, fmt.Errorf("vision relay snapshot: %w", err))
 	}
 	// 2. 递归保护（审核 P0-2）：仅认证 marker（HMAC 校验通过）才允许 bypass；
 	//    外部伪造的任意值（含旧字面 "1"）被忽略，继续正常执行 Vision Relay
@@ -74,7 +75,7 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 	}
 	patterns, err := cfg.TargetModelPatterns()
 	if err != nil {
-		return visionRelayInfraError(fmt.Errorf("vision relay target models: %w", err))
+		return visionRelayFail(relayInfo, "target_models", &cfg, nil, fmt.Errorf("vision relay target models: %w", err))
 	}
 	if !visionRelayMatchPatterns(patterns, relayInfo.OriginModelName) {
 		return nil
@@ -87,20 +88,20 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 	}
 	// 5. 命中模型后校验端点配置（v0.2.2：配置损坏不再 fail-open 发原图）
 	if err := cfg.ValidateEndpoint(); err != nil {
-		return visionRelayInfraError(fmt.Errorf("vision relay endpoint config: %w", err))
+		return visionRelayFail(relayInfo, "endpoint", &cfg, nil, fmt.Errorf("vision relay endpoint config: %w", err))
 	}
 
 	// 5. 只读原始 body
 	originalStorage, err := common.GetBodyStorage(c)
 	if err != nil {
-		return visionRelayInfraError(fmt.Errorf("get body storage: %w", err))
+		return visionRelayFail(relayInfo, "body_storage", &cfg, nil, fmt.Errorf("get body storage: %w", err))
 	}
 	if _, err := originalStorage.Seek(0, io.SeekStart); err != nil {
-		return visionRelayInfraError(fmt.Errorf("seek body storage: %w", err))
+		return visionRelayFail(relayInfo, "seek_body", &cfg, nil, fmt.Errorf("seek body storage: %w", err))
 	}
 	rawBody, err := io.ReadAll(originalStorage)
 	if err != nil {
-		return visionRelayInfraError(fmt.Errorf("read body: %w", err))
+		return visionRelayFail(relayInfo, "read_body", &cfg, nil, fmt.Errorf("read body: %w", err))
 	}
 
 	// 6. 请求级总 deadline（v0.2.2：单请求全局预算，非每图各自 15s）
@@ -132,7 +133,8 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 	var stats vision_relay.Stats
 	enhanced, err := engine.Enhance(enhanceCtx, rawBody, format, coreCfg, &stats)
 	if err != nil {
-		return visionRelayInfraError(err)
+		// 上游识别链/内部变换失败（基础设施错误）→ 5xx + 结构化日志（audit-2026-08 #47）
+		return visionRelayFail(relayInfo, "enhance", &cfg, &stats, err)
 	}
 	if enhanced == nil {
 		return nil // 真 no-op：无图，原始状态完全不动
@@ -141,13 +143,13 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 	// 8. 先验证增强 JSON 能反序列化为正确请求 DTO（提交前验证，防半提交）
 	enhancedRequest, err := visionRelayDecodeRequest(enhanced, relayInfo.Request)
 	if err != nil {
-		return visionRelayInfraError(fmt.Errorf("decode enhanced request: %w", err))
+		return visionRelayFail(relayInfo, "decode", &cfg, &stats, fmt.Errorf("decode enhanced request: %w", err))
 	}
 
 	// 9. 创建新存储
 	newStorage, err := common.CreateBodyStorage(enhanced)
 	if err != nil {
-		return visionRelayInfraError(fmt.Errorf("create enhanced body storage: %w", err))
+		return visionRelayFail(relayInfo, "create_storage", &cfg, &stats, fmt.Errorf("create enhanced body storage: %w", err))
 	}
 
 	// 10. 原子提交（最后一步才动共享状态）
@@ -168,6 +170,11 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 		relayInfo.OriginModelName, stats.Total, stats.Success, stats.Failed, stats.UniqueImages,
 		stats.CacheHits, stats.VisionCalls, stats.FallbackCount, stats.ElapsedMs,
 		stats.ModelsUsed, stats.DescriptionBytes))
+	// 12b. 上游识别链劣化（5xx/超时/解析失败 → 图片级占位，请求本身未 5xx）——
+	//      系统级 SysLog，运营无需翻请求日志即可感知（audit-2026-08 #47）
+	if stats.Failed > 0 {
+		visionRelayLogChainFailure(relayInfo, &cfg, &stats)
+	}
 	return nil
 }
 
@@ -231,4 +238,35 @@ func visionRelayInfraError(err error) *types.NewAPIError {
 		http.StatusInternalServerError,
 		types.ErrOptionWithSkipRetry(),
 	)
+}
+
+// visionRelayFail 记录 5xx 失败路径的结构化日志（audit-2026-08 #47）并返回 5xx。
+// 字段：阶段（stage）、目标模型、识别链模型、状态码、耗时、images 数、错误摘要。
+// 绝不打印 api_key/sidecall_secret 明文；请求级统计在增强后才有意义（stats 为 nil 时记 0）。
+func visionRelayFail(relayInfo *relaycommon.RelayInfo, stage string, cfg *model_setting.VisionRelaySnapshot, stats *vision_relay.Stats, err error) *types.NewAPIError {
+	imagesTotal, imagesFailed := 0, 0
+	if stats != nil {
+		imagesTotal = stats.Total
+		imagesFailed = stats.Failed
+	}
+	elapsedMs := int64(0)
+	if !relayInfo.StartTime.IsZero() {
+		elapsedMs = time.Since(relayInfo.StartTime).Milliseconds()
+	}
+	common.SysError(fmt.Sprintf(
+		"vision relay 5xx: stage=%s request_id=%s target_model=%s chain_models=%s status=%d elapsed_ms=%d images_total=%d images_failed=%d error=%s",
+		stage, relayInfo.RequestId, relayInfo.OriginModelName, strings.Join(cfg.Models, ","),
+		http.StatusInternalServerError, elapsedMs, imagesTotal, imagesFailed, err.Error()))
+	return visionRelayInfraError(err)
+}
+
+// visionRelayLogChainFailure 上游识别链失败（5xx/超时/解析失败 → 图片级占位）的
+// 结构化日志（audit-2026-08 #47）：请求未 5xx（占位继续）但运营需感知链路劣化。
+// 只记模型名/计数/耗时，绝不打印 api_key/sidecall_secret/请求体明文。
+func visionRelayLogChainFailure(relayInfo *relaycommon.RelayInfo, cfg *model_setting.VisionRelaySnapshot, stats *vision_relay.Stats) {
+	common.SysLog(fmt.Sprintf(
+		"vision relay chain degraded: request_id=%s target_model=%s chain_models=%s status=%d images_total=%d images_success=%d images_failed=%d unique=%d cache_hits=%d vision_calls=%d fallback_count=%d elapsed_ms=%d models_used=%s",
+		relayInfo.RequestId, relayInfo.OriginModelName, strings.Join(cfg.Models, ","),
+		http.StatusOK, stats.Total, stats.Success, stats.Failed, stats.UniqueImages,
+		stats.CacheHits, stats.VisionCalls, stats.FallbackCount, stats.ElapsedMs, stats.ModelsUsed))
 }
