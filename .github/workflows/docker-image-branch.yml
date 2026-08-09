@@ -8,10 +8,15 @@ on:
         required: true
         type: string
 
+concurrency:
+  group: docker-image-branch
+  cancel-in-progress: false
+
 jobs:
   prepare:
     name: Prepare Docker tags
     runs-on: ubuntu-latest
+    if: github.repository == 'QuantumNous/new-api'
     outputs:
       branch: ${{ steps.version.outputs.branch }}
       sha: ${{ steps.version.outputs.sha }}
@@ -63,6 +68,7 @@ jobs:
             platform: linux/arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
+    if: github.repository == 'QuantumNous/new-api'
     permissions:
       contents: read
       id-token: write
@@ -105,8 +111,8 @@ jobs:
             calciumion/new-api:${{ needs.prepare.outputs.tag_prefix }}-${{ matrix.arch }}
             calciumion/new-api:${{ needs.prepare.outputs.version }}-${{ matrix.arch }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=docker-image-branch
+          cache-to: type=gha,mode=max,scope=docker-image-branch
           provenance: mode=max
           sbom: true
 
@@ -129,6 +135,7 @@ jobs:
     name: Create multi-arch manifests (Docker Hub)
     needs: [prepare, build_single_arch]
     runs-on: ubuntu-latest
+    if: github.repository == 'QuantumNous/new-api'
     permissions:
       id-token: write
     steps:

@@ -8,11 +8,6 @@ on:
       name:
         description: 'reason'
         required: false
-  push:
-    tags:
-      - '*'
-      - '!*-alpha*'
-      - '!*-td-*'
 
 jobs:
   linux:
