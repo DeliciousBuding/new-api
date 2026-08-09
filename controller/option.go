@@ -255,7 +255,8 @@ func UpdateOption(c *gin.Context) {
 			return
 		}
 	case "vision_relay.enabled", "vision_relay.target_models", "vision_relay.models",
-		"vision_relay.timeout_sec", "vision_relay.base_url":
+		"vision_relay.timeout_sec", "vision_relay.base_url",
+		"vision_relay.api_key", "vision_relay.sidecall_secret":
 		err = model_setting.ValidateVisionRelayWrite(option.Key, option.Value.(string))
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
