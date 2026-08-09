@@ -15,6 +15,7 @@
 | 主线 | `main`（public 远端），合流点见 §4a–§4d |
 | fork 分支策略 | 单主线 + topic 分支，功能收口 = 合入 main + 删分支（2026-08-05 起强制） |
 | CI runner | `ci.yml` 用 **hosted ubuntu-latest**（PR #65，2026-08-09 迁移，不再依赖本地 WSL runner）；`docker-build.yml` 用 hosted ubuntu-latest（release 构建） |
+| 最新发版 tag | `v1.0.0-td-20260809.1`（2026-08-09，含 audit 全批次 + public 化；tag 规范见 §5a） |
 
 ### 4a. 2026-08-05 合流记录（observer + vision-relay 收口 + 上游同步）
 
@@ -221,6 +222,30 @@ cd web && bun install --frozen-lockfile && bun run typecheck && bun test && bun 
 # fork 面
 git diff --name-only official/main..HEAD | wc -l   # 趋势只降不升（P7 迁移后 i18n 归零）
 ```
+
+## 5a. Release tag 命名规范与 GHCR 发版
+
+### tag 命名
+
+| 类别 | 格式 | 示例 | 说明 |
+|------|------|------|------|
+| fork 发版 | `v<major>.<minor>.<patch>-td-<YYYYMMDD>.<seq>` | `v1.0.0-td-20260809.1` | 跟随上游版本号 + td 标识 + 日期 + 同日序号；推送自动触发 docker-build.yml |
+| 上游 rc 基线 | `v1.0.0-rc.<N>` | `v1.0.0-rc.24` | 上游 release tag，保持不动（追上游基线，UPSTREAM_BASE 指向对应 commit） |
+| 临时同步 | `sync-<YYYYMMDD>-td<N>` | `sync-20260807-td10` | sync-upstream 产生的临时构建 tag，可清理 |
+
+### GHCR 发版流程
+
+1. main 上 audit/修复批次合并完成后，`git tag -a v1.0.0-td-<date>.<seq> -m "..."` 打 annotated tag
+2. `git push public <tag>` → 自动触发 `docker-build.yml`（匹配 `v*-td-*`）
+3. workflow 不可重建保护：同 tag 已发布则拒绝（immutability guard，digest 不变）
+4. 镜像：`ghcr.io/deliciousbuding/new-api:<tag>` + `sha-<long>` 双 tag
+5. 回滚锚保留策略：保留最近 2-3 个 fork 发版 tag + 1 个 sync 临时 tag；更老的清理
+
+### GHCR 版本清理
+
+- `gh api users/DeliciousBuding/packages/container/new-api/versions` 列版本
+- 保留：最新发版 + 1-2 回滚锚；删过老的（`gh api -X DELETE .../versions/<id>`）
+- 不可重建：已发版 tag 的镜像不可覆盖，需发新 tag 重建
 
 ## 6. 未决风险
 
