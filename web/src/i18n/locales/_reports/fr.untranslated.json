@@ -1,4 +1,5 @@
 {
+  "Inspect circuit and queue pressure": "Inspect circuit and queue pressure",
   "Filter the cache efficiency view by time range.": "Filter the cache efficiency view by time range.",
   "Credentials for the vision endpoint. The current value is not displayed; leave empty to keep it.": "Credentials for the vision endpoint. The current value is not displayed; leave empty to keep it.",
   "Instruction template for image description. Leave empty to use the default.": "Instruction template for image description. Leave empty to use the default.",

@@ -1,0 +1,20 @@
+{
+  "Accepted": "Accepted",
+  "Arguments": "Arguments",
+  "Circuit closed — no drops": "Circuit closed — no drops",
+  "content unavailable": "content unavailable",
+  "Dropped": "Dropped",
+  "Failures": "Failures",
+  "Inspect circuit and queue pressure": "Inspect circuit and queue pressure",
+  "No drops — write path healthy": "No drops — write path healthy",
+  "Objects deleted": "Objects deleted",
+  "Observer disabled — {{reason}}": "Observer disabled — {{reason}}",
+  "Observer enabled": "Observer enabled",
+  "PG latency": "PG latency",
+  "Recent": "Recent",
+  "Reconstruction gaps over total turns": "Reconstruction gaps over total turns",
+  "Selected session: {{sessionId}}": "Selected session: {{sessionId}}",
+  "Sessions deleted": "Sessions deleted",
+  "Turn volume": "Turn volume",
+  "Written": "Written"
+}

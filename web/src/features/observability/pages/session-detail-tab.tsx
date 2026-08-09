@@ -1,4 +1,3 @@
-import { useQuery } from '@tanstack/react-query'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -40,6 +39,7 @@ For commercial licensing, please contact support@quantumnous.com
  * All three queries follow the module rule from query-keys.ts: `retry:
  * false` — the degraded envelope is a deliberate HTTP 200 answer.
  */
+import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -67,14 +67,10 @@ import { cn } from '@/lib/utils'
 
 import { getSession, getTurnContext, listTurns } from '../api'
 import { CursorPagination } from '../components/cursor-pagination'
+import { TurnStream, type ProviderFamily } from '../components/turn-stream'
 import { useCursorPagination } from '../components/use-cursor-pagination'
 import { observabilityQueryKeys } from '../query-keys'
-import {
-  isObserverDegraded,
-  type ObserverCanonicalItem,
-  type ObserverCanonicalPart,
-  type ObserverTurn,
-} from '../types'
+import { isObserverDegraded, type ObserverTurn } from '../types'
 
 export interface SessionDetailTabProps {
   /**
@@ -88,6 +84,20 @@ export interface SessionDetailTabProps {
 export function SessionDetailTab({ sessionId = null }: SessionDetailTabProps) {
   const { t } = useTranslation()
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null)
+
+  const sessionQuery = useQuery({
+    queryKey: observabilityQueryKeys.sessions.detail(sessionId ?? ''),
+    queryFn: () => getSession(sessionId ?? ''),
+    enabled: sessionId != null,
+    retry: false,
+  })
+  const sessionData = sessionQuery.data?.data
+  const rawFamily =
+    sessionData && !isObserverDegraded(sessionData)
+      ? sessionData.client_family
+      : ''
+  const sessionFamily: ProviderFamily =
+    (rawFamily as ProviderFamily) || 'unknown'
 
   // A different session invalidates the previously selected turn.
   useEffect(() => {
@@ -116,7 +126,11 @@ export function SessionDetailTab({ sessionId = null }: SessionDetailTabProps) {
         onSelectTurn={setSelectedTurnId}
       />
       {selectedTurnId && (
-        <TurnContextPanel sessionId={sessionId} turnId={selectedTurnId} />
+        <TurnContextPanel
+          sessionId={sessionId}
+          turnId={selectedTurnId}
+          family={sessionFamily}
+        />
       )}
     </div>
   )
@@ -421,90 +435,14 @@ function TurnsTimelineCard({
 
 /** 64-hex HMAC shortened for display; media rows and item footers both use
  * this, the full value stays available in the payload. */
-function shortenHmac(hmac: string): string {
-  return hmac.length > 16 ? `${hmac.slice(0, 8)}…${hmac.slice(-4)}` : hmac
-}
-
-function ContextPart({ part }: { part: ObserverCanonicalPart }) {
-  const { t } = useTranslation()
-
-  if (part.type === 'media' && part.media) {
-    const media = part.media
-    return (
-      <div className='text-muted-foreground font-mono text-xs'>
-        <span className='text-foreground'>{t('Media')}</span>
-        {media.kind ? ` · ${media.kind}` : ''}
-        {media.media_type ? ` · ${media.media_type}` : ''} ·{' '}
-        {media.logical_bytes.toLocaleString()} {t('bytes')} ·{' '}
-        {shortenHmac(media.hmac)}
-      </div>
-    )
-  }
-  // Part type values are the contract vocabulary from normalizer.go:
-  // partTypeToolCall = "tool_call", partTypeToolResult = "tool_result".
-  if (part.type === 'tool_call' && part.call) {
-    const name = part.call.name ?? part.call.id ?? ''
-    return (
-      <div className='font-mono text-xs'>
-        {t('Tool call')}: {name}
-      </div>
-    )
-  }
-  if (part.type === 'tool_result' && part.result) {
-    const output =
-      typeof part.result.output === 'string'
-        ? part.result.output
-        : (JSON.stringify(part.result.output) ?? '')
-    return (
-      <div className='max-h-48 overflow-y-auto font-mono text-xs break-all whitespace-pre-wrap'>
-        {t('Tool result')}: {output.slice(0, 200)}
-        {output.length > 200 ? '…' : ''}
-      </div>
-    )
-  }
-  return (
-    <div className='max-h-48 overflow-y-auto text-xs break-all whitespace-pre-wrap'>
-      {part.text}
-    </div>
-  )
-}
-
-function ContextItem({ item }: { item: ObserverCanonicalItem }) {
-  const { t } = useTranslation()
-
-  return (
-    <div className='rounded-lg border p-3'>
-      <div className='flex items-center gap-2'>
-        <Badge variant='outline'>{item.kind}</Badge>
-        {item.role && (
-          <span className='text-muted-foreground text-xs'>{item.role}</span>
-        )}
-        {item.truncated && <Badge variant='warning'>{t('Truncated')}</Badge>}
-      </div>
-      {item.content && item.content.length > 0 && (
-        <div className='mt-2 space-y-1.5'>
-          {item.content.map((part) => (
-            <ContextPart
-              key={`${part.type}-${part.hmac ?? part.logical_bytes ?? ''}`}
-              part={part}
-            />
-          ))}
-        </div>
-      )}
-      <div className='text-muted-foreground mt-2 font-mono text-xs'>
-        {item.logical_bytes.toLocaleString()} {t('bytes')} ·{' '}
-        {shortenHmac(item.hmac)}
-      </div>
-    </div>
-  )
-}
-
 function TurnContextPanel({
   sessionId,
   turnId,
+  family,
 }: {
   sessionId: string
   turnId: string
+  family: ProviderFamily
 }) {
   const { t } = useTranslation()
   const query = useQuery({
@@ -538,11 +476,7 @@ function TurnContextPanel({
           <EmptyTitle>{t('No content captured for this turn.')}</EmptyTitle>
         </Empty>
       ) : (
-        <div className='space-y-2'>
-          {data.items.map((item) => (
-            <ContextItem key={`${item.kind}-${item.hmac}`} item={item} />
-          ))}
-        </div>
+        <TurnStream items={data.items} family={family} />
       )
   } else {
     content = <DegradedAlert data={data} />

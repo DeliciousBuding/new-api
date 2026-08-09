@@ -45,12 +45,7 @@ import {
   type RowSelectionState,
 } from '@tanstack/react-table'
 import { ChevronDown } from 'lucide-react'
-import {
-  useMemo,
-  useState,
-  type ComponentProps,
-  type ReactNode,
-} from 'react'
+import { useMemo, useState, type ComponentProps, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { DataTableRow, DataTableView } from '@/components/data-table'
@@ -187,18 +182,20 @@ function SessionTable(props: SessionTableProps) {
         accessorKey: 'session_id',
         header: t('Session ID'),
         cell: ({ row }) => (
-          <span className='font-mono text-xs'>{row.original.session_id}</span>
+          <span className='font-mono text-xs' title={row.original.session_id}>
+            {row.original.session_id.slice(0, 8)}…
+          </span>
         ),
       },
       { accessorKey: 'node_scope', header: t('Node Scope') },
-      { accessorKey: 'user_id', header: t('User ID') },
-      { accessorKey: 'client_family', header: t('Client Family') },
       {
-        accessorKey: 'first_seen',
-        header: t('First Seen'),
-        cell: ({ row }) =>
-          formatDateTimeStr(new Date(row.original.first_seen)),
+        accessorKey: 'user_id',
+        header: t('User'),
+        cell: ({ row }) => (
+          <span className='text-xs tabular-nums'>{row.original.user_id}</span>
+        ),
       },
+      { accessorKey: 'client_family', header: t('Client') },
       {
         accessorKey: 'last_seen',
         header: t('Last Seen'),
@@ -207,12 +204,23 @@ function SessionTable(props: SessionTableProps) {
       {
         accessorKey: 'turn_count',
         header: t('Turns'),
-        cell: ({ row }) => row.original.turn_count.toLocaleString(),
+        cell: ({ row }) => (
+          <span className='font-medium tabular-nums'>
+            {row.original.turn_count.toLocaleString()}
+          </span>
+        ),
       },
       {
         accessorKey: 'gap_count',
         header: t('Gaps'),
-        cell: ({ row }) => row.original.gap_count.toLocaleString(),
+        cell: ({ row }) =>
+          row.original.gap_count > 0 ? (
+            <Badge variant='warning' className='tabular-nums'>
+              {row.original.gap_count.toLocaleString()}
+            </Badge>
+          ) : (
+            <span className='text-muted-foreground tabular-nums'>0</span>
+          ),
       },
     ],
     [t]
@@ -256,7 +264,7 @@ function SessionTable(props: SessionTableProps) {
           role='button'
           tabIndex={0}
           aria-selected={row.getIsSelected()}
-          className='cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset'
+          className='focus-visible:ring-ring cursor-pointer focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-inset'
         />
       )}
     />
@@ -319,8 +327,7 @@ export function SessionsTab(props: SessionsTabProps) {
 
   const hasMore =
     data != null && !isObserverDegraded(data) && data.meta.has_more
-  const sessions =
-    data != null && !isObserverDegraded(data) ? data.items : []
+  const sessions = data != null && !isObserverDegraded(data) ? data.items : []
   const hasActiveFilters = Object.keys(filters).length > 0
 
   const advancedActiveCount = [
@@ -332,7 +339,10 @@ export function SessionsTab(props: SessionsTabProps) {
     draft.to,
   ].filter(Boolean).length
 
-  const handleDraftChange = (field: keyof SessionFilterDraft, value: string) => {
+  const handleDraftChange = (
+    field: keyof SessionFilterDraft,
+    value: string
+  ) => {
     setDraft((current) => ({ ...current, [field]: value }))
   }
 
