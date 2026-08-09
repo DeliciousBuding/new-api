@@ -11,7 +11,7 @@
 |------|-----|
 | 仓库可见性 | **public**（2026-08-09 由 private 转公开，CI 用免费 hosted ubuntu-latest） |
 | UPSTREAM_BASE | `823e26304a396854ace30b52b98ec497c2dd9c36`（= 官方 2026-08-09 快照；#46 起语义 = 最近一次 sync 的官方 HEAD，见 §4d） |
-| 官方 main HEAD | `823e26304`（#6674/#6711 未 merge 进 fork，落后 2，待下次 sync 吸收） |
+| 官方 main HEAD | `823e26304`（已完全同步，**落后 0**；merge-base == official/main == UPSTREAM_BASE） |
 | 主线 | `main`（public 远端），合流点见 §4a–§4d |
 | fork 分支策略 | 单主线 + topic 分支，功能收口 = 合入 main + 删分支（2026-08-05 起强制） |
 | CI runner | `ci.yml` 用 **hosted ubuntu-latest**（PR #65，2026-08-09 迁移，不再依赖本地 WSL runner）；`docker-build.yml` 用 hosted ubuntu-latest（release 构建） |
