@@ -3,7 +3,7 @@
 > 本文档是 fork 治理的长期 SSOT：每个产品线的自有目录、上游覆盖层、重放顺序与验收命令。
 > 配套文件：`UPSTREAM_BASE`（基线 SHA）、`.github/workflows/upstream-check.yml`（落后检测）、
 > `.github/scripts/verify-td-release.sh`（release 验证）、`docs/session-reports/`（会话记录）。
-> 最后更新：2026-08-09 17:30
+> 最后更新：2026-08-09 18:50
 
 ## 0. 当前状态快照
 
@@ -246,6 +246,35 @@ git diff --name-only official/main..HEAD | wc -l   # 趋势只降不升（P7 迁
 - `gh api users/DeliciousBuding/packages/container/new-api/versions` 列版本
 - 保留：最新发版 + 1-2 回滚锚；删过老的（`gh api -X DELETE .../versions/<id>`）
 - 不可重建：已发版 tag 的镜像不可覆盖，需发新 tag 重建
+
+## 5b. 分支命名规范与生命周期
+
+### 主线
+
+- **`main`**：唯一合流主线，受 ruleset（#20184444）保护（deletion + non_fast_forward + pull_request）。所有改动经 PR 合入，不直接 push。
+
+### topic 分支命名（`type/topic[-YYYYMMDD]`）
+
+| 前缀 | 用途 | 示例 | 日期后缀 |
+|------|------|------|---------|
+| `fix/` | bug 修复 | `fix/affinity-observer-20260808` | 带（便于追溯批次） |
+| `feat/` | 新功能开发 | `feat/vision-relay-responses` | 不带（功能跨多日） |
+| `docs/` | 文档变更 | `docs/fork-surface-baseline-20260809` | 带 |
+| `chore/` | 杂项/清理 | `chore/cleanup-stale-handoff` | 不带 |
+| `sync/` | 上游同步 | `sync/upstream-20260809` | 带 |
+| `rebuild/` | 影子重建（一次性） | `rebuild/upstream-20260803` | 带 |
+
+### 生命周期（2026-08-05 起强制）
+
+- **功能收口 = 合入 main + 删分支**（本地 + 远端）。PR 合并时 `--delete-branch`。
+- worktree 随分支删除而 prune（`git worktree prune`）。
+- 不保留"在途"分支超过一个开发周期；长期搁置的 feat 转 draft PR 或关闭。
+- 本地主 worktree 保持 `main`；topic 分支用独立 worktree（`.worktrees/<short-name>/`）。
+
+### tag 与分支的关系
+
+- 发版 tag（§5a `v*-td-*`）打在 `main` 的合并 commit 上，不从 topic 分支打。
+- topic 分支不长期存活；合并后即删，tag 指向 main 的 commit 而非分支 HEAD。
 
 ## 6. 未决风险
 
