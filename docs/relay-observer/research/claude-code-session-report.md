@@ -1,5 +1,7 @@
 # Claude Code agent 会话与请求载荷事实报告
 
+最后更新：2026-08-03
+
 > 调研对象：`D:\Code\Projects\claude-code`（Claude Code TypeScript 源码，~1900 文件，Bun 运行时；注意：任务描述称 Go 源码，实际为 TypeScript）。
 > 用途：relay observer 的 tail-first 内容保留策略与 agentloop 结构化存储设计依据。
 > 方法：全部结论附 `文件:行号` 证据。仓库根路径下文省略为 `<repo>`。

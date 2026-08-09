@@ -1,5 +1,7 @@
 # Codex agent 会话与请求载荷事实报告
 
+最后更新：2026-08-03
+
 > 来源仓库：`D:\Code\Projects\openai-codex`（OpenAI Codex CLI，Rust）
 > 基线：git HEAD `38b064c`（"Render TUI prompts before submitting user turns (#33373)"，含 app-server / protocol v2 / responses-websocket 的新架构）
 > 目的：为 relay observer 的 tail-first 内容保留策略与 agentloop 结构化存储提供事实依据。
