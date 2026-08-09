@@ -3,16 +3,18 @@
 > 本文档是 fork 治理的长期 SSOT：每个产品线的自有目录、上游覆盖层、重放顺序与验收命令。
 > 配套文件：`UPSTREAM_BASE`（基线 SHA）、`.github/workflows/upstream-check.yml`（落后检测）、
 > `.github/scripts/verify-td-release.sh`（release 验证）、`docs/session-reports/`（会话记录）。
-> 最后更新：2026-08-09 15:45
+> 最后更新：2026-08-09 17:30
 
 ## 0. 当前状态快照
 
 | 指标 | 值 |
 |------|-----|
+| 仓库可见性 | **public**（2026-08-09 由 private 转公开，CI 用免费 hosted ubuntu-latest） |
 | UPSTREAM_BASE | `823e26304a396854ace30b52b98ec497c2dd9c36`（= 官方 2026-08-09 快照；#46 起语义 = 最近一次 sync 的官方 HEAD，见 §4d） |
 | 官方 main HEAD | `823e26304`（#6674/#6711 未 merge 进 fork，落后 2，待下次 sync 吸收） |
-| 主线 | `main`（public 远端），合流点见 §4a |
+| 主线 | `main`（public 远端），合流点见 §4a–§4d |
 | fork 分支策略 | 单主线 + topic 分支，功能收口 = 合入 main + 删分支（2026-08-05 起强制） |
+| CI runner | `ci.yml` 用 **hosted ubuntu-latest**（PR #65，2026-08-09 迁移，不再依赖本地 WSL runner）；`docker-build.yml` 用 hosted ubuntu-latest（release 构建） |
 
 ### 4a. 2026-08-05 合流记录（observer + vision-relay 收口 + 上游同步）
 
@@ -41,23 +43,31 @@
 - **验证**：`go build ./...` 全绿；`go test ./router ./middleware ./common ./relay/...` 在 Linux（WSL）通过（Windows 本地 2 例 HTTP/2 GOAWAY 测试 `wsarecv: aborted` 为环境差异，CI=Linux 不受影响）；vision relay hook（controller/relay.go）与 `/api/relay-observer` 路由红线保留
 - **UPSTREAM_BASE**：`0cd9dc85e` → `5c3abffe8`（v1.0.0-rc.24）
 
-### 4d. 2026-08-09 账目语义修复（audit-2026-08 #35/#46/#56，治理文档批次）
+### 4d. 2026-08-09 合流记录（治理文档修复 + public 化 + CI 迁 hosted + audit 批次）
 
-- **UPSTREAM_BASE 语义定规（#46）**：从"上次合并的官方基线"改为"最近一次 sync 时的官方 HEAD 快照"；
-  `scripts/sync-upstream.sh` merge 成功后自动 `git rev-parse official/main > UPSTREAM_BASE` 并入 merge
-  提交，并校验 `git merge-base HEAD official/main == official/main`（真落后 0），不一致输出告警。
-- **当前快照**：BASE 推进 `5c3abffe8` → `823e26304`（官方 #6674/#6711 尚未 merge 进 fork，落后 2，
-  下次 sync 吸收；语义检测走 upstream-check.yml 的 `git cherry`，不因 BASE 跟随 HEAD 而失真）。
-- **§2 对齐现实（#35）**：W0 seam 收缩方案改写为当前接缝事实描述（main.go 直连注册 + service 层
-  hook 封装 + setting 层配置注入），审计决定不实现 seam 收缩。
-- **§3 幽灵条目清理 + owned dirs 界定（#56）**：删除 5 个无 fork 本地改动的条目（含 context_key/
-  relay_info/billingexpr），补 owned dirs 作用域界定与当前 footprint 数字基线。
+**治理文档批次（PR #61，audit-2026-08 #35/#46/#56）**：
+- **UPSTREAM_BASE 语义定规（#46）**：从"上次合并的官方基线"改为"最近一次 sync 时的官方 HEAD 快照"；`scripts/sync-upstream.sh` merge 成功后自动 `git rev-parse official/main > UPSTREAM_BASE` 并入 merge 提交，并校验 `git merge-base HEAD official/main == official/main`（真落后 0），不一致输出告警。BASE 推进 `5c3abffe8` → `823e26304`（官方 #6674/#6711 尚未 merge 进 fork，落后 2，下次 sync 吸收；语义检测走 upstream-check.yml 的 `git cherry`，不因 BASE 跟随 HEAD 而失真）。
+- **§2 对齐现实（#35）**：W0 seam 收缩方案改写为当前接缝事实描述（main.go 直连注册 + service 层 hook 封装 + setting 层配置注入），审计决定不实现 seam 收缩。
+- **§3 幽灵条目清理 + owned dirs 界定（#56）**：删除 5 个无 fork 本地改动的条目（含 context_key/relay_info/billingexpr），补 owned dirs 作用域界定与当前 footprint 数字基线。
+
+**仓库 public 化**：private → public（`gh api -X PATCH repos/.../new-api -f visibility=public`）。动机：消除 private 仓库的 Actions minutes/storage 计费（曾触发 account payments failed 锁定），public 仓库标准 hosted runner 免费不限分钟。同步清理 GHCR 历史版本释放存储（tokendance-komari/grok2api 整包删，mirai/fund-dashboard/diffaudit-*-runner/new-api 删旧版本保留 live）。
+
+**CI 迁 hosted（PR #65）**：`ci.yml` 的 backend/frontend job 从 `[self-hosted, Linux, X64, wsl]` 改为 `ubuntu-latest`，加 `actions/setup-go@v6.5.0`（go-version-file: go.mod）+ `oven-sh/setup-bun@v2.2.0`（bun 1.3.11）。同 PR 含 rankings vendor fallback 修复（`model/model_vendor_fallback.go` + `service/rankings_vendor_fallback.go`，fork 独立文件，官方只 +2 行调用）。验证：Backend 2m25s + Frontend 42s 全绿。
+
+**audit-2026-08 修复批次（4 PR）**：
+- **#62 affinity-observer C 类**：affinity 软失败解绑（#39，连续 3 次 5xx 解绑不绑死 TTL）、磁盘体回读 1MiB 前缀（#43）、observer 丢弃告警（#52，连续 100/累计 1000 打 SysError）
+- **#63 vision 5xx 日志**：5xx 失败路径补结构化日志（#47）+ 敏感 key 写时校验（#48）
+- **#60 workflow trigger 修复 B 类**：ci.yml paths-ignore docs-only（#41）、docker-image-branch.yml cache scope+concurrency（#42）、release.yml/electron-build.yml tag 触发收紧（#37/#38）
+
+**PR 收尾**：#30 关闭（内容已 upstream）、#34 转 draft（feat observability master/detail，VChart 在 happy-dom 无 canvas 需 mock，体量 993 行单独处理）；5 个 fix PR 合并后本地 6 worktree + 10 分支清理至 1 worktree + main/feat 分支。
+
+**CI runner 注销待办**：`wsl-newapi` runner 不再被 ci.yml 引用但仍注册（#51 跟踪）；`sync-release-to-gitcode.yml` 用 self-hosted runner 且 gitcode 镜像对 public 仓库已无意义（#51 跟踪停用）。
 
 ## 1. 产品线清单（重放顺序即编号）
 
 ### P1 · Fork release / Docker / CI
 - **自有目录**：`.github/`、`Dockerfile`、`VERSION`、`NOTICE`、`THIRD-PARTY-LICENSES.md`、`AGENTS.md`、`UPSTREAM_BASE`
-- **上游覆盖**：ci.yml / docker-build.yml / release.yml（CI 用**本地 WSL runner `wsl-newapi`**（28 核，2026-08-05 起）、release 构建用 hosted ubuntu-latest、GHCR 个人 owner、node 22 钉版）；pr-check.yml 已删（2026-08-03，外部审核建议）
+- **上游覆盖**：ci.yml / docker-build.yml / release.yml（ci.yml 用 **hosted ubuntu-latest** + setup-go/setup-bun，2026-08-09 PR #65 迁移；release 构建用 hosted ubuntu-latest；GHCR 个人 owner；node 22 钉版；ci.yml 加 paths-ignore docs-only，2026-08-09 PR #60）；pr-check.yml 已删（2026-08-03，外部审核建议）
 - **上游等价**：无（纯 fork 侧）
 - **重放**：最先（与上游零交集）
 
@@ -214,6 +224,7 @@ git diff --name-only official/main..HEAD | wc -l   # 趋势只降不升（P7 迁
 
 ## 6. 未决风险
 
-- `upstream-check.yml` 仍 `runs-on: ubuntu-latest`——private repo 无 hosted minutes，该检查实际不生效；迁移 sgp2（只 checkout 受信任 main + fetch 官方公开仓库，无 secrets，可安全迁）。
+- ~~`upstream-check.yml` 仍 `runs-on: ubuntu-latest`——private repo 无 hosted minutes，该检查实际不生效~~ → **已消除**（2026-08-09 仓库转 public，hosted runner 免费，该检查现已生效）。
 - 上游周更频率高：建议 upstream status 日跑、实际 rebuild 周跑、大功能开发前手动跑。
 - vision-relay（P8）与 observer 共用 context_key 文件，重放时注意追加式合并。
+- UPSTREAM_BASE 落后 ~2 天（`5c3abffe8` vs 官方 `823e26304`），#46 跟踪 sync-upstream.sh 自动 bump；下次 sync 时 true merge 吸收。
