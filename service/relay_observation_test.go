@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"errors"
 	"net/http/httptest"
 	"testing"
@@ -172,4 +173,97 @@ func TestBuildTurnEventKeepsOriginalCaptureFormatAcrossConversion(t *testing.T) 
 	assert.Equal(t, string(types.RelayFormatClaude), ev.CaptureRelayFormat)
 	require.NotNil(t, ev.Request)
 	assert.Same(t, req, *ev.Request)
+}
+
+// TestObserverBuildTurnEventDiskBodyStaysHeaderOnly is the issue #43
+// contract for the observer identity path: a disk-backed body is never read
+// wholesale into memory, so the event's identity carries the headers only and
+// no body bytes (body-born alias sources degrade to absent).
+func TestObserverBuildTurnEventDiskBodyStaysHeaderOnly(t *testing.T) {
+	SetRelayObserverRuntime(relayobserver.NewRuntime())
+	t.Cleanup(func() { SetRelayObserverRuntime(nil) })
+
+	body := bytes.Repeat([]byte{'a'}, 2*1024*1024) // 2 MiB, over the 1 MiB prefix budget
+	storage := newTestDiskBodyStorage(body)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Set(common.KeyBodyStorage, storage)
+	ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	ctx.Request.Header.Set("X-Codex-Turn-Metadata", `{"thread_id":"thr-disk"}`)
+
+	info := &relaycommon.RelayInfo{
+		RequestId:   "turn-disk",
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelId: 7},
+	}
+	ev := buildTurnEvent(ctx, info, TurnUsage{}, true)
+	assert.Nil(t, ev.Identity.Body, "disk-backed bodies must not be read into the event identity")
+	assert.Equal(t, `{"thread_id":"thr-disk"}`, ev.Identity.Headers.Get("X-Codex-Turn-Metadata"))
+}
+
+// --- issue #52: observer 丢弃告警 ---
+
+func resetObserverDropCountersForTest() {
+	observerDroppedConsecutive.Store(0)
+	observerDroppedCumulative.Store(0)
+}
+
+// TestObserverDropAlertThresholds is the issue #52 alert contract: alerts
+// fire at the 100th consecutive drop and re-fire on every 1000th cumulative
+// drop; a streak reset (successful publish) keeps the cumulative count.
+func TestObserverDropAlertThresholds(t *testing.T) {
+	resetObserverDropCountersForTest()
+	t.Cleanup(resetObserverDropCountersForTest)
+	for i := int64(1); i < 100; i++ {
+		_, _, alert := recordObserverDroppedEvent()
+		require.False(t, alert, "no alert before the consecutive threshold")
+	}
+	consecutive, cumulative, alert := recordObserverDroppedEvent()
+	require.True(t, alert, "alert must fire at the 100th consecutive drop")
+	require.Equal(t, int64(100), consecutive)
+	require.Equal(t, int64(100), cumulative)
+
+	for i := int64(101); i < 1000; i++ {
+		_, _, alert := recordObserverDroppedEvent()
+		require.False(t, alert)
+	}
+	_, cumulative, alert = recordObserverDroppedEvent()
+	require.True(t, alert, "alert must re-fire on the 1000th cumulative drop")
+	require.Equal(t, int64(1000), cumulative)
+
+	// A successful publish resets the streak; the cumulative count keeps
+	// counting. The next 100-streak re-fires the consecutive alert, and the
+	// next cumulative multiple re-fires the cumulative alert.
+	observerDroppedConsecutive.Store(0)
+	for i := int64(1001); i < 1099; i++ {
+		_, _, alert := recordObserverDroppedEvent()
+		require.False(t, alert)
+	}
+	_, cumulative, alert = recordObserverDroppedEvent() // cumulative 1099, consecutive 99
+	require.False(t, alert)
+	_, cumulative, alert = recordObserverDroppedEvent() // cumulative 1100, consecutive 100
+	require.True(t, alert, "consecutive alert re-fires on a new 100-streak")
+	require.Equal(t, int64(1100), cumulative)
+
+	for i := int64(1101); i < 2000; i++ {
+		_, _, alert := recordObserverDroppedEvent()
+		require.False(t, alert)
+	}
+	_, cumulative, alert = recordObserverDroppedEvent()
+	require.True(t, alert, "alert must re-fire on the 2000th cumulative drop")
+	require.Equal(t, int64(2000), cumulative)
+}
+
+// TestObserverPublishTurnEventCountsDrops is the publish-path contract of
+// issue #52: a disabled runtime drops every event, and publishTurnEvent
+// advances the drop counters that drive the alert thresholds.
+func TestObserverPublishTurnEventCountsDrops(t *testing.T) {
+	resetObserverDropCountersForTest()
+	t.Cleanup(resetObserverDropCountersForTest)
+	rt := relayobserver.NewRuntime() // uninitialized: TryPublishTurn drops
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	for i := 0; i < 50; i++ {
+		publishTurnEvent(ctx, rt, relayobserver.Event{EventID: "drop-test"})
+	}
+	require.Equal(t, int64(50), observerDroppedConsecutive.Load())
+	require.Equal(t, int64(50), observerDroppedCumulative.Load())
 }
