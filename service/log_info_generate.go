@@ -292,10 +292,10 @@ func DetectClientProfile(c *gin.Context) string {
 		return "langchain"
 	case strings.Contains(ua, "llama_index"), strings.Contains(ua, "llama-index"):
 		return "llama_index"
-	// MCP SDK（agenstry 实证：mcp-python-sdk / mcp-typescript-sdk / @modelcontextprotocol/sdk）
+	// MCP SDK（empirical：mcp-python-sdk / mcp-typescript-sdk / @modelcontextprotocol/sdk）
 	case strings.Contains(ua, "mcp-python-sdk"), strings.Contains(ua, "mcp-typescript-sdk"), strings.Contains(ua, "modelcontextprotocol"):
 		return "mcp_sdk"
-	// 自动化工作流（agenstry 实证：n8n / Zapier / Make.com 作为客户端调用 LLM API）
+	// 自动化工作流（empirical：n8n / Zapier / Make.com 作为客户端调用 LLM API）
 	case strings.Contains(ua, "n8n"), strings.Contains(ua, "zapier"), strings.Contains(ua, "make.com"):
 		return "automation"
 	// 裸 HTTP 客户端（curl/wget/requests/httpx/urllib/okhttp/axios 等）

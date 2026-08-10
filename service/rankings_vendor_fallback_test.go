@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// 本测试文件是 fork 二开（rankings 厂商/logo 三级兜底）的独立承载文件，
+// Fork-added test file: rankings vendor/logo three-tier fallback.
 // 与 service/rankings_vendor_fallback.go 一一对应，追上游时不参与官方 merge。
 
 // TestApplyRankingVendorFallbacks 端到端验证三层兜底整体行为：

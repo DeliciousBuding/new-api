@@ -48,7 +48,6 @@ import { StatusBadge } from '@/components/status-badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Empty,
@@ -67,7 +66,6 @@ import {
 } from '@/components/ui/table'
 import {
   ChevronDown,
-  Loader2,
   Terminal,
   TerminalSquare,
   Wrench,
@@ -440,7 +438,7 @@ function ToolCallCard({ call }: { call: ObserverToolCallRef }) {
       : typeof call.arguments === 'string'
         ? call.arguments
         : (JSON.stringify(call.arguments, null, 2) ?? '')
-  const name = call.name ?? call.id ?? t('Tool Call')
+  const name = call.name ?? call.id ?? t('Tool call')
 
   return (
     <div className='min-w-0'>
@@ -499,7 +497,7 @@ function ToolResultCard({ result }: { result: ObserverToolResultRef }) {
           aria-hidden='true'
         />
         <span className='min-w-0 truncate font-mono text-xs font-medium'>
-          {t('Tool Result')}
+          {t('Tool result')}
         </span>
         {outputText && (
           <ChevronDown

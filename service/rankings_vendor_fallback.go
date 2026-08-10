@@ -2,7 +2,7 @@ package service
 
 import "github.com/QuantumNous/new-api/model"
 
-// 本文件是 fork 二开（rankings 厂商/logo 三级兜底）的独立承载文件。
+// Fork-added file: rankings vendor/logo three-tier fallback.
 // 官方 service/rankings.go 只在 buildRankingModelMeta 里留一个调用点
 // （applyRankingVendorFallbacks），追上游 merge 时官方文件 diff 面仅 1 行。
 // 相关：model/model_vendor_fallback.go

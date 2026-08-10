@@ -121,7 +121,7 @@ func TestDiscoverResponsesNoImage(t *testing.T) {
 }
 
 // codex_cli 实测形态：data 字段塞完整 data URI（data:image/png;base64,...）。
-// 必须容错解析，且与裸 base64 形态 digest 一致（生产实证 2026-08-06）。
+// 必须容错解析，且与裸 base64 形态 digest 一致（empirical validation）。
 func TestDiscoverResponsesDataURIPrefix(t *testing.T) {
 	raw := `{
 		"model":"deepseek-v4-flash",
