@@ -17,9 +17,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /**
- * Sessions tab (T4.2): keyset-paginated session list from GET
+ * Sessions tab: keyset-paginated session list from GET
  * /api/relay-observer/sessions with a filter form (native input/select ui
- * components) and the T4.1 cursor pagination pattern.
+ * components) and the cursor pagination pattern.
  *
  * State handling mirrors features/usage-logs/usage-logs-table.tsx: loading →
  * skeleton (DataTableView renders TableSkeleton), empty → TableEmpty, error →
@@ -27,9 +27,9 @@ For commercial licensing, please contact support@quantumnous.com
  * notice. Filter state stays in memory (this route has no search-params
  * schema; use-table-url-state does not apply here).
  *
- * T4.3 seam (PROGRESS): the tab owns a selected-session highlight and
+ * seam: the tab owns a selected-session highlight and
  * exposes it as optional controlled props (`selectedSessionId` /
- * `onSelectSession`). T4.3 lifts the state in index.tsx and feeds the
+ * `onSelectSession`). lifts the state in index.tsx and feeds the
  * Session Detail tab; until then the tab keeps its own selection.
  *
  * pattern: features/usage-logs/common-logs-filter-bar.tsx (filter form
@@ -219,7 +219,7 @@ function SessionTable(props: SessionTableProps) {
   )
 
   // The selected row is driven by the external selection state (own state or
-  // the T4.3 controlled prop), so TanStack selection is derived, not owned:
+  // the controlled prop), so TanStack selection is derived, not owned:
   // clicking a row calls onSelectSession and the highlight follows.
   const rowSelection = useMemo<RowSelectionState>(
     () => (props.selectedSessionId ? { [props.selectedSessionId]: true } : {}),
@@ -267,12 +267,12 @@ function SessionTable(props: SessionTableProps) {
 
 export interface SessionsTabProps {
   /**
-   * T4.3 seam — the currently selected session id. Optional: when the parent
+   * seam — the currently selected session id. Optional: when the parent
    * passes it (with onSelectSession) the tab is controlled and the parent
    * owns the value; otherwise the tab keeps its own selection state.
    */
   selectedSessionId?: string | null
-  /** T4.3 seam — selection change callback (id or null when deselected). */
+  /** seam — selection change callback (id or null when deselected). */
   onSelectSession?: (sessionId: string | null) => void
 }
 

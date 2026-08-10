@@ -24,7 +24,7 @@ import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 /**
- * T4.3 seam — the ?session=<id> URL-state that feeds the Session Detail tab
+ * seam — the ?session=<id> URL-state that feeds the Session Detail tab
  * (pattern: usage-logs/$section.tsx validateSearch; the workspace index
  * reads it with getRouteApi and passes it to SessionDetailTab). Exported so
  * the seam is directly testable.

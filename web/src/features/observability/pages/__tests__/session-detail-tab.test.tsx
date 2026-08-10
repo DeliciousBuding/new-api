@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /**
- * SessionDetailTab behavior tests (T4.3): summary rendering, keyset turns
+ * SessionDetailTab behavior tests: summary rendering, keyset turns
  * pagination, on-demand context triggering (enabled assertion), context
  * content rendering including media summaries, and the degraded / empty /
  * error states. All data is fake; no real session ids or IPs.

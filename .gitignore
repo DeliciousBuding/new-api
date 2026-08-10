@@ -42,3 +42,14 @@ service/openaicompat/chat_responses_live_local_test.go
 go.work
 go.work.sum
 .agents/
+
+# Security: never track secrets/certs/dbs
+*.sqlite
+*.sqlite3
+*.key
+*.pem
+*.p12
+*.crt
+.worktrees/
+new-api-linux-amd64
+new-api

@@ -17,15 +17,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /**
- * Root-only relay observer workspace (T4.1 skeleton).
+ * Root-only relay observer workspace.
  *
- * Three tabs, one per T4.2/T4.3 work item: Overview (aggregate windows),
+ * Three tabs, one per /work item: Overview (aggregate windows),
  * Sessions (keyset-paginated session list), and Session Detail (one
  * session's turns + canonical context). The guard lives in the route
  * (_authenticated/observability/route.tsx); this component renders only for
  * ROLE.SUPER_ADMIN.
  *
- * T4.3 seam: the session shown on the Session Detail tab arrives through the
+ * seam: the session shown on the Session Detail tab arrives through the
  * route search param `?session=<id>` (URL-state, same pattern as
  * useTableUrlState). Clicking a row on the Sessions tab writes the param via
  * onSelectSession; the Session Detail tab receives it as its sessionId prop

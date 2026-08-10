@@ -18,19 +18,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /**
- * Session Detail tab (T4.3): the summary card of one session, its
+ * Session Detail tab: the summary card of one session, its
  * keyset-paginated turns timeline, and the canonical context of the turn
  * selected on the timeline.
  *
  * pattern: web/src/features/usage-logs/components/usage-logs-table.tsx
  * (useQuery + Card/Table layout, toLocaleString token formatting),
  * web/src/features/observability/components/cursor-pagination.tsx (keyset
- * footer — the shared T4.1 pagination, NOT the offset-based ui/pagination),
+ * footer — the shared pagination, NOT the offset-based ui/pagination),
  * web/src/components/status-badge.tsx (success/failure coloring).
  *
- * T4.2 seam (see PROGRESS.md): the session shown here is the one selected
+ * seam: the session shown here is the one selected
  * on the Sessions tab. The selection arrives through the optional
- * `sessionId` prop, which T4.2's Sessions tab click handler feeds from the
+ * `sessionId` prop, which 's Sessions tab click handler feeds from the
  * route search param `?session=<id>` (URL-state, same pattern as
  * useTableUrlState), wired in the workspace index. With no sessionId this
  * tab renders its default empty state and issues no requests at all.
@@ -87,9 +87,8 @@ import {
 
 export interface SessionDetailTabProps {
   /**
-   * T4.2 seam: the session selected on the Sessions tab (see the module doc
-   * and PROGRESS.md). `undefined` renders the default empty state and no
-   * queries fire.
+   * seam: the session selected on the Sessions tab (see the module doc).
+   * `undefined` renders the default empty state and no queries fire.
    */
   sessionId?: string | null
 }

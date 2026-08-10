@@ -433,7 +433,7 @@ describe('SessionsTab', () => {
     ])
   })
 
-  test('reports selection changes through the controlled props (T4.3 seam)', async () => {
+  test('reports selection changes through the controlled props', async () => {
     handler = pageHandler
     const selected: (string | null)[] = []
     const { host } = renderTab({

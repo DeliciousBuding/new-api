@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /**
- * Keyset cursor pagination pattern for the Root observer pages (T4.1).
+ * Keyset cursor pagination pattern for the Root observer pages.
  *
  * The backend returns `{ items, meta: { next_cursor, has_more } }` and
  * cursors are opaque and forward-only, so "next" needs the previous page's
@@ -31,7 +31,7 @@ For commercial licensing, please contact support@quantumnous.com
  *  - this file — `<CursorPagination />`, the footer bar (previous / page
  *    info / next).
  *
- * Usage (T4.2/T4.3):
+ * Usage:
  *
  *   const pagination = useCursorPagination()
  *   const query = useQuery({

@@ -20,7 +20,7 @@ For commercial licensing, please contact support@quantumnous.com
  * Zod schemas and types for the Root-only relay observer API.
  *
  * Field names keep the backend JSON snake_case verbatim — the SSOT is
- * controller/relay_observer_query.go (T3.2 implementation is the spec).
+ * controller/relay_observer_query.go.
  * Timestamps are RFC3339 strings (Go time.Time JSON encoding). The one
  * exception is /api/relay-observer/status, whose DTO (relayobserver.Status)
  * carries no JSON tags and therefore serializes with Go's default PascalCase

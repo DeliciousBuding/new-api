@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /**
- * Overview tab (T4.2): live observer snapshot from GET /status plus the
+ * Overview tab: live observer snapshot from GET /status plus the
  * aggregate windows / totals from GET /overview.
  *
  * Layout follows the native dashboard/usage-logs practice: a ui/card status
