@@ -1,19 +1,19 @@
 # BACKLOG — 设计 debt 与待办归档
 
-最后更新：2026-08-09 18:30
+最后更新：2026-08-10 15:30
 
 > 本文档归档已关闭 issue 的根因、建议与下一轮推进路径。GitHub Issues 面保持为 0（便于治理），真实 code debt 落此明确 handoff（neat-freak 规则：不藏 TODO，落到文档）。
 > 优先级沿用原 issue severity；推进时按需重开 issue 或直接走 PR。
 
 ## 1. Stability & Performance（DB / observer 热路径）
 
-### #36 [critical] 同步 log INSERT 占用 open=12 主池
-- **根因**：`model/log.go` 的同步 INSERT 在 relay 热路径占用主连接池（open=12），写吞吐瓶颈。
+### #36 [critical] 同步 log INSERT 占用主池（SQL_MAX_OPEN_CONNS 默认 1000）
+- **根因**：`model/log.go` 的 `createLog`（line 127-129）同步 `LOG_DB.Create(log)` 在 relay 热路径占用主连接池，写吞吐瓶颈。
 - **建议**：log 写入改异步（channel + batch flush）或独立连接池；与 #45 DB 池隔离同源，建议一起做。
 - **原生设计约束**：`model/log.go` 是上游覆盖文件（P3），改动需走 FORK_SURFACE §3 冲突热点评估；优先用 fork 侧 wrapper（service/log_*.go）而非直改 model。
 
-### #45 [medium] DB 池 open=12 无隔离——relay 写与 admin 聚合共享池
-- **根因**：`model/main.go` 单池 open=12，relay 写与 30-41s admin 聚合争抢连接。
+### #45 [medium] DB 池无隔离——relay 写与 admin 聚合共享池
+- **根因**：`model/main.go` 单池（`SQL_MAX_OPEN_CONNS` 默认 1000，line 194/238），relay 写与 30-41s admin 聚合争抢连接；无 read replica。
 - **建议**：双池（relay 热路径短事务池 + admin 聚合大查询池）或 read replica；或 admin 聚合走单独只读连接。
 - **原生设计约束**：`model/main.go` 是上游覆盖文件，双池改动影响面大；评估是否上游已有同类演进。
 
@@ -35,9 +35,9 @@
 - **原生设计约束**：vision relay 是 fork 自有产品线（P8），`controller/relay.go` 单点钩子是唯一上游覆盖，改动在自有目录内。
 
 ### #1 [medium] Anthropic SDK requests misclassified as openai_sdk in client_profile
-- **根因**：`relay/common/relay_info.go` 的 client_profile 分类把 Anthropic SDK 请求误判为 openai_sdk。
-- **建议**：client_profile 分类逻辑加 Anthropic UA/header 识别。
-- **原生设计约束**：`relay/common/relay_info.go` 是上游覆盖文件（P3），冲突强度低但需评估上游是否有同类修复。
+- **根因**：`service/log_info_generate.go` 的 `DetectClientProfile` 函数（line 92）把 Anthropic SDK 请求兜底误判为 `openai_sdk`（line 237/317 默认归 openai_sdk，Anthropic UA 未命中 `claude_cli` 检测条件时兜底）。
+- **建议**：`DetectClientProfile` 分类逻辑加 Anthropic SDK UA/header 识别，避免兜底到 `openai_sdk`。
+- **原生设计约束**：`service/log_info_generate.go` 是上游覆盖文件（P3），仍在 fork diff 中；改动需走 FORK_SURFACE §3 冲突热点评估。
 
 ## 3. Ops 收尾
 
