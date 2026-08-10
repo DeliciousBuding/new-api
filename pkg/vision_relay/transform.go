@@ -246,7 +246,7 @@ func imageSourceFromResponsesBlock(block gjson.Result) ImageSource {
 	data := block.Get("data").String()
 	if strings.HasPrefix(data, "data:") {
 		// 实测 codex_cli 在 data 字段直接塞完整 data URI（data:image/png;base64,...），
-		// 而 OpenAI Responses 规范是裸 base64——两种都容错（2026-08-06 生产实证）
+		// 而 OpenAI Responses 规范是裸 base64——两种都容错（empirical validation）
 		mime, raw, _ := parseDataURL(data)
 		if raw != "" {
 			return ImageSource{Data: raw, MediaType: mime}

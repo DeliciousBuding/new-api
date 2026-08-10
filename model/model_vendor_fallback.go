@@ -2,9 +2,8 @@ package model
 
 import "strings"
 
-// 本文件是 fork 二开（rankings 厂商/logo 兜底）的独立承载文件：
-// 不修改任何官方文件，追上游时此文件不参与官方 merge。
-// 相关：service/rankings_vendor_fallback.go
+// Fork-added file: rankings vendor/logo fallback. Not modified by upstream merges.
+// See also: service/rankings_vendor_fallback.go
 
 // GetModelVendorMap 返回非软删且挂了 vendor_id 的模型目录行（model_name → vendor_id）。
 // 排行榜用其作为第二层兜底数据源：模型有历史流量但当前不在 pricing

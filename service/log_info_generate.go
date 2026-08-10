@@ -85,7 +85,7 @@ func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other
 //
 // 识别依据优先序：特征头（Originator / X-App / x-litellm-*）> 特异性 UA 词 >
 // 协议头兜底（Anthropic-Version / X-Stainless-*，仅当 UA 无品牌信息时生效）。
-// 每个分支的 UA 字符串均有实证来源（官方源码 / 逆向文档 / agenstry 流量语料 / nginx 流量），
+// 每个分支的 UA 字符串均有实证来源（官方源码 / 逆向文档 / empirical UA samples ），
 // 见分支内注释。
 //
 // 结果仅作审计展示 hint，不参与鉴权/计费/路由；调用方可伪造。
@@ -160,7 +160,7 @@ func DetectClientProfile(c *gin.Context) string {
 		// （由连接协议版本决定）。
 		return "cliproxyapi"
 	case strings.Contains(ua, "hermesagent"):
-		// HermesAgent/<version>（自有运维 agent 源码实证）
+		// HermesAgent/<version>（UA pattern from source analysis）
 		return "hermes_agent"
 	case strings.Contains(ua, "workbuddy"):
 		return "workbuddy"
@@ -239,14 +239,14 @@ func DetectClientProfile(c *gin.Context) string {
 		// Mistral SDK UA（mistralai/client-python 源码 CustomUserAgentHook 实证）
 		return "mistral_sdk"
 	case strings.Contains(ua, "cohere-python"), strings.Contains(ua, "cohere-typescript"), strings.Contains(ua, "cohere-node"):
-		// Cohere 官方 SDK（agenstry caller-labels 语料实证）
+		// Cohere 官方 SDK（empirical caller-labels）
 		return "cohere_sdk"
 	case strings.Contains(ua, "gemini-cli"), strings.Contains(ua, "gemini cli"):
 		return "gemini_cli"
 	case strings.Contains(ua, "google-genai-sdk"), strings.Contains(ua, "genai-py"),
 		strings.Contains(ua, "google-cloud-aiplatform"):
 		// google-genai（新版）/ google-generativeai（旧版 genai-py）SDK UA 实证；
-		// google-cloud-aiplatform 为 Vertex AI SDK（agenstry 语料实证）
+		// google-cloud-aiplatform 为 Vertex AI SDK（empirical UA samples）
 		return "gemini_sdk"
 	case strings.Contains(ua, "qoder"):
 		// Qoder / Qoder Work（阿里，千问办公前台）。Qoder-Cli UA 为 GitHub issue 实证
@@ -261,7 +261,7 @@ func DetectClientProfile(c *gin.Context) string {
 		return "groq"
 	case strings.Contains(ua, "grok-user"), strings.Contains(ua, "grok/"):
 		// xAI Grok（Grok app/CLI）与 Groq 公司为不同实体（Grok-User/Grok/ 为
-		// agenstry caller-labels 流量实证模式），相邻放置便于对照
+		// empirical caller-label patterns），相邻放置便于对照
 		return "grok"
 	case strings.Contains(ua, "litellm/"):
 		// LiteLLM 中转代理 UA（litellm 生态检测实现实证；x-litellm-* 头已在上层捕获）
@@ -281,13 +281,13 @@ func DetectClientProfile(c *gin.Context) string {
 	case strings.Contains(ua, "chatgpt"):
 		return "chatgpt"
 	// xAI Grok（Grok app/CLI 与 Groq 公司为不同实体；Grok-User/Grok/ 为
-	// agenstry caller-labels 流量实证模式）
+	// empirical caller-label patterns）
 	case strings.Contains(ua, "grok-user"), strings.Contains(ua, "grok/"):
 		return "grok"
 	case strings.Contains(ua, "minis/"):
 		// Minis/<version> 安卓客户端（nginx 流量实证）
 		return "minis"
-	// LLM 框架（agenstry caller-labels 实证：langchain 系列嵌入 UA 不带锚定）
+	// LLM 框架（empirical caller-labels：langchain 系列嵌入 UA 不带锚定）
 	case strings.Contains(ua, "langchain"):
 		return "langchain"
 	case strings.Contains(ua, "llama_index"), strings.Contains(ua, "llama-index"):

@@ -4,7 +4,8 @@ on:
   push:
     branches:
       - main
-      - "codex/release-*"
+      - release
+      - dev
     paths-ignore:
       - '**/*.md'
       - 'docs/**'

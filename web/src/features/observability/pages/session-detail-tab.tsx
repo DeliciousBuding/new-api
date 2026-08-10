@@ -43,9 +43,12 @@ For commercial licensing, please contact support@quantumnous.com
 import { useEffect, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { Response } from '@/components/ai-elements/response'
 import { StatusBadge } from '@/components/status-badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Empty,
@@ -62,6 +65,13 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import {
+  ChevronDown,
+  Loader2,
+  Terminal,
+  TerminalSquare,
+  Wrench,
+} from 'lucide-react'
 import dayjs from '@/lib/dayjs'
 import { cn } from '@/lib/utils'
 
@@ -72,7 +82,8 @@ import { observabilityQueryKeys } from '../query-keys'
 import {
   isObserverDegraded,
   type ObserverCanonicalItem,
-  type ObserverCanonicalPart,
+  type ObserverToolCallRef,
+  type ObserverToolResultRef,
   type ObserverTurn,
 } from '../types'
 
@@ -419,81 +430,286 @@ function TurnsTimelineCard({
 // Turn context (on-demand canonical content reconstruction)
 // ============================================================================
 
-/** 64-hex HMAC shortened for display; media rows and item footers both use
- * this, the full value stays available in the payload. */
-function shortenHmac(hmac: string): string {
-  return hmac.length > 16 ? `${hmac.slice(0, 8)}…${hmac.slice(-4)}` : hmac
-}
 
-function ContextPart({ part }: { part: ObserverCanonicalPart }) {
+function ToolCallCard({ call }: { call: ObserverToolCallRef }) {
   const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const argsText =
+    call.arguments == null
+      ? ''
+      : typeof call.arguments === 'string'
+        ? call.arguments
+        : (JSON.stringify(call.arguments, null, 2) ?? '')
+  const name = call.name ?? call.id ?? t('Tool Call')
 
-  if (part.type === 'media' && part.media) {
-    const media = part.media
-    return (
-      <div className='text-muted-foreground font-mono text-xs'>
-        <span className='text-foreground'>{t('Media')}</span>
-        {media.kind ? ` · ${media.kind}` : ''}
-        {media.media_type ? ` · ${media.media_type}` : ''} ·{' '}
-        {media.logical_bytes.toLocaleString()} {t('bytes')} ·{' '}
-        {shortenHmac(media.hmac)}
-      </div>
-    )
-  }
-  // Part type values are the contract vocabulary from normalizer.go:
-  // partTypeToolCall = "tool_call", partTypeToolResult = "tool_result".
-  if (part.type === 'tool_call' && part.call) {
-    const name = part.call.name ?? part.call.id ?? ''
-    return (
-      <div className='font-mono text-xs'>
-        {t('Tool call')}: {name}
-      </div>
-    )
-  }
-  if (part.type === 'tool_result' && part.result) {
-    const output =
-      typeof part.result.output === 'string'
-        ? part.result.output
-        : (JSON.stringify(part.result.output) ?? '')
-    return (
-      <div className='max-h-48 overflow-y-auto font-mono text-xs break-all whitespace-pre-wrap'>
-        {t('Tool result')}: {output.slice(0, 200)}
-        {output.length > 200 ? '…' : ''}
-      </div>
-    )
-  }
   return (
-    <div className='max-h-48 overflow-y-auto text-xs break-all whitespace-pre-wrap'>
-      {part.text}
+    <div className='min-w-0'>
+      <button
+        type='button'
+        onClick={() => setOpen((v) => !v)}
+        className='flex w-full items-center gap-1.5 py-0.5 text-left'
+        aria-expanded={open}
+      >
+        <Wrench
+          className='text-muted-foreground size-3.5 shrink-0'
+          aria-hidden='true'
+        />
+        <span className='min-w-0 truncate font-mono text-xs font-medium'>
+          {name}
+        </span>
+        {argsText && (
+          <ChevronDown
+            className={cn(
+              'text-muted-foreground ml-auto size-3.5 shrink-0 transition-transform',
+              open && 'rotate-180'
+            )}
+            aria-hidden='true'
+          />
+        )}
+      </button>
+      {open && argsText && (
+        <pre className='bg-muted/40 mt-1 max-h-64 overflow-auto p-2 break-all font-mono text-[11px] whitespace-pre-wrap'>
+          {argsText}
+        </pre>
+      )}
     </div>
   )
 }
 
-function ContextItem({ item }: { item: ObserverCanonicalItem }) {
+function ToolResultCard({ result }: { result: ObserverToolResultRef }) {
   const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const outputText =
+    result.output == null
+      ? ''
+      : typeof result.output === 'string'
+        ? result.output
+        : (JSON.stringify(result.output, null, 2) ?? '')
 
   return (
-    <div className='rounded-lg border p-3'>
-      <div className='flex items-center gap-2'>
-        <Badge variant='outline'>{item.kind}</Badge>
-        {item.role && (
-          <span className='text-muted-foreground text-xs'>{item.role}</span>
+    <div className='min-w-0'>
+      <button
+        type='button'
+        onClick={() => setOpen((v) => !v)}
+        className='flex w-full items-center gap-1.5 py-0.5 text-left'
+        aria-expanded={open}
+      >
+        <TerminalSquare
+          className='text-muted-foreground size-3.5 shrink-0'
+          aria-hidden='true'
+        />
+        <span className='min-w-0 truncate font-mono text-xs font-medium'>
+          {t('Tool Result')}
+        </span>
+        {outputText && (
+          <ChevronDown
+            className={cn(
+              'text-muted-foreground ml-auto size-3.5 shrink-0 transition-transform',
+              open && 'rotate-180'
+            )}
+            aria-hidden='true'
+          />
         )}
-        {item.truncated && <Badge variant='warning'>{t('Truncated')}</Badge>}
-      </div>
-      {item.content && item.content.length > 0 && (
-        <div className='mt-2 space-y-1.5'>
-          {item.content.map((part) => (
-            <ContextPart
-              key={`${part.type}-${part.hmac ?? part.logical_bytes ?? ''}`}
-              part={part}
-            />
-          ))}
-        </div>
+      </button>
+      {open && outputText && (
+        <pre className='bg-muted/40 mt-1 max-h-64 overflow-auto p-2 break-all font-mono text-[11px] whitespace-pre-wrap'>
+          {outputText}
+        </pre>
       )}
-      <div className='text-muted-foreground mt-2 font-mono text-xs'>
-        {item.logical_bytes.toLocaleString()} {t('bytes')} ·{' '}
-        {shortenHmac(item.hmac)}
+    </div>
+  )
+}
+
+/**
+ * Group consecutive assistant(tool_call) items with the role=tool result
+ * items that follow them, so each pair renders inside one Assistant bubble
+ * instead of two separate cards. The observer stores tool_call and
+ * tool_result as separate CanonicalItem rows; without this grouping the
+ * user sees the call arguments and the result output in split cards.
+ */
+interface ContextGroup {
+  item: ObserverCanonicalItem
+  attachedResults: ObserverCanonicalItem[]
+}
+
+function groupContextItems(items: ObserverCanonicalItem[]): ContextGroup[] {
+  const groups: ContextGroup[] = []
+  for (const item of items) {
+    if (item.role === 'tool') {
+      const prev = groups[groups.length - 1]
+      if (
+        prev &&
+        prev.item.role === 'assistant' &&
+        (prev.item.content ?? []).some((p) => p.type === 'tool_call')
+      ) {
+        prev.attachedResults.push(item)
+        continue
+      }
+    }
+    groups.push({ item, attachedResults: [] })
+  }
+  return groups
+}
+
+function ContextBubble({
+  group,
+}: {
+  group: ContextGroup
+}) {
+  const { t } = useTranslation()
+  const { item, attachedResults } = group
+  const parts = item.content ?? []
+  const textParts = parts.filter(
+    (p) => p.type === 'text' && p.text
+  )
+  const callParts = parts.filter((p) => p.type === 'tool_call' && p.call)
+  const resultParts = parts.filter(
+    (p) => p.type === 'tool_result' && p.result
+  )
+  const mediaParts = parts.filter((p) => p.type === 'media' && p.media)
+  const hasTool = callParts.length > 0 || resultParts.length > 0
+
+  // system / unknown / gap: neutral rendering
+  if (item.kind === 'system' || item.kind === 'gap' || item.kind === 'unknown') {
+    if (item.kind === 'gap') {
+      return (
+        <div className='flex items-center justify-center gap-2 py-1'>
+          <div className='border-border-foreground/20 h-px flex-1 border-t border-dashed' />
+          <span className='text-muted-foreground text-xs'>
+            {t('Gap')} · {item.logical_bytes.toLocaleString()} {t('bytes')}
+          </span>
+          <div className='border-border-foreground/20 h-px flex-1 border-t border-dashed' />
+        </div>
+      )
+    }
+    return (
+      <div className='bg-muted/30 rounded-lg p-3'>
+        {item.kind === 'system' && (
+          <div className='text-muted-foreground mb-1 flex items-center gap-1.5 text-xs font-medium'>
+            <Terminal className='size-3.5' aria-hidden='true' />
+            {t('System')}
+          </div>
+        )}
+        <div className='max-h-48 overflow-y-auto text-xs break-all whitespace-pre-wrap'>
+          {textParts.map((p) => p.text).join('\n')}
+        </div>
+      </div>
+    )
+  }
+
+  const isUser = item.role === 'user'
+  const isAssistant = item.role === 'assistant'
+
+  return (
+    <div className={cn('flex gap-2', isUser && 'flex-row-reverse')}>
+      {isUser && (
+        <Avatar className='ring-border/60 size-6 shrink-0 self-start rounded-full ring-1 max-sm:hidden'>
+          <AvatarFallback className='bg-primary text-primary-foreground text-[11px] font-semibold'>
+            U
+          </AvatarFallback>
+        </Avatar>
+      )}
+      {isAssistant && (
+        <Avatar className='ring-border/60 size-6 shrink-0 self-start rounded-full ring-1 max-sm:hidden'>
+          <AvatarFallback className='bg-muted text-muted-foreground text-[11px] font-semibold'>
+            A
+          </AvatarFallback>
+        </Avatar>
+      )}
+      <div
+        className={cn(
+          'min-w-0 max-w-[85%] rounded-xl border px-3 py-2',
+          isUser
+            ? 'bg-primary text-primary-foreground'
+            : 'bg-muted text-foreground'
+        )}
+      >
+        {isAssistant && (
+          <div className='text-muted-foreground mb-0.5 text-xs font-medium'>
+            {t('Assistant')}
+          </div>
+        )}
+        {/* Text content (markdown for assistant, plain for user) */}
+        {textParts.length > 0 && (
+          <div className='min-w-0'>
+            {isAssistant ? (
+              <Response className='text-sm'>
+                {textParts.map((p) => p.text).join('\n')}
+              </Response>
+            ) : (
+              <div className='text-sm break-words whitespace-pre-wrap'>
+                {textParts.map((p) => p.text).join('\n')}
+              </div>
+            )}
+          </div>
+        )}
+        {/* Inline tool calls (inside the bubble, no separate card border) */}
+        {callParts.map((part) =>
+          part.call ? (
+            <ToolCallCard key={`call-${part.hmac ?? ''}`} call={part.call} />
+          ) : null
+        )}
+        {/* Inline tool results from this item's own parts */}
+        {resultParts.map((part) =>
+          part.result ? (
+            <ToolResultCard
+              key={`result-${part.hmac ?? ''}`}
+              result={part.result}
+            />
+          ) : null
+        )}
+        {/* Attached role=tool items (merged into this assistant bubble) */}
+        {attachedResults.map((resultItem, index) => {
+          const rParts = (resultItem.content ?? []).filter(
+            (p) => (p.type === 'tool_result' || p.type === 'text') && p.result
+          )
+          // If the result item has tool_result parts, render them
+          if (rParts.length > 0) {
+            return rParts.map((part) =>
+              part.result ? (
+                <ToolResultCard
+                  key={`attached-${resultItem.hmac}-${index}`}
+                  result={part.result}
+                />
+              ) : null
+            )
+          }
+          // Otherwise render the text as a tool result
+          const textContent = (resultItem.content ?? [])
+            .filter((p) => p.type === 'text' && p.text)
+            .map((p) => p.text)
+            .join('\n')
+          if (textContent) {
+            return (
+              <ToolResultCard
+                key={`attached-${resultItem.hmac}-${index}`}
+                result={{ output: textContent }}
+              />
+            )
+          }
+          return null
+        })}
+        {/* Media badges */}
+        {mediaParts.length > 0 && (
+          <div className='space-y-1'>
+            {mediaParts.map((part) =>
+              part.media ? (
+                <div
+                  key={`media-${part.hmac ?? ''}`}
+                  className='text-muted-foreground font-mono text-xs'
+                >
+                  {t('Media')} · {part.media.kind} ·{' '}
+                  {part.media.logical_bytes.toLocaleString()} {t('bytes')}
+                </div>
+              ) : null
+            )}
+          </div>
+        )}
+        {item.truncated && (
+          <Badge variant='warning' className='mt-1'>
+            {t('Truncated')}
+          </Badge>
+        )}
       </div>
     </div>
   )
@@ -508,8 +724,6 @@ function TurnContextPanel({
 }) {
   const { t } = useTranslation()
   const query = useQuery({
-    // The query key carries both ids: session_id is a mandatory contract
-    // parameter of GET /turns/:id/context (T3.2).
     queryKey: observabilityQueryKeys.context(turnId, sessionId),
     queryFn: () => getTurnContext(turnId, sessionId),
     retry: false,
@@ -538,9 +752,12 @@ function TurnContextPanel({
           <EmptyTitle>{t('No content captured for this turn.')}</EmptyTitle>
         </Empty>
       ) : (
-        <div className='space-y-2'>
-          {data.items.map((item) => (
-            <ContextItem key={`${item.kind}-${item.hmac}`} item={item} />
+        <div className='flex flex-col gap-3'>
+          {groupContextItems(data.items).map((group) => (
+            <ContextBubble
+              key={`${group.item.kind}-${group.item.hmac}`}
+              group={group}
+            />
           ))}
         </div>
       )
