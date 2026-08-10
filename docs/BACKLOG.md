@@ -42,6 +42,6 @@
 ## 3. Ops 收尾
 
 ### #51 [medium] us1-newapi runner 注销
-- **进展**：① sync-release-to-gitcode.yml 已 disable；② electron-build.yml 已 disable。
+- **进展**：① sync-release-to-gitcode.yml 已**删除**（PR #72，public 仓库后 gitcode 镜像无意义）；② electron-build.yml 保留但仅 workflow_dispatch 手动触发（不自动运行）。
 - **剩余**：注销 us1 上的 `wsl-newapi` runner（需 us1 SSH 操作，CI 已迁 hosted 不再依赖）。
 - **执行**：`gh runner delete` 或 us1 上 `./config.sh remove`。
