@@ -3,7 +3,7 @@
 > 本文档是 fork 治理的长期 SSOT：每个产品线的自有目录、上游覆盖层、重放顺序与验收命令。
 > 配套文件：`UPSTREAM_BASE`（基线 SHA）、`.github/workflows/upstream-check.yml`（落后检测）、
 > `.github/scripts/verify-td-release.sh`（release 验证）、`docs/session-reports/`（会话记录）。
-> 最后更新：2026-08-09 18:50
+> 最后更新：2026-08-09 19:15
 
 ## 0. 当前状态快照
 
@@ -47,7 +47,7 @@
 ### 4d. 2026-08-09 合流记录（治理文档修复 + public 化 + CI 迁 hosted + audit 批次）
 
 **治理文档批次（PR #61，audit-2026-08 #35/#46/#56）**：
-- **UPSTREAM_BASE 语义定规（#46）**：从"上次合并的官方基线"改为"最近一次 sync 时的官方 HEAD 快照"；`scripts/sync-upstream.sh` merge 成功后自动 `git rev-parse official/main > UPSTREAM_BASE` 并入 merge 提交，并校验 `git merge-base HEAD official/main == official/main`（真落后 0），不一致输出告警。BASE 推进 `5c3abffe8` → `823e26304`（官方 #6674/#6711 尚未 merge 进 fork，落后 2，下次 sync 吸收；语义检测走 upstream-check.yml 的 `git cherry`，不因 BASE 跟随 HEAD 而失真）。
+- **UPSTREAM_BASE 语义定规（#46）**：从"上次合并的官方基线"改为"最近一次 sync 时的官方 HEAD 快照"；`scripts/sync-upstream.sh` merge 成功后自动 `git rev-parse official/main > UPSTREAM_BASE` 并入 merge 提交，并校验 `git merge-base HEAD official/main == official/main`（真落后 0），不一致输出告警。BASE 推进 `5c3abffe8` → `823e26304`（= 官方 HEAD，含 #6674/#6711，true merge 后已吸收；当前落后 0 见 §0）；语义检测走 upstream-check.yml 的 `git cherry`，不因 BASE 跟随 HEAD 而失真）。
 - **§2 对齐现实（#35）**：W0 seam 收缩方案改写为当前接缝事实描述（main.go 直连注册 + service 层 hook 封装 + setting 层配置注入），审计决定不实现 seam 收缩。
 - **§3 幽灵条目清理 + owned dirs 界定（#56）**：删除 5 个无 fork 本地改动的条目（含 context_key/relay_info/billingexpr），补 owned dirs 作用域界定与当前 footprint 数字基线。
 
@@ -163,7 +163,7 @@ pkg/relay_observer/               ← 核心（不 import gin/service/controller
 > 演进备注：未来若做 seam 收缩（`service/relay_lifecycle.go` + bridge + 独立 routes），入口见
 > audit-2026-08 #35，本节即为现状基线。
 
-## 3. 冲突热点（B∩C，20 文件）
+## 3. 冲突热点（B∩C，按 `git diff official/main..HEAD` 实时核对）
 
 > 筛选口径（2026-08-09 起）：`git ls-files` 存在 + `git diff official/main..HEAD` 有本地改动。
 > 审计 #56 清理 5 个幽灵条目（无 fork 本地改动）：`constant/context_key.go`、
@@ -183,9 +183,10 @@ pkg/relay_observer/               ← 核心（不 import gin/service/controller
 
 **owned dirs 界定**（§4 W3 "outside own dirs ≤8" 的作用域，footprint 审计基线）：
 `pkg/vision_relay/`、`pkg/relay_observer/`、`service/relay_observation*`、
-`web/src/features/observability/`、`web/src/i18n/`。当前 218 文件总 footprint 中 owned 110
+`web/src/features/observability/`、`web/src/i18n/`。当前 225 文件总 footprint 中 owned 110
 （relay_observer 66 + vision_relay 11 + observability 18 + i18n 13 + relay_observation* 2），
-outside-own-dirs 87（含 docs/.github/根治理 21）；重建目标 outside ≤8。
+outside-own-dirs 115（上游覆盖代码 91 + 治理 docs/.github/根 23 + scripts 1）；
+重建目标代码 outside ≤8。
 
 ## 4. 影子重建流程（下一轮执行）
 
