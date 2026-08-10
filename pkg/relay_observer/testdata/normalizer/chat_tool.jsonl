@@ -1,0 +1,2 @@
+{"kind":"message","role":"assistant","content":[{"type":"tool_call","call":{"id":"call_1","name":"get_weather","arguments":"{\"city\":\"tokyo\"}"}}],"logical_bytes":237,"hmac":"d81f636fff71bd049c08c99b335774807ad66d56dfe7f28cbd356b1a796d8d55"}
+{"kind":"message","role":"tool","tool_call_id":"call_1","content":[{"type":"text","text":"22c"}],"logical_bytes":55,"hmac":"fc4825ab95bec27a33185d97562386da33e8a10ba58a9a241a71f0e0c7c72b83"}

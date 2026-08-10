@@ -39,6 +39,8 @@ Transitive dependencies should be audited before a final external release.
 | backend     | production  | Go        | `github.com/joho/godotenv`                            | `v1.5.1`                             | MIT                                                |
 | backend     | production  | Go        | `github.com/mewkiz/flac`                              | `v1.0.13`                            | Unlicense                                          |
 | backend     | production  | Go        | `github.com/nicksnyder/go-i18n/v2`                    | `v2.6.1`                             | MIT                                                |
+| backend     | production  | Go        | `github.com/oschwald/geoip2-golang`                  | `v1.13.0`                            | MIT                                                |
+| backend     | production  | Go        | `github.com/oschwald/maxminddb-golang`               | `v1.13.0`                            | MIT                                                |
 | backend     | production  | Go        | `github.com/pkg/errors`                               | `v0.9.1`                             | BSD-2-Clause                                       |
 | backend     | production  | Go        | `github.com/pquerna/otp`                              | `v1.5.0`                             | Apache-2.0                                         |
 | backend     | production  | Go        | `github.com/samber/hot`                               | `v0.11.0`                            | MIT                                                |
@@ -91,6 +93,7 @@ Transitive dependencies should be audited before a final external release.
 | web | production | npm | `cmdk` | `1.1.1` | MIT |
 | web | production | npm | `dayjs` | `1.11.21` | MIT |
 | web | production | npm | `dompurify` | `3.4.11` | Apache-2.0 OR MPL-2.0 |
+| web | production | npm | `flag-icons` | `7.5.0` | MIT |
 | web | production | npm | `i18next` | `26.3.6` | MIT |
 | web | production | npm | `i18next-browser-languagedetector` | `8.2.1` | MIT |
 | web | production | npm | `input-otp` | `1.4.2` | MIT |

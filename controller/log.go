@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 
@@ -92,6 +93,142 @@ func GetLogByKey(c *gin.Context) {
 		"success": true,
 		"message": "",
 		"data":    logs,
+	})
+}
+
+type cacheStatBatchRequest struct {
+	TokenIds       []int64 `json:"token_ids"`
+	StartTimestamp int64   `json:"start_timestamp"`
+	EndTimestamp   int64   `json:"end_timestamp"`
+}
+
+// cacheStatMaxWindowSeconds 限制缓存聚合窗口最大为 90 天，
+// 防止全站聚合（空 token_ids）对日志库做超范围扫描。
+const cacheStatMaxWindowSeconds = 90 * 24 * 3600
+
+// cacheStatItem 是单个 token 的缓存用量响应（含缓存命中率，一位小数）。
+type cacheStatItem struct {
+	TokenId             int64   `json:"token_id"`
+	PromptTokens        int64   `json:"prompt_tokens"`
+	InputTokens         int64   `json:"input_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+	CacheRate           float64 `json:"cache_rate"`
+}
+
+// cacheRatePct 计算缓存命中率百分比（一位小数）。inputTokens 已由模型层
+// 按日志语义规范化，避免 OpenAI/Anthropic 混合流量重复或漏算缓存输入。
+func cacheRatePct(cacheReadTokens int64, inputTokens int64) float64 {
+	if inputTokens <= 0 {
+		if cacheReadTokens > 0 {
+			return 100
+		}
+		return 0
+	}
+	rate := float64(cacheReadTokens) / float64(inputTokens) * 100
+	if rate > 100 {
+		return 100
+	}
+	return math.Round(rate*10) / 10
+}
+
+// GetLogsCacheStatBatch 批量返回多个 token 在窗口内的缓存用量聚合
+// （keys 页逐 key 缓存率展示）。默认窗口为最近 7 天；空 token 列表返回空。
+func GetLogsCacheStatBatch(c *gin.Context) {
+	var req cacheStatBatchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	end := req.EndTimestamp
+	if end == 0 {
+		end = common.GetTimestamp()
+	}
+	start := req.StartTimestamp
+	if start == 0 {
+		start = end - 7*24*3600
+	}
+	if start < 0 || end <= start || end-start > cacheStatMaxWindowSeconds {
+		common.ApiErrorMsg(c, "invalid time range")
+		return
+	}
+	stats, err := model.SumCacheUsageByTokenIds(req.TokenIds, start, end)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	items := make([]cacheStatItem, 0, len(req.TokenIds))
+	for _, id := range req.TokenIds {
+		st, ok := stats[id]
+		if !ok {
+			continue
+		}
+		items = append(items, cacheStatItem{
+			TokenId:             st.TokenId,
+			PromptTokens:        st.PromptTokens,
+			InputTokens:         st.InputTokens,
+			CacheReadTokens:     st.CacheReadTokens,
+			CacheCreationTokens: st.CacheCreationTokens,
+			CacheRate:           cacheRatePct(st.CacheReadTokens, st.InputTokens),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    gin.H{"items": items},
+	})
+}
+
+// cacheStatDailyItem 是单个天桶的缓存用量响应（含缓存命中率，一位小数）。
+type cacheStatDailyItem struct {
+	Day                 int64   `json:"day"`
+	PromptTokens        int64   `json:"prompt_tokens"`
+	InputTokens         int64   `json:"input_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+	CacheRate           float64 `json:"cache_rate"`
+}
+
+// GetLogsCacheStatDaily 返回窗口内按天分桶的缓存用量聚合
+// （dashboard 缓存效率趋势）。token_ids 为空表示全站；默认窗口最近 7 天。
+func GetLogsCacheStatDaily(c *gin.Context) {
+	var req cacheStatBatchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	end := req.EndTimestamp
+	if end == 0 {
+		end = common.GetTimestamp()
+	}
+	start := req.StartTimestamp
+	if start == 0 {
+		start = end - 7*24*3600
+	}
+	if start < 0 || end <= start || end-start > cacheStatMaxWindowSeconds {
+		common.ApiErrorMsg(c, "invalid time range")
+		return
+	}
+	rows, err := model.SumCacheUsageDaily(req.TokenIds, start, end)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	items := make([]cacheStatDailyItem, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, cacheStatDailyItem{
+			Day:                 r.Day,
+			PromptTokens:        r.PromptTokens,
+			InputTokens:         r.InputTokens,
+			CacheReadTokens:     r.CacheReadTokens,
+			CacheCreationTokens: r.CacheCreationTokens,
+			CacheRate:           cacheRatePct(r.CacheReadTokens, r.InputTokens),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    gin.H{"items": items},
 	})
 }
 

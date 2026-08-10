@@ -104,7 +104,15 @@ const MemoizedDataTableRow = React.memo(DataTableRowInner, (prev, next) => {
     prev.isSelected === next.isSelected &&
     prev.visibleColumnIds === next.visibleColumnIds &&
     prev.getColumnClassName === next.getColumnClassName &&
-    prev.cellRenderColumns === next.cellRenderColumns
+    prev.cellRenderColumns === next.cellRenderColumns &&
+    // Interactive rows may close over selection/navigation state. Treat the
+    // relevant DOM handlers and accessibility props as render identity so a
+    // stable TanStack row never keeps a stale callback or keyboard contract.
+    prev.onClick === next.onClick &&
+    prev.onKeyDown === next.onKeyDown &&
+    prev.role === next.role &&
+    prev.tabIndex === next.tabIndex &&
+    prev['aria-selected'] === next['aria-selected']
   )
 }) as typeof DataTableRowInner
 

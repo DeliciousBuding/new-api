@@ -35,6 +35,7 @@ import dayjs from '@/lib/dayjs'
 import { formatQuota } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
+import type { TokenCacheStat } from '../api'
 import { API_KEY_STATUSES } from '../constants'
 import type { ApiKey } from '../types'
 import { ApiKeyGroupCell } from './api-key-group-cell'
@@ -73,7 +74,10 @@ function useGroupRatios(): Record<string, number | string> {
   return data ?? {}
 }
 
-export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
+export function useApiKeysColumns(
+  now: number,
+  cacheStats?: Map<number, TokenCacheStat>
+): ColumnDef<ApiKey>[] {
   const { t, i18n } = useTranslation()
   const groupRatios = useGroupRatios()
   const shouldReduceMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
@@ -189,6 +193,42 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
         )
       },
       size: 170,
+    },
+    {
+      id: 'cache_rate',
+      header: t('Cache Rate'),
+      cell: ({ row }) => {
+        const stat = cacheStats?.get(row.original.id)
+        if (!stat || stat.input_tokens === 0) {
+          return <span className='text-muted-foreground text-xs'>-</span>
+        }
+        return (
+          <Tooltip>
+            <TooltipTrigger
+              render={<span className='inline-flex items-center' />}
+            >
+              <span className='text-xs font-medium tabular-nums'>
+                {stat.cache_rate.toFixed(1)}%
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              <div className='space-y-1 text-xs'>
+                <div>
+                  {t('Cache Read')}: {stat.cache_read_tokens.toLocaleString()}
+                </div>
+                <div>
+                  {t('Cache Write')}:{' '}
+                  {stat.cache_creation_tokens.toLocaleString()}
+                </div>
+                <div>
+                  {t('Input Tokens')}: {stat.input_tokens.toLocaleString()}
+                </div>
+              </div>
+            </TooltipContent>
+          </Tooltip>
+        )
+      },
+      size: 110,
     },
     {
       accessorKey: 'group',

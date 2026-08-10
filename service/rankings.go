@@ -250,6 +250,8 @@ func buildRankingModelMeta() map[string]rankingModelMeta {
 		}
 		meta[pricing.ModelName] = item
 	}
+
+	applyRankingVendorFallbacks(meta, vendorByID)
 	return meta
 }
 

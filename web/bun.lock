@@ -31,6 +31,7 @@
         "cmdk": "^1.1.1",
         "dayjs": "^1.11.21",
         "dompurify": "3.4.11",
+        "flag-icons": "^7.5.0",
         "i18next": "^26.3.4",
         "i18next-browser-languagedetector": "^8.2.1",
         "input-otp": "^1.4.2",
@@ -1384,6 +1385,8 @@
     "find-root": ["find-root@1.1.0", "", {}, "sha512-NKfW6bec6GfKc0SGx1e07QZY9PE99u0Bft/0rzSD5k3sO/vwkVUpDUKVm5Gpp5Ue3YfShPFTX2070tDs5kB9Ng=="],
 
     "find-up": ["find-up@3.0.0", "", { "dependencies": { "locate-path": "^3.0.0" } }, "sha512-1yD6RmLI1XBfxugvORwlck6f75tYL+iR0jqwsOrOxMZyGYqUuDhJ0l4AXdO1iX/FTs9cBAMEk1gWSEx1kSbylg=="],
+
+    "flag-icons": ["flag-icons@7.5.0", "", {}, "sha512-kd+MNXviFIg5hijH766tt+3x76ele1AXlo4zDdCxIvqWZhKt4T83bOtxUOOMlTx/EcFdUMH5yvQgYlFh1EqqFg=="],
 
     "follow-redirects": ["follow-redirects@1.16.0", "", {}, "sha512-y5rN/uOsadFT/JfYwhxRS5R7Qce+g3zG97+JrtFZlC9klX/W5hD7iiLzScI4nZqUS7DNUdhPgw4xI8W2LuXlUw=="],
 

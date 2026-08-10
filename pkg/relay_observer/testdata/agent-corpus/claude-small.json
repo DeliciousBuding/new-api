@@ -1,0 +1,27 @@
+{
+  "_meta": {
+    "name": "claude-small",
+    "desc": "Claude Code single-turn request: messages-format body with X-App cli and X-Claude-Code-Session-Id. Synthetic ids only.",
+    "raw_body_bytes": 131,
+    "capture_limit": 131,
+    "scope_expect": "claude_cli",
+    "sources_expect": [
+      "claude_session_header"
+    ]
+  },
+  "headers": {
+    "X-App": "cli",
+    "X-Claude-Code-Session-Id": "fx-claude-session-0001",
+    "User-Agent": "claude-cli/1.0.0"
+  },
+  "body": {
+    "model": "claude-sonnet-fixture",
+    "system": "You are a fixture.",
+    "messages": [
+      {
+        "role": "user",
+        "content": "fx claude user message one"
+      }
+    ]
+  }
+}

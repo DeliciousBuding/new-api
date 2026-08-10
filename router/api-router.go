@@ -225,6 +225,18 @@ func SetApiRouter(router *gin.Engine) {
 			performanceRoute.GET("/logs", controller.GetLogFiles)
 			performanceRoute.DELETE("/logs", controller.CleanupLogFiles)
 		}
+		// Relay observer Root-only status: in-memory snapshot, no DB query.
+		// Admin and User receive 403 even when calling the route directly.
+		relayObserverRoute := apiRouter.Group("/relay-observer")
+		relayObserverRoute.Use(middleware.RootAuth())
+		{
+			relayObserverRoute.GET("/status", controller.GetRelayObserverStatus)
+			relayObserverRoute.GET("/overview", controller.GetRelayObserverOverview)
+			relayObserverRoute.GET("/sessions", controller.GetRelayObserverSessions)
+			relayObserverRoute.GET("/sessions/:id", controller.GetRelayObserverSession)
+			relayObserverRoute.GET("/sessions/:id/turns", controller.GetRelayObserverSessionTurns)
+			relayObserverRoute.GET("/turns/:id/context", controller.GetRelayObserverTurnContext)
+		}
 		ratioSyncRoute := apiRouter.Group("/ratio_sync")
 		ratioSyncRoute.Use(middleware.RootAuth())
 		{
@@ -272,6 +284,8 @@ func SetApiRouter(router *gin.Engine) {
 		logRoute := apiRouter.Group("/log")
 		logRoute.GET("/", middleware.AdminAuth(), controller.GetAllLogs)
 		logRoute.GET("/stat", middleware.AdminAuth(), controller.GetLogsStat)
+		logRoute.POST("/stat/cache/batch", middleware.AdminAuth(), controller.GetLogsCacheStatBatch)
+		logRoute.POST("/stat/cache/daily", middleware.AdminAuth(), controller.GetLogsCacheStatDaily)
 		logRoute.GET("/self/stat", middleware.UserAuth(), controller.GetLogsSelfStat)
 		logRoute.GET("/channel_affinity_usage_cache", middleware.AdminAuth(), controller.GetChannelAffinityUsageCacheStats)
 		logRoute.GET("/search", middleware.AdminAuth(), controller.SearchAllLogs)

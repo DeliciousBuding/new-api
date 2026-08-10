@@ -1,0 +1,63 @@
+name: Sync main from upstream
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: upstream-sync-${{ github.repository }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout default branch for workflow context
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream and sync main
+        shell: bash
+        env:
+          UPSTREAM_SYNC_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$UPSTREAM_SYNC_TOKEN" ]; then
+            echo '::error::UPSTREAM_SYNC_TOKEN secret is not set'
+            exit 1
+          fi
+
+          git remote add official https://github.com/QuantumNous/new-api.git 2>/dev/null || \
+            git remote set-url official https://github.com/QuantumNous/new-api.git
+          git fetch --quiet official '+refs/heads/main:refs/remotes/official/main'
+
+          UPSTREAM_HEAD=$(git rev-parse refs/remotes/official/main)
+          CURRENT_MAIN=$(git rev-parse refs/remotes/origin/main 2>/dev/null || echo "")
+
+          echo "Upstream main: $UPSTREAM_HEAD"
+          echo "Current main:  $CURRENT_MAIN"
+
+          if [ "$CURRENT_MAIN" = "$UPSTREAM_HEAD" ]; then
+            echo '::notice::main is already in sync with upstream — no action needed.'
+            exit 0
+          fi
+
+          git checkout main
+          git reset --hard "$UPSTREAM_HEAD"
+
+          git push "https://x-access-token:${UPSTREAM_SYNC_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" main --force
+
+          {
+            echo "### Upstream sync result"
+            echo
+            echo "- upstream main head: \`$UPSTREAM_HEAD\`"
+            echo "- previous main: \`$CURRENT_MAIN\`"
+            echo "- action: main reset to upstream and force-pushed"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -181,6 +181,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}()
 
+	// Vision Relay：预扣费后、retry 前单点钩子（默认关闭，
+	// 配置见 setting/model_setting/vision_relay.go；失败 = 5xx，绝不 fail-open）
+	if visionErr := service.PrepareVisionRelayRequest(c, relayInfo); visionErr != nil {
+		newAPIError = visionErr
+		return
+	}
+
 	retryParam := &service.RetryParam{
 		Ctx:         c,
 		TokenGroup:  relayInfo.TokenGroup,
@@ -193,6 +200,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
+		service.ObserveTurnAttemptBegin(c)
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
@@ -228,6 +236,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = relayHandler(c, relayInfo)
 		}
 
+		service.ObserveTurnAttemptEnd(c, relayInfo, channel.Id, newAPIError)
 		if newAPIError == nil {
 			relayInfo.LastError = nil
 			return
@@ -252,6 +261,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		gopool.Go(func() {
 			perfmetrics.RecordRelaySample(relayInfo, false, 0)
 		})
+		service.ObserveTurnFailure(c, relayInfo)
 	}
 }
 
@@ -368,6 +378,14 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		gopool.Go(func() {
 			service.DisableChannel(channelError, err.ErrorWithStatusCode())
 		})
+	}
+
+	// affinity 软失败解绑（issue #39）：5xx/超时等软失败不进上面的
+	// ShouldDisableChannel 分支，渠道保持 Enabled；SkipRetry=true 的
+	// affinity 会话会一直绑死到缓存 TTL。连续软失败达到阈值后清掉当前
+	// 绑定，让下一次请求重新选渠道。
+	if !service.ShouldDisableChannel(err) && service.RecordChannelAffinitySoftFailure(c) {
+		service.ClearCurrentChannelAffinityCache(c)
 	}
 
 	if constant.ErrorLogEnabled && types.IsRecordErrorLog(err) {

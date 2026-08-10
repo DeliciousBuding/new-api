@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -23,7 +24,9 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/oauth"
+	"github.com/QuantumNous/new-api/pkg/geoip"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
+	relayobserver "github.com/QuantumNous/new-api/pkg/relay_observer"
 	"github.com/QuantumNous/new-api/relay"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/QuantumNous/new-api/router"
@@ -45,6 +48,11 @@ var buildFS embed.FS
 //go:embed web/dist/index.html
 var indexPage []byte
 
+// observerRuntime is the process-wide relay observer runtime face. It is
+// disabled by default and strictly fail-open: Init absorbs every observer
+// fault internally, so NewAPI startup, relay, and billing never depend on it.
+var observerRuntime = relayobserver.NewRuntime()
+
 func main() {
 	startTime := time.Now()
 	kitutil.SetLogging(common.SysLog, func(message string) {
@@ -57,6 +65,14 @@ func main() {
 		common.FatalLog("failed to initialize resources: " + err.Error())
 		return
 	}
+
+	// Relay observer runtime: deliberately outside the InitResources fatal
+	// chain. Init never returns a fatal error — configuration, store open, or
+	// startup failures disable the observer internally — so NewAPI always
+	// starts normally regardless of observer health.
+	observerRuntime.Init()
+	controller.SetRelayObserverRuntime(observerRuntime)
+	service.SetRelayObserverRuntime(observerRuntime)
 
 	common.SysLog("New API " + common.Version + " started")
 	if os.Getenv("GIN_MODE") != "debug" {
@@ -231,6 +247,13 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		common.SysError(fmt.Sprintf("server forced to shutdown: %v", err))
 	}
+	// Observer shutdown: a hard two-second budget, before model.CloseDB below
+	// (the deferred CloseDB runs after main returns). Remaining events are
+	// dropped and counted; an observer Stop failure never changes the main
+	// shutdown outcome.
+	observerCtx, observerCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	observerRuntime.Close(observerCtx)
+	observerCancel()
 	// 内存中的看板数据保存入库，避免重启丢失未落库数据 (issue #5679)
 	if common.DataExportEnabled {
 		model.SaveQuotaDataCache()
@@ -302,6 +325,14 @@ func InitResources() error {
 	service.InitHttpClient()
 
 	service.InitTokenEncoders()
+
+	// Initialize optional GeoIP databases (locality hints on logs).
+	// Missing databases degrade gracefully — logs simply carry no geo fields.
+	geoipDir := os.Getenv("GEOIP_DB_DIR")
+	if geoipDir == "" {
+		geoipDir = "/opt/geoip"
+	}
+	geoip.Init(filepath.Join(geoipDir, "dbip-city-lite.mmdb"), filepath.Join(geoipDir, "dbip-asn-lite.mmdb"))
 
 	// Initialize SQL Database
 	err = model.InitDB()

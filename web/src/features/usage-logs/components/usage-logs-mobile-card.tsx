@@ -40,7 +40,7 @@ import { cn } from '@/lib/utils'
 
 import { LOG_TYPE_ENUM } from '../constants'
 import type { UsageLog } from '../data/schema'
-import { parseLogOther } from '../lib/format'
+import { computeCacheRate, parseLogOther } from '../lib/format'
 import {
   getLogTypeConfig,
   isDisplayableLogType,
@@ -211,6 +211,13 @@ function MobileTokensField({ log }: { log: UsageLog }) {
   const cacheWriteTokens = hasSplitCache
     ? cacheWrite5m + cacheWrite1h
     : other?.cache_creation_tokens || 0
+  const cacheRate = computeCacheRate(
+    cacheReadTokens,
+    promptTokens,
+    other?.input_tokens_total,
+    other?.claude,
+    cacheWriteTokens
+  )
   const showCache = cacheReadTokens > 0 || cacheWriteTokens > 0
 
   return (
@@ -224,6 +231,7 @@ function MobileTokensField({ log }: { log: UsageLog }) {
             {cacheReadTokens > 0 && (
               <span>
                 {t('Cache')}↓ {cacheReadTokens.toLocaleString()}
+                {cacheRate !== null && <> ({cacheRate}%)</>}
               </span>
             )}
             {cacheWriteTokens > 0 && (

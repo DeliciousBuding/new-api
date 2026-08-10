@@ -32,6 +32,25 @@ import type {
 // Quota & Usage Data
 // ----------------------------------------------------------------------------
 
+// Daily cache usage aggregates for the dashboard cache efficiency trend
+// (site-wide, admin only).
+export interface CacheDailyStat {
+  day: number
+  prompt_tokens: number
+  input_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  cache_rate: number
+}
+
+export async function getCacheDailyStats(params: {
+  start_timestamp: number
+  end_timestamp: number
+}): Promise<{ success: boolean; data: { items: CacheDailyStat[] } }> {
+  const res = await api.post('/api/log/stat/cache/daily', params)
+  return res.data
+}
+
 // Get user quota data within a time range
 // Admin users get all users' data by default.
 export async function getUserQuotaDates(

@@ -32,6 +32,26 @@ import type {
 // API Key Management
 // ============================================================================
 
+// Per-token cache usage aggregate for the keys page (Cache Rate column).
+export interface TokenCacheStat {
+  token_id: number
+  prompt_tokens: number
+  input_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  cache_rate: number
+}
+
+// Batch cache usage stats for a set of token ids (default window: 7 days).
+export async function getCacheStats(
+  tokenIds: number[]
+): Promise<TokenCacheStat[]> {
+  const res = await api.post('/api/log/stat/cache/batch', {
+    token_ids: tokenIds,
+  })
+  return res.data?.data?.items ?? []
+}
+
 // Get paginated API keys list
 export async function getApiKeys(
   params: GetApiKeysParams = {}

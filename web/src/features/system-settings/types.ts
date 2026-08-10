@@ -206,6 +206,14 @@ export type ModelSettings = {
   'claude.thinking_adapter_budget_tokens_percentage': number
   'grok.violation_deduction_enabled': boolean
   'grok.violation_deduction_amount': number
+  'vision_relay.enabled': boolean
+  'vision_relay.target_models': string
+  'vision_relay.models': string
+  'vision_relay.base_url': string
+  'vision_relay.api_key': string
+  'vision_relay.prompt': string
+  'vision_relay.timeout_sec': number
+  'vision_relay.sidecall_secret': string
   ModelPrice: string
   ModelRatio: string
   CacheRatio: string
@@ -353,6 +361,7 @@ export type OperationsSettings = {
   WorkerValidKey: string
   WorkerAllowHttpImageRequestEnabled: boolean
   LogConsumeEnabled: boolean
+  LogRecordIpEnabled: boolean
   'performance_setting.disk_cache_enabled': boolean
   'performance_setting.disk_cache_threshold_mb': number
   'performance_setting.disk_cache_max_size_mb': number

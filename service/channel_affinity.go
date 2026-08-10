@@ -1,8 +1,10 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"regexp"
 	"strconv"
 	"strings"
@@ -25,6 +27,11 @@ const (
 	ginKeyChannelAffinityMeta       = "channel_affinity_meta"
 	ginKeyChannelAffinityLogInfo    = "channel_affinity_log_info"
 	ginKeyChannelAffinitySkipRetry  = "channel_affinity_skip_retry_on_failure"
+
+	// ginKeyChannelAffinitySoftFailureCounted marks a request whose soft
+	// failure was already counted against its binding, so one multi-attempt
+	// request counts once (issue #39).
+	ginKeyChannelAffinitySoftFailureCounted = "channel_affinity_soft_failure_counted"
 
 	channelAffinityCacheNamespace           = "new-api:channel_affinity:v1"
 	channelAffinityUsageCacheStatsNamespace = "new-api:channel_affinity_usage_cache_stats:v1"
@@ -315,11 +322,19 @@ func extractChannelAffinityValue(c *gin.Context, src operation_setting.ChannelAf
 		if err != nil {
 			return ""
 		}
-		body, err := storage.Bytes()
+		// Disk-backed bodies are never read wholesale into memory (issue
+		// #43): gjson runs on a bounded prefix; memory storage keeps its full
+		// zero-copy reference.
+		body, truncated, err := readChannelAffinityBodyForGjson(storage, channelAffinityGjsonPrefixBytes)
 		if err != nil || len(body) == 0 {
 			return ""
 		}
 		res := gjson.GetBytes(body, src.Path)
+		if truncated && !res.Exists() {
+			// The truncation hid the path: surface the degradation instead of
+			// treating it as a plain miss.
+			common.SysLog(fmt.Sprintf("channel affinity: gjson extraction truncated body (size=%d, prefix=%d), path=%s", storage.Size(), channelAffinityGjsonPrefixBytes, src.Path))
+		}
 		if !res.Exists() {
 			return ""
 		}
@@ -332,6 +347,45 @@ func extractChannelAffinityValue(c *gin.Context, src operation_setting.ChannelAf
 	default:
 		return ""
 	}
+}
+
+// channelAffinityGjsonPrefixBytes bounds the body prefix read for gjson key
+// extraction on disk-backed bodies (issue #43).
+const channelAffinityGjsonPrefixBytes = 1 << 20 // 1 MiB
+
+// readChannelAffinityBodyForGjson returns the body bytes to run gjson
+// extraction on. Memory-backed storage keeps its full zero-copy reference;
+// disk-backed bodies larger than the prefix are read only up to the limit,
+// with truncated reporting the skipped tail. The prefix path preserves the
+// cursor, mirroring diskStorage.Bytes(), so the request path's later body
+// reads stay at their original position.
+func readChannelAffinityBodyForGjson(storage common.BodyStorage, limit int64) (body []byte, truncated bool, err error) {
+	if !storage.IsDisk() {
+		data, err := storage.Bytes()
+		return data, false, err
+	}
+	if storage.Size() <= limit {
+		data, err := storage.Bytes()
+		return data, false, err
+	}
+	currentPos, err := storage.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return nil, true, err
+	}
+	if _, err := storage.Seek(0, io.SeekStart); err != nil {
+		return nil, true, err
+	}
+	defer func() {
+		if _, seekErr := storage.Seek(currentPos, io.SeekStart); seekErr != nil && err == nil {
+			err = seekErr
+		}
+	}()
+	prefix := make([]byte, limit)
+	n, readErr := io.ReadFull(storage, prefix)
+	if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+		return nil, true, readErr
+	}
+	return prefix[:n], true, nil
 }
 
 func buildChannelAffinityCacheKeySuffix(rule operation_setting.ChannelAffinityRule, modelName string, usingGroup string, affinityValue string) string {
@@ -663,6 +717,89 @@ func ClearCurrentChannelAffinityCache(c *gin.Context) bool {
 		}
 	}
 	return false
+}
+
+// affinitySoftFailureUnbindThreshold is the consecutive failed-request count
+// that clears the current affinity binding (issue #39): soft 5xx/timeouts
+// never enter the ShouldDisableChannel path, so without this unbind a
+// SkipRetry=true session stays bound until the cache TTL (up to 4 hours by
+// default).
+const affinitySoftFailureUnbindThreshold = 3
+
+// affinitySoftFailureWindow bounds how long a soft-failure streak may idle
+// before it is forgotten: a stale streak from an old outage must not unbind a
+// healthy session minutes later.
+const affinitySoftFailureWindow = 10 * time.Minute
+
+// channelAffinitySoftFailureEntry is the per-binding consecutive soft-failure
+// streak kept in process memory.
+type channelAffinitySoftFailureEntry struct {
+	count       int
+	lastFailure time.Time
+}
+
+// channelAffinitySoftFailures maps full affinity cache keys to their current
+// soft-failure streaks. The counter is deliberately instance-local: it guards
+// the same instance's affinity decisions, and a multi-instance undercount
+// only delays the unbind by one streak per instance.
+var channelAffinitySoftFailures sync.Map
+
+// RecordChannelAffinitySoftFailure counts one soft failure against the
+// current affinity binding and reports whether the unbind threshold was
+// crossed. It counts at most once per request (a multi-attempt request with
+// retries records a single failure) and is a no-op for requests without an
+// affinity binding. When the threshold is crossed the streak is cleared, so
+// the caller's ClearCurrentChannelAffinityCache starts the next session
+// fresh.
+func RecordChannelAffinitySoftFailure(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	if c.GetBool(ginKeyChannelAffinitySoftFailureCounted) {
+		return false
+	}
+	cacheKey, _, ok := getChannelAffinityContext(c)
+	if !ok || cacheKey == "" {
+		return false
+	}
+	c.Set(ginKeyChannelAffinitySoftFailureCounted, true)
+	now := time.Now()
+	for {
+		v, loaded := channelAffinitySoftFailures.LoadOrStore(cacheKey, channelAffinitySoftFailureEntry{count: 1, lastFailure: now})
+		if !loaded {
+			return false
+		}
+		entry := v.(channelAffinitySoftFailureEntry)
+		if now.Sub(entry.lastFailure) > affinitySoftFailureWindow {
+			// The streak idled past its window: restart from one.
+			if channelAffinitySoftFailures.CompareAndSwap(cacheKey, v, channelAffinitySoftFailureEntry{count: 1, lastFailure: now}) {
+				return false
+			}
+			continue
+		}
+		next := channelAffinitySoftFailureEntry{count: entry.count + 1, lastFailure: now}
+		if channelAffinitySoftFailures.CompareAndSwap(cacheKey, v, next) {
+			if next.count >= affinitySoftFailureUnbindThreshold {
+				channelAffinitySoftFailures.Delete(cacheKey)
+				return true
+			}
+			return false
+		}
+	}
+}
+
+// ResetChannelAffinitySoftFailures clears the current binding's soft-failure
+// streak. The distributor calls it on a successful response, so one success
+// breaks the streak.
+func ResetChannelAffinitySoftFailures(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	cacheKey, _, ok := getChannelAffinityContext(c)
+	if !ok || cacheKey == "" {
+		return
+	}
+	channelAffinitySoftFailures.Delete(cacheKey)
 }
 
 func ShouldKeepChannelAffinityOnChannelDisabled() bool {

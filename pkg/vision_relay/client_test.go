@@ -1,0 +1,440 @@
+package vision_relay
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"image"
+	"image/color"
+	"image/png"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func testConfig(url string) Config {
+	return Config{
+		Enabled:        true,
+		Models:         []string{"vision-model-a", "vision-model-b"},
+		BaseURL:        url,
+		APIKey:         "sk-test",
+		TimeoutSec:     5,
+		SidecallSecret: "test-sidecall-secret",
+	}
+}
+
+func testPatchedImage() *PatchedImage {
+	img := image.NewRGBA(image.Rect(0, 0, 20, 20))
+	var buf bytes.Buffer
+	_ = png.Encode(&buf, img)
+	return &PatchedImage{
+		Patch:  Patch{Path: "messages.0.content.0", Index: 1, Source: ImageSource{MediaType: "image/png"}},
+		Data:   buf.Bytes(),
+		Digest: DigestBytes(buf.Bytes()),
+	}
+}
+
+// testImageData 测试用 PNG 数据（DescribeOne 直接收压缩后数据）
+func testImageData() []byte {
+	return testPatchedImage().Data
+}
+
+// 成功：断言认证 marker（HMAC 校验通过，P0-2）+ image_url data URL + 结果解析（验收 13 部分）
+func TestDescribeOneSuccess(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		if h := r.Header.Get("X-NewAPI-Vision-Relay"); h == "" ||
+			!ValidateMarker("test-sidecall-secret", h, time.Now()) {
+			t.Error("recursion protection marker missing or invalid")
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("bad request body: %v", err)
+			return
+		}
+		msgs := body["messages"].([]any)
+		content := msgs[0].(map[string]any)["content"].([]any)
+		foundImage := false
+		for _, blk := range content {
+			b := blk.(map[string]any)
+			if b["type"] == "image_url" {
+				foundImage = true
+				iu := b["image_url"].(map[string]any)
+				if !strings.HasPrefix(iu["url"].(string), "data:image/png;base64,") {
+					t.Error("image_url should be data URL")
+				}
+			}
+		}
+		if !foundImage {
+			t.Error("request body missing image_url block")
+		}
+		w.Write([]byte(`{"choices":[{"message":{"content":"这是图片描述"}}]}`))
+	}))
+	defer ts.Close()
+	client := &VisionClient{HTTPClient: ts.Client()}
+	r := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
+	if r.Enum != "" || r.Desc != "这是图片描述" || r.Model != "vision-model-a" {
+		t.Fatalf("unexpected: desc=%q enum=%q model=%s", r.Desc, r.Enum, r.Model)
+	}
+	if r.Abort {
+		t.Fatal("success must not abort")
+	}
+	if r.HTTPCalls != 1 || r.Fallbacks != 0 {
+		t.Fatalf("expected 1 http call 0 fallbacks, got calls=%d fallbacks=%d", r.HTTPCalls, r.Fallbacks)
+	}
+	if atomic.LoadInt32(&calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", calls)
+	}
+}
+
+// 错误矩阵（门槛七）：400→unsupported_format 停止；413→size_limit；
+// 451→blocked；401/403→终止 fallback（只调一次，验收 25）
+func TestDescribeOneErrorMatrix(t *testing.T) {
+	cases := []struct {
+		name      string
+		status    int
+		body      string
+		wantEnum  string
+		wantCalls int
+	}{
+		{"400 停止该图", http.StatusBadRequest, `{"error":{"message":"bad image"}}`, EnumUnsupportedFormat, 1},
+		{"413 不 fallback", http.StatusRequestEntityTooLarge, `{"error":{"message":"too large"}}`, EnumSizeLimit, 1},
+		{"451 审核阻断", http.StatusUnavailableForLegalReasons, `{"error":{"message":"nsfw"}}`, EnumBlocked, 1},
+		{"401 终止 fallback", http.StatusUnauthorized, `{"error":{"message":"invalid key"}}`, EnumServiceUnavailable, 1},
+		{"403 终止 fallback", http.StatusForbidden, `{"error":{"message":"forbidden"}}`, EnumServiceUnavailable, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int32
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&calls, 1)
+				w.WriteHeader(tc.status)
+				w.Write([]byte(tc.body))
+			}))
+			defer ts.Close()
+			client := &VisionClient{HTTPClient: ts.Client()}
+			r := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
+			if r.Enum != tc.wantEnum {
+				t.Fatalf("expected enum %s, got %s", tc.wantEnum, r.Enum)
+			}
+			if r.HTTPCalls != tc.wantCalls {
+				t.Fatalf("expected %d http calls, got %d", tc.wantCalls, r.HTTPCalls)
+			}
+			if n := atomic.LoadInt32(&calls); int(n) != tc.wantCalls {
+				t.Fatalf("expected %d calls, got %d", tc.wantCalls, n)
+			}
+		})
+	}
+}
+
+// provider 瞬时错误（503）不重试 → fallback 切下一模型成功（v0.2.2 语义）
+func TestDescribeOneFallback(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&calls, 1)
+		if n == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(`{"error":{"message":"no channel"}}`))
+			return
+		}
+		w.Write([]byte(`{"choices":[{"message":{"content":"fallback 成功"}}]}`))
+	}))
+	defer ts.Close()
+	client := &VisionClient{HTTPClient: ts.Client()}
+	r := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
+	if r.Enum != "" || r.Desc != "fallback 成功" || r.Model != "vision-model-b" {
+		t.Fatalf("unexpected: desc=%q enum=%q model=%s", r.Desc, r.Enum, r.Model)
+	}
+	// 503 不重试：model-a 1 次 + model-b 1 次 = 2 次；fallback 真实切换 1 次
+	if r.HTTPCalls != 2 || r.Fallbacks != 1 {
+		t.Fatalf("expected 2 http calls 1 fallback, got calls=%d fallbacks=%d", r.HTTPCalls, r.Fallbacks)
+	}
+	if atomic.LoadInt32(&calls) != 2 {
+		t.Fatalf("expected 2 calls (no retry, direct fallback), got %d", calls)
+	}
+}
+
+// 传输错误（连接断开）→ 同模型重试 1 次（v0.2.2：仅传输层错误重试）
+func TestDescribeOneTransportRetry(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&calls, 1)
+		if n == 1 {
+			// 模拟传输层失败：Hijack 后直接断开连接
+			hj, ok := w.(http.Hijacker)
+			if ok {
+				conn, _, _ := hj.Hijack()
+				_ = conn.Close()
+				return
+			}
+		}
+		w.Write([]byte(`{"choices":[{"message":{"content":"重试成功"}}]}`))
+	}))
+	defer ts.Close()
+	client := &VisionClient{HTTPClient: ts.Client()}
+	r := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
+	if r.Enum != "" || r.Desc != "重试成功" || r.Model != "vision-model-a" {
+		t.Fatalf("unexpected: desc=%q enum=%q model=%s", r.Desc, r.Enum, r.Model)
+	}
+	// 同模型重试 1 次 = 2 次调用；传输错误不算 fallback
+	if r.HTTPCalls != 2 || r.Fallbacks != 0 {
+		t.Fatalf("expected 2 http calls 0 fallbacks, got calls=%d fallbacks=%d", r.HTTPCalls, r.Fallbacks)
+	}
+	if atomic.LoadInt32(&calls) != 2 {
+		t.Fatalf("expected 2 calls (transport retry), got %d", calls)
+	}
+}
+
+// 空 choices/空 content → 换下一模型
+func TestDescribeOneEmptyResponse(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&calls, 1)
+		if n == 1 {
+			w.Write([]byte(`{"choices":[]}`))
+			return
+		}
+		w.Write([]byte(`{"choices":[{"message":{"content":"第二次成功"}}]}`))
+	}))
+	defer ts.Close()
+	client := &VisionClient{HTTPClient: ts.Client()}
+	r := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
+	if r.Enum != "" || r.Desc != "第二次成功" {
+		t.Fatalf("unexpected: desc=%q enum=%q", r.Desc, r.Enum)
+	}
+	// 空响应 → 换下一模型：2 次 HTTP、1 次 fallback
+	if r.HTTPCalls != 2 || r.Fallbacks != 1 {
+		t.Fatalf("expected 2 http calls 1 fallback, got calls=%d fallbacks=%d", r.HTTPCalls, r.Fallbacks)
+	}
+}
+
+// 取消：ctx 取消 → 旁路调用快速失败（验收 15）
+func TestDescribeOneCancel(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second) // 永远不响应（ctx 50ms 取消）
+	}))
+	defer ts.Close()
+	client := &VisionClient{HTTPClient: ts.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	r := client.DescribeOne(ctx, "指令", testImageData(), "image/png", testConfig(ts.URL))
+	if r.Enum == "" {
+		t.Fatal("cancel should yield failure enum")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("cancel should be fast, took %v", elapsed)
+	}
+}
+
+// 端到端编排：digest 分组去重——同一图出现两次只调一次视觉端点（验收 24）
+func TestEngineEnhanceDedup(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Write([]byte(`{"choices":[{"message":{"content":"同图描述"}}]}`))
+	}))
+	defer ts.Close()
+	pngData := makePNG(t, 20, 20)
+	b64 := base64.StdEncoding.EncodeToString(pngData)
+	raw := `{"messages":[{"role":"user","content":[
+		{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + b64 + `"}},
+		{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + b64 + `"}}
+	]}]}`
+	cfg := testConfig(ts.URL)
+	engine := &Engine{Client: &VisionClient{HTTPClient: ts.Client()}}
+	stats := &Stats{}
+	enhanced, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, cfg, stats)
+	if err != nil {
+		t.Fatalf("enhance: %v", err)
+	}
+	if stats.Total != 2 {
+		t.Fatalf("expected 2 images, got %d", stats.Total)
+	}
+	if stats.Success != 2 {
+		t.Fatalf("expected 2 success blocks (dedup: 2 blocks, 1 vision call), got %d", stats.Success)
+	}
+	if stats.UniqueImages != 1 || stats.CacheHits != 1 || stats.VisionCalls != 1 {
+		t.Fatalf("expected unique=1 cache_hits=1 vision_calls=1, got unique=%d cache_hits=%d calls=%d",
+			stats.UniqueImages, stats.CacheHits, stats.VisionCalls)
+	}
+	if atomic.LoadInt32(&calls) != 1 {
+		t.Fatalf("vision endpoint should be called once, got %d", calls)
+	}
+	out := string(enhanced)
+	if strings.Contains(out, `"type":"image"`) {
+		t.Error("image block remains")
+	}
+	if !strings.Contains(out, "同图描述") {
+		t.Error("description missing in output")
+	}
+}
+
+// 编排：无图请求真 no-op（原样返回）
+func TestEngineEnhanceNoImages(t *testing.T) {
+	raw := `{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"model":"deepseek"}`
+	engine := &Engine{}
+	stats := &Stats{}
+	enhanced, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, Config{}, stats)
+	if err != nil {
+		t.Fatalf("enhance: %v", err)
+	}
+	if enhanced != nil {
+		t.Fatal("no-image request should return nil (no-op)")
+	}
+	if stats.Total != 0 {
+		t.Fatalf("expected 0 images, got %d", stats.Total)
+	}
+}
+
+// 编排：允许不命中的策略在 service 层，这里验证 engine 对超限图片数量占位（A4）
+func TestEngineEnhanceImageLimitPlaceholder(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Write([]byte(`{"choices":[{"message":{"content":"描述"}}]}`))
+	}))
+	defer ts.Close()
+	// MaxImages=6，构造 8 张不同图（不同颜色 PNG）
+	var blocks []string
+	for i := 0; i < 8; i++ {
+		img := image.NewRGBA(image.Rect(0, 0, 10, 10))
+		img.Set(0, 0, color.RGBA{R: uint8(i * 30), A: 255})
+		var buf bytes.Buffer
+		_ = png.Encode(&buf, img)
+		b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
+		blocks = append(blocks, `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"`+b64+`"}}`)
+	}
+	raw := `{"messages":[{"role":"user","content":[` + strings.Join(blocks, ",") + `]}]}`
+	engine := &Engine{Client: &VisionClient{HTTPClient: ts.Client()}}
+	stats := &Stats{}
+	enhanced, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, testConfig(ts.URL), stats)
+	if err != nil {
+		t.Fatalf("enhance: %v", err)
+	}
+	// 第 7、8 张直接 image_limit 占位（不下载不解码不识别）
+	if stats.Failed != 2 {
+		t.Fatalf("expected 2 failed (image_limit), got %d", stats.Failed)
+	}
+	if stats.UniqueImages != 6 {
+		t.Fatalf("expected 6 unique images processed, got %d", stats.UniqueImages)
+	}
+	out := string(enhanced)
+	if strings.Contains(out, `"type":"image"`) {
+		t.Error("image block remains after limit")
+	}
+	if !strings.Contains(out, "image_limit") {
+		t.Error("omitted images should have image_limit placeholder")
+	}
+}
+
+// 401/403 → Abort=true（请求级熔断标记），不 retry 不 fallback（P0-2 §3）
+func TestDescribeOneAuthAbort(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(fmt.Sprintf("HTTP%d", status), func(t *testing.T) {
+			var calls int32
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&calls, 1)
+				w.WriteHeader(status)
+				w.Write([]byte(`{"error":{"message":"invalid key"}}`))
+			}))
+			defer ts.Close()
+			client := &VisionClient{HTTPClient: ts.Client()}
+			r := client.DescribeOne(context.Background(), "指令", testImageData(), "image/png", testConfig(ts.URL))
+			if !r.Abort {
+				t.Fatal("401/403 must set Abort (request-global auth failure)")
+			}
+			if r.Enum != EnumServiceUnavailable {
+				t.Fatalf("expected service_unavailable enum, got %s", r.Enum)
+			}
+			if r.HTTPCalls != 1 || r.Fallbacks != 0 {
+				t.Fatalf("auth failure must not retry/fallback: calls=%d fallbacks=%d", r.HTTPCalls, r.Fallbacks)
+			}
+			if atomic.LoadInt32(&calls) != 1 {
+				t.Fatalf("expected exactly 1 http call, got %d", calls)
+			}
+		})
+	}
+}
+
+// 请求级熔断（P0-2 §3 必测）：6 张唯一图 + 401 → 首个 401 后停止后续 sidecall，
+// HTTP 总数 <= RequestConcurrency(2)；最终零 image 块（全部稳定占位）
+func TestEngineEnhanceAuthCircuitBreak(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":{"message":"invalid key"}}`))
+	}))
+	defer ts.Close()
+	var blocks []string
+	for i := 0; i < 6; i++ { // 6 张唯一图（不同颜色 → 不同 digest）
+		img := image.NewRGBA(image.Rect(0, 0, 10, 10))
+		img.Set(0, 0, color.RGBA{R: uint8(10 + i*30), G: uint8(i * 5), A: 255})
+		var buf bytes.Buffer
+		_ = png.Encode(&buf, img)
+		b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
+		blocks = append(blocks, `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"`+b64+`"}}`)
+	}
+	raw := `{"messages":[{"role":"user","content":[` + strings.Join(blocks, ",") + `]}]}`
+	engine := &Engine{Client: &VisionClient{HTTPClient: ts.Client()}}
+	stats := &Stats{}
+	enhanced, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, testConfig(ts.URL), stats)
+	if err != nil {
+		t.Fatalf("enhance: %v", err)
+	}
+	n := atomic.LoadInt32(&calls)
+	if n > RequestConcurrency {
+		t.Fatalf("sidecall must be bounded by RequestConcurrency=%d, got %d", RequestConcurrency, n)
+	}
+	if n == 0 {
+		t.Fatal("at least one sidecall must have happened")
+	}
+	out := string(enhanced)
+	if strings.Contains(out, `"type":"image"`) {
+		t.Error("image block remains after auth circuit break")
+	}
+	if stats.Failed != 6 {
+		t.Fatalf("all 6 images must fail (placeholder), got %d", stats.Failed)
+	}
+	if stats.VisionCalls > RequestConcurrency {
+		t.Fatalf("stats.VisionCalls=%d must be <= RequestConcurrency", stats.VisionCalls)
+	}
+}
+
+// 敏感词检查（审核 P1-3/A6）：SensitiveCheck 命中 → blocked 稳定占位，不注入原文
+func TestEngineEnhanceSensitiveCheck(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"choices":[{"message":{"content":"敏感内容描述"}}]}`))
+	}))
+	defer ts.Close()
+	engine := &Engine{
+		Client: &VisionClient{HTTPClient: ts.Client()},
+		SensitiveCheck: func(desc string) bool {
+			return strings.Contains(desc, "敏感")
+		},
+	}
+	stats := &Stats{}
+	enhanced, err := engine.Enhance(context.Background(),
+		[]byte(`{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"`+base64.StdEncoding.EncodeToString(testImageData())+`"}}]}]}`),
+		FormatClaude, testConfig(ts.URL), stats)
+	if err != nil {
+		t.Fatalf("enhance: %v", err)
+	}
+	out := string(enhanced)
+	if strings.Contains(out, "敏感内容描述") {
+		t.Fatal("sensitive description must not be injected")
+	}
+	if !strings.Contains(out, "blocked") {
+		t.Fatal("sensitive image must be replaced with blocked placeholder")
+	}
+	if stats.Success != 0 || stats.Failed != 1 {
+		t.Fatalf("expected failed=1 success=0, got success=%d failed=%d", stats.Success, stats.Failed)
+	}
+}

@@ -24,6 +24,7 @@ import {
   IconGithub,
   IconLinuxDo,
   IconTelegram,
+  IconTokenDance,
   IconWeChat,
 } from '@/assets/brand-icons'
 import { Button } from '@/components/ui/button'
@@ -114,6 +115,7 @@ export function OAuthProviders({
         name: oidcDisplayName,
       }),
       onClick: handleOIDCLogin,
+      icon: <IconTokenDance className='h-4 w-4' />,
     })
   }
 
