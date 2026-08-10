@@ -1,5 +1,7 @@
 # Relay Observer
 
+> 最后更新：2026-08-04
+
 Relay Observer is NewAPI's bounded, fail-open request observability subsystem. It records relay metadata and a budgeted canonical view of request context without making the relay request depend on PostgreSQL, the observer worker, or the Root UI.
 
 This document is the architecture and operations SSOT for `pkg/relay_observer`, the `/api/relay-observer/*` Root endpoints, and `web/src/features/observability`.
