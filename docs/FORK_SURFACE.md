@@ -3,7 +3,7 @@
 > 本文档是 fork 治理的长期 SSOT：每个产品线的自有目录、上游覆盖层、重放顺序与验收命令。
 > 配套文件：`UPSTREAM_BASE`（基线 SHA）、`.github/workflows/upstream-check.yml`（落后检测）、
 > `.github/scripts/verify-td-release.sh`（release 验证）、`docs/session-reports/`（会话记录）。
-> 最后更新：2026-08-10 14:50
+> 最后更新：2026-08-10 15:40
 
 ## 0. 当前状态快照
 
@@ -259,6 +259,8 @@ git diff --name-only official/main..HEAD | wc -l   # 趋势只降不升（P7 迁
 | 上游 rc 基线 | `v1.0.0-rc.<N>` | `v1.0.0-rc.24` | 上游 release tag，保持不动（追上游基线，UPSTREAM_BASE 指向对应 commit） |
 | 临时同步 | `sync-<YYYYMMDD>-td<N>` | `sync-20260807-td10` | sync-upstream 产生的临时构建 tag，可清理 |
 
+**ruleset 保护**（#20181835 "Protect TokenDance release tags"，2026-08-10 pattern 收窄）：`refs/tags/v[0-9]*.[0-9]*.[0-9]*-td-[0-9]{8}.[0-9]*`（deletion + update）——只保护合规 fork 发版 tag，防止误删已发布版本；旧命名 tag（`v1.0.0-main-td-*`/`v1.0.0-sgp2-*`/`v1.0.0-rc.22-td-*`）不在保护内，2026-08-10 已清理 18 个。
+
 ### GHCR 发版流程
 
 1. main 上 audit/修复批次合并完成后，`git tag -a v1.0.0-td-<date>.<seq> -m "..."` 打 annotated tag
@@ -307,4 +309,5 @@ git diff --name-only official/main..HEAD | wc -l   # 趋势只降不升（P7 迁
 - ~~`upstream-check.yml` 仍 `runs-on: ubuntu-latest`——private repo 无 hosted minutes，该检查实际不生效~~ → **已消除**（2026-08-09 仓库转 public，hosted runner 免费，该检查现已生效）。
 - 上游周更频率高：建议 upstream status 日跑、实际 rebuild 周跑、大功能开发前手动跑。
 - vision-relay（P8）与 observer 共用 context_key 文件，重放时注意追加式合并。
-- UPSTREAM_BASE 落后 ~2 天（`5c3abffe8` vs 官方 `823e26304`），#46 跟踪 sync-upstream.sh 自动 bump；下次 sync 时 true merge 吸收。
+- ~~UPSTREAM_BASE 落后 ~2 天（`5c3abffe8` vs 官方 `823e26304`），#46 跟踪 sync-upstream.sh 自动 bump；下次 sync 时 true merge 吸收。~~ → **已消除**（2026-08-10 PR #74 true merge 吸收 8 commit，UPSTREAM_BASE=`9c97e78ac`=官方 HEAD，落后 0）。
+- ~~远端残留 §5a 规范前旧命名 tag（`v1.0.0-main-td-*`/`v1.0.0-sgp2-*`/`v1.0.0-rc.22-td-20260727-public1`，18 个）：GHCR 包版本已按 §5a 清理，git tag 面待清理。~~ → **已清理完成**（2026-08-10）：ruleset #20181835 pattern 收窄为合规格式后删除 18 个旧命名 tag；远端仅剩 6 个合规 `v1.0.0-td-*`（历史发版 5 + 最新发版 1），本地 tag 同步清理至 6 个。
