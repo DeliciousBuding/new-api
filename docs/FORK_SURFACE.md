@@ -3,16 +3,16 @@
 > 本文档是 fork 治理的长期 SSOT：每个产品线的自有目录、上游覆盖层、重放顺序与验收命令。
 > 配套文件：`UPSTREAM_BASE`（基线 SHA）、`.github/workflows/upstream-check.yml`（落后检测）、
 > `.github/scripts/verify-td-release.sh`（release 验证）、`docs/session-reports/`（会话记录）。
-> 最后更新：2026-08-09 19:15
+> 最后更新：2026-08-10 14:00
 
 ## 0. 当前状态快照
 
 | 指标 | 值 |
 |------|-----|
 | 仓库可见性 | **public**（2026-08-09 由 private 转公开，CI 用免费 hosted ubuntu-latest） |
-| UPSTREAM_BASE | `823e26304a396854ace30b52b98ec497c2dd9c36`（= 官方 2026-08-09 快照；#46 起语义 = 最近一次 sync 的官方 HEAD，见 §4d） |
-| 官方 main HEAD | `823e26304`（已完全同步，**落后 0**；merge-base == official/main == UPSTREAM_BASE） |
-| 主线 | `main`（public 远端），合流点见 §4a–§4d |
+| UPSTREAM_BASE | `9c97e78aced572d540f227007a675d7d007666ac`（= 官方 2026-08-10 快照；#46 起语义 = 最近一次 sync 的官方 HEAD，见 §4e） |
+| 官方 main HEAD | `9c97e78ac`（已完全同步，**落后 0**；merge-base == official/main == UPSTREAM_BASE） |
+| 主线 | `main`（public 远端），合流点见 §4a–§4e |
 | fork 分支策略 | 单主线 + topic 分支，功能收口 = 合入 main + 删分支（2026-08-05 起强制） |
 | CI runner | `ci.yml` 用 **hosted ubuntu-latest**（PR #65，2026-08-09 迁移，不再依赖本地 WSL runner）；`docker-build.yml` 用 hosted ubuntu-latest（release 构建） |
 | 最新发版 tag | `v1.0.0-td-20260809.1`（2026-08-09，含 audit 全批次 + public 化；tag 规范见 §5a） |
@@ -63,6 +63,31 @@
 **PR 收尾**：#30 关闭（内容已 upstream）、#34 转 draft（feat observability master/detail，VChart 在 happy-dom 无 canvas 需 mock，体量 993 行单独处理）；5 个 fix PR 合并后本地 6 worktree + 10 分支清理至 1 worktree + main/feat 分支。
 
 **CI runner 注销待办**：`wsl-newapi` runner 不再被 ci.yml 引用但仍注册（#51 跟踪）；`sync-release-to-gitcode.yml` 用 self-hosted runner 且 gitcode 镜像对 public 仓库已无意义（#51 跟踪停用）。
+
+### 4e. 2026-08-10 合流记录（上游 sync 8 commit 零冲突 + 治理文档精度修正）
+
+**上游同步（PR #74）**：`scripts/sync-upstream.sh` merge 式合并官方 main 8 commit，**零冲突**（全部 auto-merge，51 files, +1391/-293）：
+- `5d3423bec` #6728 auto-disable-only channel test mode
+- `7dd1000a1` #6727 debounce server and large-list searches
+- `eab18a835` #6641 record reasoning effort consistently in usage logs
+- `85feb7a34` #6534 expose user and group context to parameter overrides
+- `8ad159a3b` #6605 ollama preserve reasoning and tool-call context
+- `d49160f0e` #5548 backend length validation
+- `4cf9107f0` #6561 highlight matched conditional multipliers in logs
+- `9c97e78ac` #6749 require confirmation before rotating access token
+
+**红线校验**：controller/relay.go vision_relay hook 保留 ✅；merge-base == official/main（落后 0）✅；`go build ./...` 全绿（74s）✅；CI Backend 2m29s + Frontend 42s 全绿。
+
+**UPSTREAM_BASE**：`823e26304` → `9c97e78ac`（= 官方新 HEAD）。
+
+**治理文档精度修正（PR #71/#72）**：
+- **VERSION**：`v1.0.0-main-td-20260801.14` → `v1.0.0-td-20260809.1`（旧 main-td 命名，与最新发版 tag 一致）
+- **§0 落后修正**：实测 `git merge-base == official/main`，从"落后 2"修正为"落后 0"（#6674/#6711 已吸收）
+- **§3 footprint**：`218/owned 110/outside 87` → `225/owned 110/outside 115`（代码 91+治理 23+scripts 1）
+- **§3 标题**："B∩C，20 文件" → "按 git diff 实时核对"（20 是审计 #56 旧数字）
+- **AGENTS.md**：新增 Fork Governance section（上游同步/分支命名/release tag/main 保护/fork 文件边界/code debt 归档），指向 FORK_SURFACE SSOT
+- **BACKLOG #51**：描述对齐现实（sync-release-to-gitcode 已删 PR #72，electron-build 保留 workflow_dispatch）
+- **删 dead workflow**：`sync-release-to-gitcode.yml`（250 行，public 仓库后 gitcode 镜像无意义）
 
 ## 1. 产品线清单（重放顺序即编号）
 
