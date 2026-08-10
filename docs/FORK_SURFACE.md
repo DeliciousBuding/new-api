@@ -3,7 +3,7 @@
 > 本文档是 fork 治理的长期 SSOT：每个产品线的自有目录、上游覆盖层、重放顺序与验收命令。
 > 配套文件：`UPSTREAM_BASE`（基线 SHA）、`.github/workflows/upstream-check.yml`（落后检测）、
 > `.github/scripts/verify-td-release.sh`（release 验证）、`docs/session-reports/`（会话记录）。
-> 最后更新：2026-08-10 14:00
+> 最后更新：2026-08-10 14:50
 
 ## 0. 当前状态快照
 
@@ -98,13 +98,13 @@
 - **重放**：最先（与上游零交集）
 
 ### P2 · Subscription / 自有 billing
-- **上游覆盖**：`service/billing_session.go`、`service/tiered_settle.go`(+test)、`service/quota.go`、`service/text_quota.go`、`pkg/billingexpr/types.go`(+expr.md)、`model/option.go`、`model/log.go`(+test)
-- **冲突热点**：billing_session/tiered_settle 与官方 #6590 的 model 层邻近；pkg/billingexpr 与官方 expr 文档
-- **上游等价**：部分（计费修复在上游演进中已吸收，重放前逐个 `git cherry` 核）
+- **上游覆盖**：`service/quota.go`、`service/text_quota.go`、`model/option.go`、`model/log.go`(+test)（billing_session.go/tiered_settle.go/billingexpr/types.go 的 fork 改动已被上游吸收，无本地 diff）
+- **冲突热点**：model/option.go 与官方 #6590 的 model 层邻近
+- **上游等价**：部分（billing_session/tiered_settle/billingexpr 已上游吸收；重放前逐个 `git cherry` 核 quota/text_quota/model 仍有本地 diff）
 
 ### P3 · Logging / client-profile / GeoIP
-- **上游覆盖**：`relay/common/relay_info.go`（+observer 无关的 profile 字段）、`controller/log.go`、`model/log.go`、`service/log_info_generate.go`、`web/src/features/usage-logs/*`（5 文件）
-- **冲突热点**：relay_info.go 与官方热点；usage-logs 前端
+- **上游覆盖**：`controller/log.go`、`model/log.go`、`service/log_info_generate.go`、`web/src/features/usage-logs/*`（5 文件）（relay/common/relay_info.go 的 fork 改动已被上游吸收，无本地 diff）
+- **冲突热点**：model/log.go 与官方热点；usage-logs 前端
 - **上游等价**：无
 
 ### P4 · Relay Observability（observer 核心）
@@ -164,7 +164,7 @@ pkg/relay_observer/               ← 核心（不 import gin/service/controller
 当前接缝边界（事实）：
 - **main.go 直连注册**：`var observerRuntime = relayobserver.NewRuntime()`（main.go:54），Init 后
   `controller.SetRelayObserverRuntime(observerRuntime)` + `service.SetRelayObserverRuntime(observerRuntime)`
-  两行注入（main.go:73-75），退出时 `observerRuntime.Close(observerCtx)`（main.go:255）。main 直接
+  两行注入（main.go:74-75），退出时 `observerRuntime.Close(observerCtx)`（main.go:255）。main 直接
   import `pkg/relay_observer`——这就是当前的事实接缝（审计 #35 指出的脱节点）。
 - **service 层 hook 封装**：`service/relay_observation.go` 承载全部请求路径 hook
   （AttemptBegin/End、Settlement、Failure）；运行时未接线时每个 hook 零开销 no-op，事件构造
