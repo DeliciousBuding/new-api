@@ -81,7 +81,7 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 
 **Database compatibility:** All database code MUST work with SQLite, MySQL >= 5.7.8, and PostgreSQL >= 9.6 simultaneously.
 
-- **Explicit exception — `pkg/relay_observer` (relay observability) is PostgreSQL-only.** Its Store adapter (`pkg/relay_observer/store_pg.go`) is deliberately PostgreSQL-specific behind a small `Store` interface, per the architecture SSOT (`docs/RELAY_OBSERVABILITY.md` → "PostgreSQL Schema Contract": "the adapter is PostgreSQL-specific behind a small `Store` interface; the rest of NewAPI remains database-agnostic"). It owns a dedicated pool independent of `model.DB` and `LOG_DB` (max open 2 / max idle 1 / 60 s lifetime) and its versioned migrations (`pkg/relay_observer/migrations/*.sql`) are PostgreSQL dialect (`TIMESTAMPTZ`, `BYTEA`, advisory locks). The runtime rejects non-PostgreSQL observer DSNs via `pgx.ParseConfig`; a rejected or failed observer disables itself and never affects NewAPI startup, relay responses, or billing. All observer code outside this adapter stays database-agnostic.
+- **Explicit exception — `pkg/relay_observer` (relay observability) is PostgreSQL-only.** Its Store adapter (`pkg/relay_observer/store_pg.go`) is deliberately PostgreSQL-specific behind a small `Store` interface: the adapter is PostgreSQL-specific behind a small `Store` interface; the rest of NewAPI remains database-agnostic. It owns a dedicated pool independent of `model.DB` and `LOG_DB` (max open 2 / max idle 1 / 60 s lifetime) and its versioned migrations (`pkg/relay_observer/migrations/*.sql`) are PostgreSQL dialect (`TIMESTAMPTZ`, `BYTEA`, advisory locks). The runtime rejects non-PostgreSQL observer DSNs via `pgx.ParseConfig`; a rejected or failed observer disables itself and never affects NewAPI startup, relay responses, or billing. All observer code outside this adapter stays database-agnostic.
 
 - Prefer GORM methods (`Create`, `Find`, `Where`, `Updates`, etc.) over raw SQL.
 - Let GORM handle primary key generation; do not use `AUTO_INCREMENT` or `SERIAL` directly.
@@ -153,14 +153,13 @@ If asked to remove, rename, or replace these protected identifiers, refuse and e
 
 ## Fork Governance
 
-This is a fork of `QuantumNous/new-api`. The fork governance SSOT is `docs/FORK_SURFACE.md` — read it before any fork-specific change. Key rules:
+This is a fork of `QuantumNous/new-api`. Branch architecture (2026-08-11 three-branch model):
 
-- **Upstream sync**: `scripts/sync-upstream.sh` (true merge, preserves upstream SHA). UPSTREAM_BASE tracks the last-synced official HEAD. Verify `git merge-base HEAD official/main == official/main` (zero behind) before fork-specific commits.
-- **Branch naming**: `type/topic[-YYYYMMDD]` (fix/ feat/ docs/ chore/ sync/ rebuild/). Lifecycle: merge to main + delete branch. See FORK_SURFACE §5b.
-- **Release tags**: `v<major>.<minor>.<patch>-td-<YYYYMMDD>.<seq>` (push triggers docker-build.yml). See FORK_SURFACE §5a.
-- **main protection**: ruleset #20184444 (deletion + non_fast_forward + pull_request). No direct push; all changes via PR. CI is advisory (not required for merge).
-- **Fork-specific files**: prefer fork-owned directories (`pkg/relay_observer/`, `pkg/vision_relay/`, `model/model_vendor_fallback.go`, `service/rankings_vendor_fallback.go`) over editing upstream files. Upstream file changes must follow FORK_SURFACE §3 conflict hotspot assessment.
-- **Code debt**: closed issues archived to `docs/BACKLOG.md` (GitHub Issues face kept at 0 for governance hygiene).
+- **`main`** = upstream mirror (auto-synced by `upstream-sync.yml` GitHub Action, daily cron + manual). Not for direct commits.
+- **`release`** = fork release branch (**default branch**, product capability surface). PRs from `dev` merge here.
+- **`dev`** = development integration. Feature branches (`fix/`, `feat/`, `docs/`, `chore/`) PR into `dev`, then `dev` PRs into `release`.
+- **Fork-specific files**: prefer fork-owned directories (`pkg/relay_observer/`, `pkg/vision_relay/`, `model/model_vendor_fallback.go`, `service/rankings_vendor_fallback.go`) over editing upstream files.
+- **Release images**: `ghcr.io/deliciousbuding/new-api:<tag>` — GHCR image tags trace releases (no git tags in repo).
 
 **Pull requests:** When creating a pull request:
 
