@@ -119,7 +119,7 @@
 - **重放**：见 §2 当前接缝；分 4 个 topic：core+storage → service 层 hook 封装 → Root API → frontend
 
 ### P5 · Dashboard / cache / keys UI
-- **上游覆盖**：`web/src/features/dashboard/*`（3）、`web/src/features/keys/*`（3）、`web/src/features/system-settings/*`（4+models/ 卡片与 types 扩展）、`web/src/features/channels/*`（2）、`web/src/features/auth/*`（2）、`web/src/features/profile/*`（2）、`web/src/features/models/components/drawers/model-mutate-drawer.tsx`（ModelSettings 类型完整性）
+- **上游覆盖**：`web/src/features/dashboard/*`（6）、`web/src/features/keys/*`（4）、`web/src/features/system-settings/*`（8+models/ 卡片与 types 扩展）、`web/src/features/channels/*`（2）、`web/src/features/auth/*`（4）、`web/src/features/profile/*`（2）、`web/src/features/models/components/drawers/model-mutate-drawer.tsx`（ModelSettings 类型完整性）
 - **冲突热点**：keys api/columns、system-settings/types 与官方 #6590 直接重叠
 - **上游等价**：无
 
