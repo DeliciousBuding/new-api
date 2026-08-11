@@ -170,8 +170,10 @@ func mustOpenTestDB(t *testing.T) *sql.DB {
 
 // TestVersionListPredicates locks the schema version predicates: exactly [1]
 // is the complete v1 state awaiting upgrade, exactly [1,2] is the complete v2
-// state awaiting upgrade, exactly [1,2,3] is current, and every other list
-// (empty, single foreign version, out-of-order, extra versions) matches none.
+// state awaiting upgrade, exactly [1,2,3] is the complete v3 state awaiting
+// upgrade, exactly [1,2,3,4] is the complete v4 state awaiting upgrade, and
+// exactly [1,2,3,4,5] is current. Every other list (empty, single foreign
+// version, out-of-order, extra versions) matches none.
 func TestVersionListPredicates(t *testing.T) {
 	for _, tt := range []struct {
 		name     string
@@ -179,6 +181,7 @@ func TestVersionListPredicates(t *testing.T) {
 		v1       bool
 		v2       bool
 		v3       bool
+		v4       bool
 		current  bool
 	}{
 		{name: "empty", versions: nil},
@@ -186,8 +189,9 @@ func TestVersionListPredicates(t *testing.T) {
 		{name: "v2 only", versions: []int{2}},
 		{name: "v1 and v2", versions: []int{1, 2}, v2: true},
 		{name: "v1 through v3", versions: []int{1, 2, 3}, v3: true},
-		{name: "current v4", versions: []int{1, 2, 3, 4}, current: true},
-		{name: "five versions", versions: []int{1, 2, 3, 4, 5}},
+		{name: "v1 through v4", versions: []int{1, 2, 3, 4}, v4: true},
+		{name: "current v5", versions: []int{1, 2, 3, 4, 5}, current: true},
+		{name: "six versions", versions: []int{1, 2, 3, 4, 5, 6}},
 		{name: "unknown version", versions: []int{99}},
 		{name: "out of order", versions: []int{2, 1}},
 		{name: "duplicate", versions: []int{1, 1}},
@@ -196,6 +200,7 @@ func TestVersionListPredicates(t *testing.T) {
 			assert.Equal(t, tt.v1, isVersionListV1(tt.versions))
 			assert.Equal(t, tt.v2, isVersionListV2(tt.versions))
 			assert.Equal(t, tt.v3, isVersionListV3(tt.versions))
+			assert.Equal(t, tt.v4, isVersionListV4(tt.versions))
 			assert.Equal(t, tt.current, isVersionListCurrent(tt.versions))
 		})
 	}
@@ -257,8 +262,8 @@ func versionRows(versions ...int) []*fakeRow {
 	return rows
 }
 
-// TestVerifySchemaBranches locks every verifySchema branch: complete v1-v3
-// prefixes and current v4 pass; foreign/empty/extra version lists are
+// TestVerifySchemaBranches locks every verifySchema branch: complete v1-v4
+// prefixes and current v5 pass; foreign/empty/extra version lists are
 // rejected, and a current schema missing its v2 column or v4 alias identity
 // index is rejected.
 func TestVerifySchemaBranches(t *testing.T) {
@@ -275,9 +280,13 @@ func TestVerifySchemaBranches(t *testing.T) {
 		fx := &fakeDbtx{versions: versionRows(1, 2, 3), tables: allTables()}
 		require.NoError(t, verifySchema(ctx, fx))
 	})
-	t.Run("current v4 passes", func(t *testing.T) {
+	t.Run("complete v4 passes", func(t *testing.T) {
+		fx := &fakeDbtx{versions: versionRows(1, 2, 3, 4), tables: allTables()}
+		require.NoError(t, verifySchema(ctx, fx))
+	})
+	t.Run("current v5 passes", func(t *testing.T) {
 		fx := &fakeDbtx{
-			versions:        versionRows(1, 2, 3, 4),
+			versions:        versionRows(1, 2, 3, 4, 5),
 			tables:          allTables(),
 			hasV2Col:        true,
 			hasV4AliasIndex: true,
@@ -285,7 +294,7 @@ func TestVerifySchemaBranches(t *testing.T) {
 		require.NoError(t, verifySchema(ctx, fx))
 	})
 	t.Run("version mismatch rejected", func(t *testing.T) {
-		for _, versions := range [][]int{nil, {2}, {99}, {1, 2, 3, 4, 5}, {2, 1}} {
+		for _, versions := range [][]int{nil, {2}, {99}, {1, 2, 3, 4, 5, 6}, {2, 1}} {
 			fx := &fakeDbtx{versions: versionRows(versions...), tables: allTables()}
 			err := verifySchema(ctx, fx)
 			require.Error(t, err)
@@ -301,7 +310,7 @@ func TestVerifySchemaBranches(t *testing.T) {
 	})
 	t.Run("missing v2 column rejected", func(t *testing.T) {
 		fx := &fakeDbtx{
-			versions:        versionRows(1, 2, 3, 4),
+			versions:        versionRows(1, 2, 3, 4, 5),
 			tables:          allTables(),
 			hasV2Col:        false,
 			hasV4AliasIndex: true,
@@ -312,7 +321,7 @@ func TestVerifySchemaBranches(t *testing.T) {
 	})
 	t.Run("missing v4 alias index rejected", func(t *testing.T) {
 		fx := &fakeDbtx{
-			versions:        versionRows(1, 2, 3, 4),
+			versions:        versionRows(1, 2, 3, 4, 5),
 			tables:          allTables(),
 			hasV2Col:        true,
 			hasV4AliasIndex: false,
@@ -358,8 +367,8 @@ func TestObserverV4AliasIndexExists(t *testing.T) {
 }
 
 // TestBootstrapSchemaTxBranches locks every bootstrapSchemaTx branch: an
-// empty schema applies every migration in order, complete v1-v3 schemas apply
-// their pending suffix, a current v4 schema is an idempotent no-op, and a
+// empty schema applies every migration in order, complete v1-v4 schemas apply
+// their pending suffix, a current v5 schema is an idempotent no-op, and a
 // partial/unknown schema is rejected and never patched.
 func TestBootstrapSchemaTxBranches(t *testing.T) {
 	ctx := context.Background()
@@ -377,9 +386,10 @@ func TestBootstrapSchemaTxBranches(t *testing.T) {
 		name     string
 		versions []int
 	}{
-		{name: "complete v1 applies v2 through v4", versions: []int{1}},
-		{name: "complete v2 applies v3 and v4", versions: []int{1, 2}},
-		{name: "complete v3 applies only v4", versions: []int{1, 2, 3}},
+		{name: "complete v1 applies v2 through v5", versions: []int{1}},
+		{name: "complete v2 applies v3 through v5", versions: []int{1, 2}},
+		{name: "complete v3 applies v4 and v5", versions: []int{1, 2, 3}},
+		{name: "complete v4 applies only v5", versions: []int{1, 2, 3, 4}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			fx := &fakeDbtx{}
@@ -399,7 +409,7 @@ func TestBootstrapSchemaTxBranches(t *testing.T) {
 	}
 	t.Run("current schema is an idempotent no-op", func(t *testing.T) {
 		fx := &fakeDbtx{
-			versions:        versionRows(1, 2, 3, 4),
+			versions:        versionRows(1, 2, 3, 4, 5),
 			tables:          allTables(),
 			hasV2Col:        true,
 			hasV4AliasIndex: true,
@@ -408,7 +418,7 @@ func TestBootstrapSchemaTxBranches(t *testing.T) {
 		for _, name := range requiredObserverTables {
 			tables[name] = true
 		}
-		require.NoError(t, bootstrapSchemaTx(ctx, fx, tables, []int{1, 2, 3, 4}))
+		require.NoError(t, bootstrapSchemaTx(ctx, fx, tables, []int{1, 2, 3, 4, 5}))
 		assert.Empty(t, fx.execs, "a current schema runs no migration")
 	})
 	t.Run("partial schema rejected, never patched", func(t *testing.T) {
@@ -440,10 +450,11 @@ func TestBootstrapSchemaTxBranches(t *testing.T) {
 // TestPendingMigrations locks the pending-migration mapping: the version row
 // count selects the migration suffix that still needs to run.
 func TestPendingMigrations(t *testing.T) {
-	assert.Equal(t, []string{"migrations/002_v2.sql", "migrations/003_v3.sql", "migrations/004_v4.sql"}, pendingMigrations([]int{1}))
-	assert.Equal(t, []string{"migrations/003_v3.sql", "migrations/004_v4.sql"}, pendingMigrations([]int{1, 2}))
-	assert.Equal(t, []string{"migrations/004_v4.sql"}, pendingMigrations([]int{1, 2, 3}))
-	assert.Empty(t, pendingMigrations([]int{1, 2, 3, 4}))
+	assert.Equal(t, []string{"migrations/002_v2.sql", "migrations/003_v3.sql", "migrations/004_v4.sql", "migrations/005_v5.sql"}, pendingMigrations([]int{1}))
+	assert.Equal(t, []string{"migrations/003_v3.sql", "migrations/004_v4.sql", "migrations/005_v5.sql"}, pendingMigrations([]int{1, 2}))
+	assert.Equal(t, []string{"migrations/004_v4.sql", "migrations/005_v5.sql"}, pendingMigrations([]int{1, 2, 3}))
+	assert.Equal(t, []string{"migrations/005_v5.sql"}, pendingMigrations([]int{1, 2, 3, 4}))
+	assert.Empty(t, pendingMigrations([]int{1, 2, 3, 4, 5}))
 }
 
 // TestReadSchemaVersions locks the version listing: rows come back in version
@@ -478,10 +489,11 @@ func TestMissingObserverTables(t *testing.T) {
 
 // TestMigrationsEmbedded locks the embedded migration set: all files exist,
 // 001 creates the v1 version row, 002 adds retention metadata, 003 adds query
-// indexes, and 004 fixes provider-scoped session-alias identity. The observer
-// schema is never complete without all version rows.
+// indexes, 004 fixes provider-scoped session-alias identity, and 005 adds the
+// transcript session index. The observer schema is never complete without all
+// version rows.
 func TestMigrationsEmbedded(t *testing.T) {
-	require.Len(t, observerMigrations, 4)
+	require.Len(t, observerMigrations, 5)
 	for _, file := range observerMigrations {
 		data, err := migrationsFS.ReadFile(file)
 		require.NoError(t, err, "migration %s must be embedded", file)
@@ -520,4 +532,12 @@ func TestMigrationsEmbedded(t *testing.T) {
 	assert.Contains(t, body4, "idx_observer_session_aliases_identity")
 	assert.Contains(t, body4, "alias_digest,\n        provider")
 	assert.Contains(t, body4, "VALUES (4, now())")
+
+	v5, err := migrationsFS.ReadFile(observerMigrations[4])
+	require.NoError(t, err)
+	body5 := strings.ReplaceAll(string(v5), "\r\n", "\n")
+	// The transcript endpoint filters observer_contexts by session_id and
+	// orders by id; the composite index serves exactly that shape.
+	assert.Contains(t, body5, "CREATE INDEX IF NOT EXISTS idx_observer_contexts_session_id_id ON observer_contexts (session_id, id)")
+	assert.Contains(t, body5, "VALUES (5, now())")
 }

@@ -1005,6 +1005,61 @@ func TestTranscriptMissingObjectClassified(t *testing.T) {
 	assert.Equal(t, ContentErrMissingContent, code)
 }
 
+// TestTranscriptReadsContextOnce locks the bounded-read contract: the
+// flatten must not issue one context-row query per delta. The fake layer
+// records every SQL statement, so the test counts queries touching
+// observer_contexts: one main scan, no per-delta reloads.
+func TestTranscriptReadsContextOnce(t *testing.T) {
+	f := newFakeQueryDB()
+	sid := uuid.MustParse("00000000-0000-0000-0000-0000000000aa")
+	transcriptFixture(t, f, sid)
+
+	_, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 3})
+	require.NoError(t, err)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var contextReads int
+	for _, q := range f.sqls {
+		if strings.Contains(q, "FROM observer_contexts") {
+			contextReads++
+		}
+	}
+	assert.Equal(t, 1, contextReads, "a transcript page must scan observer_contexts exactly once, never once per delta")
+}
+
+// TestTranscriptDivergenceShowsEditedMessages locks the divergence window:
+// a same-length turn whose digest list changed (an edited history) must emit
+// the changed messages instead of being skipped by the length-only window.
+func TestTranscriptDivergenceShowsEditedMessages(t *testing.T) {
+	f := newFakeQueryDB()
+	sid := uuid.MustParse("00000000-0000-0000-0000-0000000000aa")
+	s := sid.String()
+	store := func(i int) string {
+		it := CanonicalItem{Kind: "text", Role: "user", LogicalBytes: 4, Hmac: fmt.Sprintf("%064x", i)}
+		payload, logical, err := encodeItem(it)
+		require.NoError(t, err)
+		f.objects[it.Hmac] = contentObjectRow{payload: payload, logicalBytes: logical}
+		return it.Hmac
+	}
+	a, b := store(1), store(2)
+	_, c2 := store(3), store(4)
+	// Turn 1 is [a, b]; turn 2 is [a, c2] — same length, edited tail. The
+	// length-only window would skip turn 2 entirely; the common-prefix
+	// window must emit c2.
+	f.contexts = []fakeContextRow{
+		{id: 1, sessionID: s, turnID: "00000000-0000-0000-0000-000000000001", checkpointID: 1, ordinal: 0, prefix: 0, itemCount: 2, digests: []string{a, b}},
+		{id: 2, sessionID: s, turnID: "00000000-0000-0000-0000-000000000002", checkpointID: 2, ordinal: 0, prefix: 0, itemCount: 2, digests: []string{a, c2}},
+	}
+	page, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 10})
+	require.NoError(t, err)
+	require.Len(t, page.Items, 3)
+	assert.Equal(t, a, page.Items[0].Hmac)
+	assert.Equal(t, b, page.Items[1].Hmac)
+	assert.Equal(t, c2, page.Items[2].Hmac, "the edited message must be emitted")
+	assert.Equal(t, int64(1), page.Items[2].TurnSeq)
+}
+
 // ---------------------------------------------------------------------------
 // timeout and degraded paths
 

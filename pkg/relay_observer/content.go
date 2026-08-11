@@ -91,8 +91,8 @@ func commonPrefix(a, b []string) int {
 // count; anything else is a classified corrupt delta — a delta is never
 // assembled silently into wrong content.
 func assembleDigests(full []string, prefixCount int, suffix []string, itemCount int) ([]string, error) {
-	if prefixCount > len(full) {
-		return nil, classifiedError(ContentErrCorruptDelta, "prefix count %d exceeds base list of %d", prefixCount, len(full))
+	if prefixCount < 0 || prefixCount > len(full) {
+		return nil, classifiedError(ContentErrCorruptDelta, "prefix count %d outside base list of %d", prefixCount, len(full))
 	}
 	if prefixCount+len(suffix) != itemCount {
 		return nil, classifiedError(ContentErrCorruptDelta, "prefix %d + suffix %d != declared item count %d", prefixCount, len(suffix), itemCount)

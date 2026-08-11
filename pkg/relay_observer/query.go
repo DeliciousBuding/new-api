@@ -899,10 +899,15 @@ type transcriptFlatRef struct {
 // transcriptQ flattens a session's context rows into one ordered message
 // stream and returns one page. Every context row stores the turn's complete
 // history; a turn's new messages are its digest list beyond the previous
-// turn's list length (the append-only conversation view). A history
-// compaction (a shorter list than the previous turn) restarts the window so
-// the whole compacted view is shown once instead of dropping messages.
+// turn's list (the append-only conversation view). A history compaction (a
+// shorter list than the previous turn) restarts the window so the whole
+// compacted view is shown once instead of dropping messages. A divergence
+// (same-length or longer list whose content changed) starts at the real
+// common prefix so edited/inserted messages are not silently dropped.
 func transcriptQ(ctx context.Context, q contentQuerier, query TranscriptQuery) (TranscriptPage, error) {
+	if err := ctx.Err(); err != nil {
+		return TranscriptPage{}, classifiedQueryError(QueryErrTimeout, "query context expired", err)
+	}
 	rows, err := q.Query(ctx, `SELECT id, turn_id::text, checkpoint_id, group_ordinal, common_prefix_count, item_count, item_digests, logical_bytes FROM observer_contexts WHERE session_id = $1 ORDER BY id`, query.SessionID.String())
 	if err != nil {
 		return TranscriptPage{}, fmt.Errorf("relayobserver: transcript: read context rows: %w", err)
@@ -915,7 +920,14 @@ func transcriptQ(ctx context.Context, q contentQuerier, query TranscriptQuery) (
 
 	var flat []transcriptFlatRef
 	var prevCount int64
+	var prevDigests []string
 	var turnSeq int64
+	// currentFull is the full checkpoint of the current storage group,
+	// captured from the row set already in hand (rows come ORDER BY id, so a
+	// full row always precedes its deltas). Deltas reconstruct against it in
+	// memory instead of issuing one query per delta — the transcript read
+	// must stay bounded for sessions with thousands of turns.
+	var currentFull *contextRow
 	for rows.Next() {
 		var row contextRow
 		var turnRaw string
@@ -926,20 +938,27 @@ func transcriptQ(ctx context.Context, q contentQuerier, query TranscriptQuery) (
 		if err != nil {
 			return TranscriptPage{}, classifiedErrorWrap(ContentErrCorrupt, "invalid turn id in context row", err)
 		}
+		if row.groupOrdinal == groupFullOrdinal {
+			currentFull = &row
+		}
 		digests, err := reconstructDigests(row, func(id int64) (contextRow, error) {
-			return loadContextRowByIDQ(ctx, q, query.SessionID, id)
+			if currentFull == nil || currentFull.id != id {
+				return contextRow{}, classifiedError(ContentErrMissingBase, "delta %d references missing full checkpoint %d", row.id, id)
+			}
+			return *currentFull, nil
 		})
 		if err != nil {
 			return TranscriptPage{}, err
 		}
-		start := prevCount
-		if start > int64(len(digests)) {
-			start = 0
+		start := int64(commonPrefix(prevDigests, digests))
+		if int64(len(digests)) < prevCount {
+			start = 0 // compaction restart: show the whole compacted view once
 		}
 		for i := start; i < int64(len(digests)); i++ {
 			flat = append(flat, transcriptFlatRef{turnID: turnID, turnSeq: turnSeq, seq: i - start, digest: digests[i]})
 		}
 		prevCount = int64(len(digests))
+		prevDigests = digests
 		turnSeq++
 	}
 	if err := rows.Err(); err != nil {
