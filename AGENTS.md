@@ -162,6 +162,7 @@ This is a fork of `QuantumNous/new-api`. Branch architecture (2026-08-11 two-bra
 - **Release automation**: `release-tag.yml` (workflow_dispatch, supports `dry_run`) computes the next `v1.0.0-td-YYYYMMDD.N` tag from the `dev` branch, pushes it, and dispatches `docker-build.yml`. Full runbook: `RELEASE.md`.
 - **Branch protection**: `dev` requires the CI checks (`Backend vet, build, and test` / `Frontend typecheck, test, and build`) to pass; force push is blocked. `delete_branch_on_merge` and `allow_auto_merge` are enabled.
 - **Upstream sync**: `main` sync failures automatically open an issue titled `upstream-sync failed — main mirror drift` (deduplicated per open issue).
+- **Fork-only cleanup on `dev`**: upstream files unused by this fork are removed from `dev` (the upstream `electron/` desktop app and its workflows `release.yml`, `docker-image-branch.yml`, `electron-build.yml`); `main` (the mirror) still carries them until upstream removes them, which is expected. `ci.yml` runs push CI only on `dev` so upstream-sync force-pushes to `main` do not burn CI runs.
 
 **Pull requests:** When creating a pull request:
 
