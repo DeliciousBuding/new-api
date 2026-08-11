@@ -22,9 +22,21 @@ env:
   IMAGE_NAME: ghcr.io/deliciousbuding/new-api
 
 jobs:
-  build-and-push:
-    name: Build and push multi-arch image
-    runs-on: ubuntu-latest
+  build_single_arch:
+    name: Build & push (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     timeout-minutes: 60
     permissions:
       contents: read
@@ -56,9 +68,7 @@ jobs:
           esac
           printf '%s\n' "$TAG" > VERSION
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+          echo "Building ${{ matrix.arch }} for $TAG"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
@@ -77,6 +87,8 @@ jobs:
           TAG="${{ steps.version.outputs.tag }}"
           # Candidate tags are immutable. This guard applies to both tag pushes
           # and manual dispatches so rerunning either path cannot move a digest.
+          # Each arch job checks independently; the manifest job runs only
+          # after both arch images exist.
           if docker buildx imagetools inspect "$IMAGE_NAME:$TAG" >/dev/null 2>&1; then
             echo "::error::Image '$IMAGE_NAME:$TAG' already exists. Use a new tag for rebuilt candidates."
             exit 1
@@ -89,7 +101,7 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=${{ steps.version.outputs.tag }}
+            type=raw,value=${{ steps.version.outputs.tag }}-${{ matrix.arch }}
             type=sha,prefix=sha-,format=long
 
       - name: Build and push
@@ -98,12 +110,12 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=tokendance-gateway
-          cache-to: type=gha,mode=max,scope=tokendance-gateway
+          cache-from: type=gha,scope=tokendance-gateway-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=tokendance-gateway-${{ matrix.arch }}
           provenance: mode=max
           sbom: true
 
@@ -111,11 +123,48 @@ jobs:
         shell: bash
         run: |
           {
-            echo '### TokenDance Gateway image (amd64 + arm64)'
+            echo "### TokenDance Gateway image (${{ matrix.arch }})"
             echo
             echo '```text'
-            echo '${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}'
+            echo '${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}-${{ matrix.arch }}'
             echo '${{ steps.build.outputs.digest }}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  create_manifests:
+    name: Create multi-arch manifest
+    needs: [build_single_arch]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Set version
+        run: echo "TAG=${{ needs.build_single_arch.outputs.tag }}" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4 # v4.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create & push multi-arch manifest
+        run: |
+          docker buildx imagetools create \
+            -t "$IMAGE_NAME:$TAG" \
+            "$IMAGE_NAME:$TAG-amd64" \
+            "$IMAGE_NAME:$TAG-arm64"
+
+      - name: Manifest summary
+        run: |
+          {
+            echo '### TokenDance Gateway multi-arch manifest'
+            echo
+            echo '```text'
+            docker buildx imagetools inspect "$IMAGE_NAME:$TAG"
             echo '```'
             echo
             echo 'Production deployment is intentionally out of scope for this workflow.'

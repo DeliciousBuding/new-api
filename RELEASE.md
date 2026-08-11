@@ -33,8 +33,8 @@ gh workflow run release-tag.yml -f tag=v1.0.0-td-20260811.2
 
 `release-tag.yml` 会：
 1. 从 `dev` 分支解析 tag（今日已有 tag 则序号 +1；已存在的 tag 拒绝重发）
-2. push tag → dispatch `docker-build.yml` → 构建并推送
-   `ghcr.io/deliciousbuding/new-api:<tag>`（**amd64 + arm64 多架构 manifest**）
+2. push tag → dispatch `docker-build.yml` → 并行构建 amd64（`ubuntu-latest`）+ arm64（`ubuntu-24.04-arm` 原生 ARM runner，public repo 免费），完成后合并多架构 manifest 并推送
+   `ghcr.io/deliciousbuding/new-api:<tag>`
 3. 在 run summary 输出镜像验证命令
 
 > 注意：CI/推送触发的事件由 `GITHUB_TOKEN` 发出时不会再次触发 workflow（防递归），因此 orchestrator 显式 dispatch `docker-build.yml`。
