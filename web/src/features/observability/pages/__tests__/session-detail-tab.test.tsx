@@ -627,4 +627,79 @@ describe('SessionDetailTab — session switching', () => {
     assert.ok(!text.includes('List the files'), 'previous session cleared')
     assert.ok(!text.includes('Tool Call × 2'), 'tool state not carried over')
   })
+
+  test('drops an in-flight loadOlder page when the session switches', async () => {
+    let release!: (value: unknown) => void
+    const pending = new Promise((resolve) => {
+      release = resolve
+    })
+    handlers.set(
+      '/api/relay-observer/sessions/session-abc-1234/transcript?direction=older&cursor=123&page_size=50',
+      () => pending
+    )
+
+    const { host, root } = renderTab('session-abc-1234')
+    await waitFor(host, () => textOf(host).includes('List the files'))
+
+    clickButton(host, 'Load earlier')
+    // Switch sessions while the older-page request is still in flight.
+    handlers.set(
+      '/api/relay-observer/sessions/session-xyz-5678',
+      () => ({ ...SESSION_PAYLOAD, data: { ...SESSION_PAYLOAD.data, session_id: 'session-xyz-5678' } })
+    )
+    handlers.set(
+      '/api/relay-observer/sessions/session-xyz-5678/transcript',
+      () => ({
+        success: true,
+        message: '',
+        data: {
+          page_size: 50,
+          items: [
+            {
+              turn_id: 'turn-x',
+              turn_seq: 0,
+              seq: 0,
+              kind: 'message',
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: 'Another session prompt',
+                  logical_bytes: 21,
+                  hmac: 'n'.repeat(64),
+                },
+              ],
+              logical_bytes: 21,
+              hmac: 'o'.repeat(64),
+            },
+          ],
+          meta: { prev_cursor: 0, has_older: false },
+        },
+      })
+    )
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nextProvider i18n={i18n}>
+            <SessionDetailTab sessionId='session-xyz-5678' />
+          </I18nextProvider>
+        </QueryClientProvider>
+      )
+    })
+    await waitFor(host, () => textOf(host).includes('Another session prompt'))
+
+    // The stale older page resolves after the switch; it must be dropped.
+    await act(async () => {
+      release(OLDER_PAGE)
+    })
+    const text = textOf(host)
+    assert.ok(
+      !text.includes('An older prompt'),
+      'the previous session older page must not splice into the new timeline'
+    )
+    assert.ok(
+      !text.includes('List the files'),
+      'previous session content must stay cleared'
+    )
+  })
 })

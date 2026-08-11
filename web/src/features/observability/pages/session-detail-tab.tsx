@@ -30,7 +30,7 @@ For commercial licensing, please contact support@quantumnous.com
  *  - components/ai-elements/code-block.tsx (CodeBlock for raw JSON inspection)
  */
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   AlertTriangle,
@@ -115,15 +115,20 @@ function AgentTimeline({ sessionId }: { sessionId: string }) {
   const [hasOlder, setHasOlder] = useState(false)
   const [isLoadingOlder, setIsLoadingOlder] = useState(false)
   const [loadError, setLoadError] = useState(false)
+  // Bumped on every session switch so an in-flight loadOlder from the
+  // previous session cannot splice its page into the new timeline (F-1:
+  // cross-session race).
+  const sessionEpoch = useRef(0)
 
   const latestQuery = useQuery({
-    queryKey: ['observability-transcript-latest', sessionId],
+    queryKey: observabilityQueryKeys.transcript.list(sessionId),
     queryFn: () =>
       getSessionTranscript(sessionId, { page_size: TRANSCRIPT_PAGE_SIZE }),
     retry: false,
   })
 
   useEffect(() => {
+    sessionEpoch.current += 1
     setMessages([])
     setPrevCursor(null)
     setHasOlder(false)
@@ -140,6 +145,7 @@ function AgentTimeline({ sessionId }: { sessionId: string }) {
 
   const loadOlder = async () => {
     if (prevCursor == null || isLoadingOlder) return
+    const epoch = sessionEpoch.current
     setIsLoadingOlder(true)
     setLoadError(false)
     try {
@@ -150,6 +156,7 @@ function AgentTimeline({ sessionId }: { sessionId: string }) {
           page_size: TRANSCRIPT_PAGE_SIZE,
         })
       ).data
+      if (sessionEpoch.current !== epoch) return
       if (!page || isObserverDegraded(page)) {
         setLoadError(true)
         return
@@ -158,13 +165,14 @@ function AgentTimeline({ sessionId }: { sessionId: string }) {
       setPrevCursor(page.meta.prev_cursor)
       setHasOlder(page.meta.has_older)
     } catch {
-      setLoadError(true)
+      if (sessionEpoch.current === epoch) setLoadError(true)
     } finally {
-      setIsLoadingOlder(false)
+      if (sessionEpoch.current === epoch) setIsLoadingOlder(false)
     }
   }
 
   const taskMeta = useMemo(() => deriveTaskMeta(messages), [messages])
+  const groups = useMemo(() => groupTranscriptMessages(messages), [messages])
 
   // A degraded envelope keeps whatever messages are already on screen; the
   // alert tells the user the store was unavailable.
@@ -242,7 +250,7 @@ function AgentTimeline({ sessionId }: { sessionId: string }) {
             </span>
           </div>
         )}
-        {groupTranscriptMessages(messages).map((group) => (
+        {groups.map((group) => (
           <TimelineNode
             key={`${group.item.hmac}-${group.item.turn_seq}-${group.item.seq}`}
             item={group.item}
@@ -579,9 +587,8 @@ function AssistantTurnBody({
 
   // Collect every result that belongs to this turn: inline tool_result parts
   // (Claude style) plus attached role=tool messages (ChatCompletions style,
-  // plain-text output). ChatCompletions results carry no call id, so the
-  // reliable join is positional: the observer flattens a turn as call →
-  // result in order.
+  // plain-text output). Results carry a tool_call_id when the upstream
+  // supplied one; pairing prefers that id and only falls back to position.
   const attachedOutputs: ObserverToolResultRef[] = []
   for (const resultItem of attachedResults) {
     for (const part of resultItem.content ?? []) {
@@ -597,11 +604,30 @@ function AssistantTurnBody({
     ...resultParts.map((part) => part.result),
     ...attachedOutputs,
   ]
-  const callsWithResults = callParts.map((part, index) => ({
-    call: part.call,
-    result: allResults[index],
-  }))
-  const extraResults = allResults.slice(callParts.length)
+  // Join by tool_call_id when the call and result both carry one; otherwise
+  // consume the next unused result positionally (the observer flattens a
+  // turn as call → result in order). A missing result never shifts the
+  // pairing of the remaining calls.
+  const consumed = new Set<number>()
+  const callsWithResults = callParts.map((part) => {
+    const callId = part.call.id
+    if (callId) {
+      const match = allResults.findIndex(
+        (result, index) => result.tool_call_id === callId && !consumed.has(index)
+      )
+      if (match >= 0) {
+        consumed.add(match)
+        return { call: part.call, result: allResults[match] }
+      }
+    }
+    const fallback = allResults.findIndex((_, index) => !consumed.has(index))
+    if (fallback >= 0) {
+      consumed.add(fallback)
+      return { call: part.call, result: allResults[fallback] }
+    }
+    return { call: part.call, result: undefined }
+  })
+  const extraResults = allResults.filter((_, index) => !consumed.has(index))
 
   // Walk the parts in order, splitting into alternating text runs and
   // consecutive tool-call runs — narration stays interleaved, and adjacent
@@ -727,7 +753,7 @@ function ToolGroup({
           {t('Tool Call')} × {calls.length}
         </span>
         <Check
-          className='text-emerald-500 size-3.5 shrink-0'
+          className='text-success size-3.5 shrink-0'
           aria-hidden='true'
         />
       </button>
@@ -793,7 +819,7 @@ function ToolNode({
         </span>
         {result && (
           <Check
-            className='text-emerald-500 size-3.5 shrink-0'
+            className='text-success size-3.5 shrink-0'
             aria-hidden='true'
           />
         )}
@@ -862,7 +888,7 @@ function ToolResultNode({ result }: { result: ObserverToolResultRef }) {
           )}
           aria-hidden='true'
         />
-        <Check className='text-emerald-500 size-3.5 shrink-0' aria-hidden='true' />
+        <Check className='text-success size-3.5 shrink-0' aria-hidden='true' />
         <span className='min-w-0 flex-1 truncate text-xs font-medium'>
           {t('Tool Result')}
         </span>

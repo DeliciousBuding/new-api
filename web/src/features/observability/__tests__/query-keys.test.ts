@@ -82,6 +82,29 @@ describe('observabilityQueryKeys', () => {
     ])
   })
 
+  test('transcript list key is scoped per session', () => {
+    assert.deepEqual(observabilityQueryKeys.transcript.list('session-abc'), [
+      'observability',
+      'transcript',
+      'list',
+      'session-abc',
+    ])
+    assert.notDeepEqual(
+      observabilityQueryKeys.transcript.list('session-abc'),
+      observabilityQueryKeys.transcript.list('session-xyz')
+    )
+    assert.deepEqual(
+      observabilityQueryKeys.transcript.lists().slice(
+        0,
+        observabilityQueryKeys.transcript.lists().length
+      ),
+      observabilityQueryKeys.transcript
+        .list('session-abc')
+        .slice(0, observabilityQueryKeys.transcript.lists().length),
+      'lists() is the prefix of every page key'
+    )
+  })
+
   test('each page cursor is its own cache entry (keyset isolation)', () => {
     const first = observabilityQueryKeys.sessions.list({ cursor: undefined })
     const second = observabilityQueryKeys.sessions.list({ cursor: 'c1' })
