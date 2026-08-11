@@ -39,7 +39,6 @@ import {
   ChevronsUp,
   Loader2,
   Terminal,
-  TerminalSquare,
   Wrench,
   Zap,
 } from 'lucide-react'
@@ -167,6 +166,13 @@ function AgentTimeline({ sessionId }: { sessionId: string }) {
 
   const taskMeta = useMemo(() => deriveTaskMeta(messages), [messages])
 
+  // A degraded envelope keeps whatever messages are already on screen; the
+  // alert tells the user the store was unavailable.
+  const latestDegraded =
+    latestQuery.data && isObserverDegraded(latestQuery.data.data)
+      ? latestQuery.data.data
+      : undefined
+
   // Session-level metadata feeds the task summary card.
   const sessionQuery = useQuery({
     queryKey: observabilityQueryKeys.sessions.detail(sessionId),
@@ -175,7 +181,7 @@ function AgentTimeline({ sessionId }: { sessionId: string }) {
   })
   const session =
     sessionQuery.data && !isObserverDegraded(sessionQuery.data.data)
-      ? sessionQuery.data.data
+      ? (sessionQuery.data.data ?? null)
       : null
 
   let content: ReactNode
@@ -254,6 +260,7 @@ function AgentTimeline({ sessionId }: { sessionId: string }) {
         session={session}
         taskMeta={taskMeta}
       />
+      {latestDegraded && <DegradedAlert data={latestDegraded} />}
       <Card>
         <CardContent className='py-4'>{content}</CardContent>
       </Card>
@@ -281,8 +288,8 @@ function deriveTaskMeta(messages: ObserverTranscriptMessage[]): TaskMeta {
     (m) => m.role === 'assistant' && (m.content ?? []).some((p) => p.type === 'tool_call')
   ).length
   const hasGap = messages.some((m) => m.kind === 'gap' || m.gap)
-  const last = messages[messages.length - 1]
-  const endsOnUser = last.role === 'user'
+  const last = messages.at(-1)
+  const endsOnUser = last?.role === 'user'
   let status: TaskStatus = 'completed'
   if (hasGap) status = 'truncated'
   else if (endsOnUser) status = 'incomplete'
@@ -316,7 +323,10 @@ function TaskSummaryCard({
     switch (taskMeta.status) {
       case 'completed':
         return (
-          <Badge variant='success' className='gap-1'>
+          <Badge
+            variant='outline'
+            className='gap-1 border-success/40 bg-success/10 text-success'
+          >
             <Check className='size-3' aria-hidden='true' />
             {t('Completed')}
           </Badge>
@@ -342,13 +352,14 @@ function TaskSummaryCard({
 
   const stats: ReactNode[] = []
   if (durationText) stats.push(<span key='dur'>{durationText}</span>)
-  if (taskMeta.toolCallCount > 0)
+  if (taskMeta.toolCallCount > 0) {
     stats.push(
       <span key='tools' className='inline-flex items-center gap-1'>
         <Wrench className='size-3' aria-hidden='true' />
         {taskMeta.toolCallCount}
       </span>
     )
+  }
   stats.push(
     <span key='turns' className='inline-flex items-center gap-1'>
       <Zap className='size-3' aria-hidden='true' />
@@ -406,7 +417,7 @@ function groupTranscriptMessages(
   for (const item of messages) {
     const isResultItem = item.role === 'tool' || item.kind === 'tool_result'
     if (isResultItem) {
-      const prev = groups[groups.length - 1]
+      const prev = groups.at(-1)
       if (prev && prev.item.role === 'assistant') {
         prev.attachedResults.push(item)
         continue
@@ -490,11 +501,11 @@ function TimelineNode({
   // Standalone tool result (page boundary, no preceding assistant) — inline.
   if ((isToolItem && !isAssistant) || isToolMessage) {
     const parts = item.content ?? []
-    const resultParts = parts.filter(
+    const resultPart = parts.find(
       (part) => part.type === 'tool_result' && part.result
     )
     const textParts = parts.filter((part) => part.type === 'text' && part.text)
-    const result = resultParts[0]?.result ?? {
+    const result = resultPart?.result ?? {
       output: textParts.map((part) => part.text).join('\n'),
     }
     return (
@@ -557,10 +568,12 @@ function AssistantTurnBody({
   const { t } = useTranslation()
   const parts = item.content ?? []
   const callParts = parts.filter(
-    (part) => part.type === 'tool_call' && part.call
+    (part): part is typeof part & { call: ObserverToolCallRef } =>
+      part.type === 'tool_call' && part.call !== undefined
   )
   const resultParts = parts.filter(
-    (part) => part.type === 'tool_result' && part.result
+    (part): part is typeof part & { result: ObserverToolResultRef } =>
+      part.type === 'tool_result' && part.result !== undefined
   )
   const mediaParts = parts.filter((part) => part.type === 'media' && part.media)
 
@@ -581,11 +594,11 @@ function AssistantTurnBody({
   }
 
   const allResults = [
-    ...resultParts.map((part) => part.result!),
+    ...resultParts.map((part) => part.result),
     ...attachedOutputs,
   ]
   const callsWithResults = callParts.map((part, index) => ({
-    call: part.call!,
+    call: part.call,
     result: allResults[index],
   }))
   const extraResults = allResults.slice(callParts.length)
@@ -594,27 +607,35 @@ function AssistantTurnBody({
   // consecutive tool-call runs — narration stays interleaved, and adjacent
   // tool calls merge into one collapsible tree node.
   type Segment =
-    | { kind: 'text'; text: string }
-    | { kind: 'tools'; calls: typeof callsWithResults }
+    | { kind: 'text'; key: string; text: string }
+    | { kind: 'tools'; key: string; calls: typeof callsWithResults }
   const segments: Segment[] = []
   let textRun = ''
+  let textKey = ''
   let toolRun: typeof callsWithResults = []
   let toolIndex = 0
   const flushText = () => {
     if (textRun) {
-      segments.push({ kind: 'text', text: textRun })
+      segments.push({ kind: 'text', key: textKey, text: textRun })
       textRun = ''
+      textKey = ''
     }
   }
   const flushTools = () => {
     if (toolRun.length > 0) {
-      segments.push({ kind: 'tools', calls: toolRun })
+      const firstCall = toolRun[0]?.call
+      segments.push({
+        kind: 'tools',
+        key: firstCall?.id ?? firstCall?.name ?? `tools-${segments.length}`,
+        calls: toolRun,
+      })
       toolRun = []
     }
   }
   for (const part of parts) {
     if (part.type === 'text' && part.text) {
       flushTools()
+      if (!textRun) textKey = part.hmac ?? `text-${segments.length}`
       textRun += (textRun ? '\n\n' : '') + part.text
     } else if (part.type === 'tool_call' && part.call) {
       flushText()
@@ -627,22 +648,25 @@ function AssistantTurnBody({
 
   return (
     <div className='flex flex-col gap-1'>
-      {segments.map((segment, index) =>
+      {segments.map((segment) =>
         segment.kind === 'text' ? (
           <Response
-            key={`text-${index}`}
+            key={`text-${segment.key}`}
             className='[&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_pre]:my-1 [&_h1]:my-1 [&_h2]:my-1 [&_h3]:my-1'
           >
             {segment.text}
           </Response>
         ) : (
-          <ToolGroup key={`tools-${index}`} calls={segment.calls} />
+          <ToolGroup key={`tools-${segment.key}`} calls={segment.calls} />
         )
       )}
 
       {/* Results beyond the paired calls (page boundary or an odd count) */}
       {extraResults.map((result, index) => (
-        <ToolResultNode key={`extra-${index}`} result={result} />
+        <ToolResultNode
+          key={`extra-${result.tool_call_id ?? `${index}-${result.output}`}`}
+          result={result}
+        />
       ))}
 
       {mediaParts.length > 0 && (

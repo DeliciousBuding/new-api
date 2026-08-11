@@ -17,15 +17,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /**
- * SessionDetailTab behavior tests (T4.3): summary rendering, keyset turns
- * pagination, on-demand context triggering (enabled assertion), context
- * content rendering including media summaries, and the degraded / empty /
- * error states. All data is fake; no real session ids or IPs.
+ * SessionDetailTab behavior tests for the Agent Timeline: transcript
+ * latest/older pagination, task summary card, consecutive tool calls
+ * collapsing into one tree node, tool results attached to the preceding
+ * assistant turn, and the degraded / empty / error states. All data is
+ * fabricated; no real session ids or addresses.
  *
- * pattern: web/src/features/observability/components/__tests__/cursor-pagination.test.tsx
- * (node:test + happy-dom + manual i18n instance) and
- * web/src/features/observability/__tests__/api.test.ts (stubbing the shared
- * http-client `api.get` singleton instead of mocking modules).
+ * pattern: sessions-tab.test.tsx (node:test + happy-dom + manual i18n
+ * instance) and api.test.ts (stubbing the shared http-client `api.get`
+ * singleton instead of mocking modules).
  */
 import assert from 'node:assert/strict'
 import { after, afterEach, beforeEach, describe, test } from 'node:test'
@@ -86,47 +86,27 @@ await i18n.use(initReactI18next).init({
     en: {
       translation: {
         'Session Detail': 'Session Detail',
-        'Select a session from the Sessions tab to view its details.':
-          'Select a session from the Sessions tab to view its details.',
-        'Session Summary': 'Session Summary',
-        'Session ID': 'Session ID',
-        'Node Scope': 'Node Scope',
-        'User ID': 'User ID',
-        'Client Family': 'Client Family',
-        'First Seen': 'First Seen',
-        'Last Seen': 'Last Seen',
-        'Turn Count': 'Turn Count',
-        'Gap Count': 'Gap Count',
-        'Failed to load session details': 'Failed to load session details',
-        Turns: 'Turns',
-        'Failed to load turns': 'Failed to load turns',
-        'No turns recorded for this session yet.':
-          'No turns recorded for this session yet.',
-        Time: 'Time',
-        Model: 'Model',
-        Status: 'Status',
-        Code: 'Code',
-        Latency: 'Latency',
-        Tokens: 'Tokens',
-        Attempts: 'Attempts',
-        Success: 'Success',
-        Failed: 'Failed',
-        Previous: 'Previous',
-        Next: 'Next',
-        'Page {{current}}': 'Page {{current}}',
-        'Turn Context': 'Turn Context',
-        'Failed to load turn context': 'Failed to load turn context',
-        'No content captured for this turn.':
-          'No content captured for this turn.',
-        Media: 'Media',
-        'Tool call': 'Tool call',
-        'Tool result': 'Tool result',
+        'Select a session from the list to view its agent timeline.':
+          'Select a session from the list to view its agent timeline.',
+        'Agent Run': 'Agent Run',
+        Completed: 'Completed',
+        Active: 'Active',
+        Incomplete: 'Incomplete',
         Truncated: 'Truncated',
+        turns: 'turns',
+        items: 'items',
+        'Load earlier': 'Load earlier',
+        Loading: 'Loading',
+        'Failed to load earlier messages': 'Failed to load earlier messages',
+        'Failed to load agent timeline': 'Failed to load agent timeline',
+        'No conversation recorded for this session yet.':
+          'No conversation recorded for this session yet.',
+        'Tool Call': 'Tool Call',
+        'Tool Result': 'Tool Result',
         Degraded: 'Degraded',
         'The store timed out': 'The store timed out',
         'The store is temporarily unavailable':
           'The store is temporarily unavailable',
-        bytes: 'bytes',
       },
     },
   },
@@ -140,13 +120,16 @@ type Handler = () => unknown
 const handlers = new Map<string, Handler>()
 const calls: string[] = []
 const originalGet = api.get
-
-api.get = (async (url: unknown) => {
+const stubGet = (async (url: unknown) => {
   const u = String(url)
   calls.push(u)
   const exact = handlers.get(u)
   const key =
-    exact !== undefined ? u : [...handlers.keys()].find((k) => u.startsWith(k))
+    exact !== undefined
+      ? u
+      : [...handlers.keys()]
+          .filter((k) => u.startsWith(k))
+          .sort((a, b) => b.length - a.length)[0]
   if (key === undefined) {
     throw new Error(`no handler registered for ${u}`)
   }
@@ -161,9 +144,13 @@ api.get = (async (url: unknown) => {
     ? value.then((data) => ({ data }))
     : { data: value }
 }) as typeof api.get
+api.get = stubGet
 
 after(() => {
-  api.get = originalGet
+  // Chain-safe restore: only unwrap when this file's stub is still the one
+  // installed (bun runs test files concurrently and every file swaps the
+  // shared http-client singleton).
+  if (api.get === stubGet) api.get = originalGet
 })
 
 afterEach(() => {
@@ -179,193 +166,184 @@ const SESSION_PAYLOAD = {
   success: true,
   message: '',
   data: {
-    session_id: 'session-abc',
+    session_id: 'session-abc-1234',
     node_scope: 'edge-1',
     user_id: 42,
+    username: 'bob',
     client_family: 'codex_cli',
     first_seen: '2026-08-01T01:02:03Z',
     last_seen: '2026-08-01T01:02:45Z',
     turn_count: 3,
-    gap_count: 1,
+    gap_count: 0,
   },
-}
-
-function makeTurn(
-  id: string,
-  overrides: Record<string, unknown> = {}
-): Record<string, unknown> {
-  return {
-    turn_id: id,
-    event_id: `event-${id}`,
-    session_id: 'session-abc',
-    occurred_at: '2026-08-01T01:02:10Z',
-    node_scope: 'edge-1',
-    user_id: 42,
-    model: 'gpt-4o',
-    upstream_model: 'gpt-4o',
-    relay_format: 'openai',
-    success: true,
-    status_code: 200,
-    error_type: '',
-    error_code: '',
-    latency_ms: 1234,
-    stream: false,
-    prompt_tokens: 100,
-    completion_tokens: 50,
-    cached_tokens: 10,
-    quota: 150,
-    attempts: [
-      {
-        channel_id: 1,
-        group: 'default',
-        status_code: 200,
-        error_code: '',
-        elapsed_ms: 1234,
-      },
-    ],
-    content_state: 'complete',
-    ...overrides,
-  }
-}
-
-const TURN_PAGE_1 = {
-  success: true,
-  message: '',
-  data: {
-    page_size: 50,
-    items: [
-      makeTurn('turn-1'),
-      makeTurn('turn-2', {
-        model: 'claude-3-5-sonnet',
-        success: false,
-        status_code: 529,
-        error_type: 'upstream',
-        error_code: 'overloaded',
-        latency_ms: 88,
-        prompt_tokens: 5,
-        completion_tokens: 0,
-        cached_tokens: 0,
-        attempts: [
-          {
-            channel_id: 1,
-            group: 'default',
-            status_code: 529,
-            error_code: 'overloaded',
-            elapsed_ms: 44,
-          },
-          {
-            channel_id: 2,
-            group: 'default',
-            status_code: 529,
-            error_code: 'overloaded',
-            elapsed_ms: 44,
-          },
-        ],
-      }),
-    ],
-    meta: { next_cursor: 'cursor-1', has_more: true },
-  },
-}
-
-const TURN_PAGE_2 = {
-  success: true,
-  message: '',
-  data: {
-    page_size: 50,
-    items: [makeTurn('turn-3', { model: 'gemini-2.0-flash' })],
-    meta: { next_cursor: '', has_more: false },
-  },
-}
-
-const CONTEXT_PAYLOAD = {
-  success: true,
-  message: '',
-  data: {
-    turn_id: 'turn-1',
-    ordinal: 1,
-    items: [
-      {
-        kind: 'message',
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: 'Hello observer',
-            logical_bytes: 16,
-            hmac: 'a'.repeat(64),
-          },
-          {
-            type: 'media',
-            media: {
-              kind: 'image',
-              media_type: 'image/png',
-              logical_bytes: 2048,
-              hmac: 'b'.repeat(64),
-            },
-          },
-        ],
-        logical_bytes: 2064,
-        hmac: 'c'.repeat(64),
-      },
-      {
-        kind: 'tool_call',
-        role: 'assistant',
-        content: [
-          {
-            // Contract value from pkg/relay_observer/normalizer.go:
-            // partTypeToolCall = "tool_call" (NOT "call").
-            type: 'tool_call',
-            call: { id: 'call-1', name: 'search', arguments: '{"q":"x"}' },
-          },
-        ],
-        logical_bytes: 32,
-        hmac: 'd'.repeat(64),
-      },
-      {
-        kind: 'tool_result',
-        role: 'tool',
-        content: [
-          {
-            // Contract value: partTypeToolResult = "tool_result".
-            type: 'tool_result',
-            result: {
-              tool_call_id: 'call-1',
-              output: '{"hits": 3}',
-            },
-          },
-        ],
-        logical_bytes: 24,
-        hmac: 'g'.repeat(64),
-      },
-      {
-        kind: 'message',
-        role: 'assistant',
-        truncated: true,
-        content: [
-          {
-            type: 'text',
-            text: 'Streamed tail cut off',
-            logical_bytes: 20,
-            hmac: 'e'.repeat(64),
-          },
-        ],
-        logical_bytes: 20,
-        hmac: 'f'.repeat(64),
-      },
-    ],
-  },
-}
-
-const EMPTY_CONTEXT_PAYLOAD = {
-  success: true,
-  message: '',
-  data: { turn_id: 'turn-1', ordinal: 1, items: [] },
 }
 
 const DEGRADED_PAYLOAD = {
   success: true,
   message: '',
   data: { degraded: true, reason: 'timeout', message: 'store timed out' },
+}
+
+const TRANSCRIPT_PAGE = {
+  success: true,
+  message: '',
+  data: {
+    page_size: 50,
+    items: [
+      {
+        turn_id: 'turn-1',
+        turn_seq: 0,
+        seq: 0,
+        kind: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: 'List the files in this repo',
+            logical_bytes: 30,
+            hmac: 'a'.repeat(64),
+          },
+        ],
+        logical_bytes: 30,
+        hmac: 'b'.repeat(64),
+      },
+      {
+        turn_id: 'turn-2',
+        turn_seq: 1,
+        seq: 0,
+        kind: 'message',
+        role: 'assistant',
+        content: [
+          {
+            type: 'text',
+            text: 'Let me inspect the tree.',
+            logical_bytes: 22,
+            hmac: 'c'.repeat(64),
+          },
+          {
+            type: 'tool_call',
+            call: {
+              id: 'call-1',
+              name: 'run_command',
+              arguments: '{"command":"ls -la"}',
+            },
+            logical_bytes: 40,
+            hmac: 'd'.repeat(64),
+          },
+          {
+            type: 'tool_call',
+            call: {
+              id: 'call-2',
+              name: 'grep',
+              arguments: '{"pattern":"session"}',
+            },
+            logical_bytes: 40,
+            hmac: 'e'.repeat(64),
+          },
+        ],
+        logical_bytes: 120,
+        hmac: 'f'.repeat(64),
+      },
+      {
+        turn_id: 'turn-3',
+        turn_seq: 2,
+        seq: 0,
+        kind: 'tool_result',
+        role: 'tool',
+        content: [
+          {
+            type: 'tool_result',
+            result: { tool_call_id: 'call-1', output: '{"files": 12}' },
+            logical_bytes: 24,
+            hmac: 'g'.repeat(64),
+          },
+        ],
+        logical_bytes: 24,
+        hmac: 'h'.repeat(64),
+      },
+      {
+        turn_id: 'turn-4',
+        turn_seq: 3,
+        seq: 0,
+        kind: 'message',
+        role: 'assistant',
+        content: [
+          {
+            type: 'text',
+            text: 'Done.',
+            logical_bytes: 5,
+            hmac: 'i'.repeat(64),
+          },
+        ],
+        logical_bytes: 5,
+        hmac: 'j'.repeat(64),
+      },
+    ],
+    meta: { prev_cursor: 123, has_older: true },
+  },
+}
+
+const OLDER_PAGE = {
+  success: true,
+  message: '',
+  data: {
+    page_size: 50,
+    items: [
+      {
+        turn_id: 'turn-0',
+        turn_seq: -1,
+        seq: 0,
+        kind: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: 'An older prompt',
+            logical_bytes: 16,
+            hmac: 'k'.repeat(64),
+          },
+        ],
+        logical_bytes: 16,
+        hmac: 'l'.repeat(64),
+      },
+    ],
+    meta: { prev_cursor: 0, has_older: false },
+  },
+}
+
+const EMPTY_TRANSCRIPT_PAGE = {
+  success: true,
+  message: '',
+  data: {
+    page_size: 50,
+    items: [],
+    meta: { prev_cursor: 0, has_older: false },
+  },
+}
+
+const GAP_PAGE = {
+  success: true,
+  message: '',
+  data: {
+    page_size: 50,
+    items: [
+      {
+        turn_id: 'turn-gap',
+        turn_seq: 0,
+        seq: 0,
+        kind: 'gap',
+        gap: {
+          position: 'tail',
+          reason: 'retention',
+          omitted_items: 3,
+          logical_bytes: 1024,
+        },
+        logical_bytes: 1024,
+        hmac: 'm'.repeat(64),
+      },
+    ],
+    meta: { prev_cursor: 0, has_older: false },
+  },
 }
 
 // ============================================================================
@@ -413,37 +391,11 @@ async function waitFor(
   }
 }
 
-function clickRow(host: HTMLElement, rowIndex: number): void {
-  const row = host.querySelectorAll('tbody tr')[rowIndex]
-  assert.ok(row, 'expected a turn row to click')
-  act(() => {
-    row.dispatchEvent(
-      new domWindow.Event('click', { bubbles: true }) as unknown as Event
-    )
-  })
-}
-
-function pressRow(
-  host: HTMLElement,
-  rowIndex: number,
-  key: 'Enter' | ' '
-): void {
-  const row = host.querySelectorAll('tbody tr')[rowIndex]
-  assert.ok(row, 'expected a turn row to activate')
-  act(() => {
-    row.dispatchEvent(
-      new domWindow.KeyboardEvent('keydown', {
-        bubbles: true,
-        cancelable: true,
-        key,
-      }) as unknown as KeyboardEvent
-    )
-  })
-}
-
-function clickButton(host: HTMLElement, index: number): void {
-  const button = host.querySelectorAll('button')[index]
-  assert.ok(button, 'expected a button to click')
+function clickButton(host: HTMLElement, label: string): void {
+  const button = [...host.querySelectorAll('button')].find((b) =>
+    b.textContent?.includes(label)
+  )
+  assert.ok(button, `button "${label}" not found`)
   act(() => {
     button.dispatchEvent(
       new domWindow.Event('click', { bubbles: true }) as unknown as Event
@@ -456,6 +408,13 @@ beforeEach(() => {
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   })
   document.body.innerHTML = ''
+  handlers.set('/api/relay-observer/sessions/session-abc-1234', () => ({
+    ...SESSION_PAYLOAD,
+  }))
+  handlers.set(
+    '/api/relay-observer/sessions/session-abc-1234/transcript',
+    () => ({ ...TRANSCRIPT_PAGE })
+  )
 })
 
 after(() => {
@@ -468,11 +427,10 @@ after(() => {
 
 describe('SessionDetailTab — default empty state', () => {
   test('renders the selection hint and fires no requests at all', async () => {
-    handlers.set('/api/relay-observer/sessions', () => SESSION_PAYLOAD)
     const { host } = renderTab(null)
     assert.match(
       textOf(host),
-      /Select a session from the Sessions tab to view its details\./
+      /Select a session from the list to view its agent timeline\./
     )
     // Give any (mis-)configured query a chance to fire before asserting.
     await act(async () => {
@@ -482,364 +440,191 @@ describe('SessionDetailTab — default empty state', () => {
   })
 })
 
-describe('SessionDetailTab — session summary', () => {
-  test('renders every summary field with formatted timestamps', async () => {
-    handlers.set(
-      '/api/relay-observer/sessions/session-abc',
-      () => SESSION_PAYLOAD
-    )
-    handlers.set('/api/relay-observer/sessions/session-abc/turns', () => ({
-      success: true,
-      message: '',
-      data: {
-        page_size: 50,
-        items: [],
-        meta: { next_cursor: '', has_more: false },
-      },
-    }))
-    const { host } = renderTab('session-abc')
-    await waitFor(host, () => textOf(host).includes('codex_cli'))
+describe('SessionDetailTab — agent timeline transcript', () => {
+  test('renders the transcript flow with the task summary card', async () => {
+    const { host } = renderTab('session-abc-1234')
+    await waitFor(host, () => textOf(host).includes('List the files'))
 
     const text = textOf(host)
-    assert.ok(text.includes('session-abc'), 'session id shown')
-    assert.ok(text.includes('edge-1'), 'node scope shown')
-    assert.ok(text.includes('42'), 'user id shown')
-    assert.ok(text.includes('codex_cli'), 'client family shown')
-    assert.ok(text.includes('2026-08-01 01:02:03'), 'first_seen formatted')
-    assert.ok(text.includes('2026-08-01 01:02:45'), 'last_seen formatted')
-    assert.match(text, /Turn Count\s*3/, 'turn count rendered')
-    assert.match(text, /Gap Count\s*1/, 'gap count rendered')
-    assert.equal(calls.length, 2, 'exactly the summary and turns queries fire')
+    assert.ok(text.includes('bob'), 'username from the session summary')
+    assert.ok(text.includes('session-'), 'short session id in the card')
+    assert.ok(text.includes('Let me inspect the tree.'), 'assistant text')
+    assert.ok(text.includes('Done.'), 'final assistant message')
+    assert.ok(text.includes('Codex CLI'), 'client profile label')
+    assert.ok(text.includes('42s'), 'duration formatted from first/last seen')
     assert.ok(
-      calls.includes('/api/relay-observer/sessions/session-abc'),
-      'summary endpoint hit'
+      text.includes('Completed'),
+      'status badge without a trailing user turn or gap'
     )
-    assert.ok(
-      calls.includes('/api/relay-observer/sessions/session-abc/turns'),
-      'turns endpoint hit'
-    )
+    assert.ok(text.includes('4') && text.includes('turns'), 'turn count')
   })
 
-  test('shows skeletons while loading', async () => {
-    let release!: (value: unknown) => void
-    const pending = new Promise((resolve) => {
-      release = resolve
-    })
-    handlers.set('/api/relay-observer/sessions/session-abc', () => pending)
-    handlers.set('/api/relay-observer/sessions/session-abc/turns', () => ({
-      success: true,
-      message: '',
-      data: {
-        page_size: 50,
-        items: [],
-        meta: { next_cursor: '', has_more: false },
-      },
-    }))
-    const { host } = renderTab('session-abc')
-    assert.ok(
-      host.querySelector('[data-slot="skeleton"]'),
-      'summary skeletons render while the query is pending'
-    )
-    await act(async () => {
-      release(SESSION_PAYLOAD)
-    })
-    await waitFor(host, () => textOf(host).includes('codex_cli'))
-    assert.ok(
-      !host.querySelector('[data-slot="skeleton"]'),
-      'skeletons are gone once the summary resolved'
-    )
-  })
+  test('collapses consecutive tool calls into one tree node', async () => {
+    const { host } = renderTab('session-abc-1234')
+    await waitFor(host, () => textOf(host).includes('List the files'))
 
-  test('shows the degraded alert instead of fields', async () => {
-    handlers.set(
-      '/api/relay-observer/sessions/session-abc',
-      () => DEGRADED_PAYLOAD
+    assert.ok(
+      textOf(host).includes('Tool Call × 2'),
+      'two consecutive calls render as a single collapsible node'
     )
-    handlers.set('/api/relay-observer/sessions/session-abc/turns', () => ({
-      success: true,
-      message: '',
-      data: {
-        page_size: 50,
-        items: [],
-        meta: { next_cursor: '', has_more: false },
-      },
-    }))
-    const { host } = renderTab('session-abc')
-    await waitFor(host, () => textOf(host).includes('Degraded'))
+
+    clickButton(host, 'Tool Call')
+    await waitFor(host, () => textOf(host).includes('run_command('))
     const text = textOf(host)
-    assert.ok(text.includes('The store timed out'), 'degraded reason shown')
-    assert.ok(!text.includes('edge-1'), 'no summary fields on degraded data')
+    assert.ok(text.includes('run_command('), 'leaf signature rendered')
+    assert.ok(text.includes('grep('), 'second leaf signature rendered')
   })
 
-  test('shows an error state when getSession fails', async () => {
-    handlers.set('/api/relay-observer/sessions/session-abc', () => {
-      throw new Error('boom')
-    })
-    handlers.set('/api/relay-observer/sessions/session-abc/turns', () => ({
-      success: true,
-      message: '',
-      data: {
-        page_size: 50,
-        items: [],
-        meta: { next_cursor: '', has_more: false },
-      },
-    }))
-    const { host } = renderTab('session-abc')
+  test('attaches tool results to the preceding assistant turn', async () => {
+    const { host } = renderTab('session-abc-1234')
+    await waitFor(host, () => textOf(host).includes('List the files'))
+
+    clickButton(host, 'Tool Call')
+    await waitFor(host, () => textOf(host).includes('run_command('))
+    // The role=tool message is a separate transcript item; it must be joined
+    // onto the assistant's calls (positionally) and surface inside the leaf
+    // node when expanded — not as a standalone bubble.
+    assert.ok(
+      textOf(host).includes('run_command('),
+      'leaf signature rendered'
+    )
+    clickButton(host, 'run_command(')
+    await waitFor(host, () => textOf(host).includes('"files": 12'))
+    assert.ok(
+      textOf(host).includes('"files": 12'),
+      'attached result output rendered inside the tool leaf'
+    )
+  })
+
+  test('loads earlier pages by prepending with the prev cursor', async () => {
+    const { host } = renderTab('session-abc-1234')
+    await waitFor(host, () => textOf(host).includes('List the files'))
+
+    handlers.set(
+      '/api/relay-observer/sessions/session-abc-1234/transcript?direction=older&cursor=123&page_size=50',
+      () => ({ ...OLDER_PAGE })
+    )
+    clickButton(host, 'Load earlier')
+    await waitFor(host, () => textOf(host).includes('An older prompt'))
+
+    assert.ok(
+      calls.some((u) =>
+        u.includes('direction=older&cursor=123')
+      ),
+      'older request carries the previous page cursor'
+    )
+    const listText = textOf(host)
+    assert.ok(
+      listText.indexOf('An older prompt') < listText.indexOf('List the files'),
+      'older page prepends before the newest content'
+    )
+  })
+
+  test('shows the gap marker for truncated captures', async () => {
+    handlers.set(
+      '/api/relay-observer/sessions/session-abc-1234/transcript',
+      () => ({ ...GAP_PAGE })
+    )
+    const { host } = renderTab('session-abc-1234')
+    await waitFor(host, () => textOf(host).includes('Truncated'))
+
+    assert.ok(
+      textOf(host).includes('3') && textOf(host).includes('items'),
+      'gap marker reports the omitted item count'
+    )
+  })
+
+  test('shows the empty state when the transcript has no items', async () => {
+    handlers.set(
+      '/api/relay-observer/sessions/session-abc-1234/transcript',
+      () => ({ ...EMPTY_TRANSCRIPT_PAGE })
+    )
+    const { host } = renderTab('session-abc-1234')
     await waitFor(host, () =>
-      textOf(host).includes('Failed to load session details')
+      textOf(host).includes('No conversation recorded for this session yet.')
+    )
+  })
+
+  test('shows the degraded alert when the transcript store is degraded', async () => {
+    handlers.set(
+      '/api/relay-observer/sessions/session-abc-1234/transcript',
+      () => ({ ...DEGRADED_PAYLOAD })
+    )
+    const { host } = renderTab('session-abc-1234')
+    await waitFor(host, () => textOf(host).includes('The store timed out'))
+
+    const text = textOf(host)
+    assert.ok(text.includes('Degraded'), 'alert title rendered')
+    assert.ok(!text.includes('List the files'), 'no transcript on degraded')
+  })
+
+  test('shows an error state when the transcript request fails', async () => {
+    handlers.set(
+      '/api/relay-observer/sessions/session-abc-1234/transcript',
+      () => {
+        throw new Error('boom')
+      }
+    )
+    const { host } = renderTab('session-abc-1234')
+    await waitFor(host, () =>
+      textOf(host).includes('Failed to load agent timeline')
     )
   })
 })
 
-describe('SessionDetailTab — turns timeline', () => {
-  beforeEach(() => {
+describe('SessionDetailTab — session switching', () => {
+  test('resets transcript state when the session changes', async () => {
+    const { host, root } = renderTab('session-abc-1234')
+    await waitFor(host, () => textOf(host).includes('List the files'))
+
     handlers.set(
-      '/api/relay-observer/sessions/session-abc',
-      () => SESSION_PAYLOAD
+      '/api/relay-observer/sessions/session-xyz-5678',
+      () => ({ ...SESSION_PAYLOAD, data: { ...SESSION_PAYLOAD.data, session_id: 'session-xyz-5678' } })
     )
     handlers.set(
-      '/api/relay-observer/sessions/session-abc/turns',
-      () => TURN_PAGE_1
+      '/api/relay-observer/sessions/session-xyz-5678/transcript',
+      () => ({
+        success: true,
+        message: '',
+        data: {
+          page_size: 50,
+          items: [
+            {
+              turn_id: 'turn-x',
+              turn_seq: 0,
+              seq: 0,
+              kind: 'message',
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: 'Another session prompt',
+                  logical_bytes: 21,
+                  hmac: 'n'.repeat(64),
+                },
+              ],
+              logical_bytes: 21,
+              hmac: 'o'.repeat(64),
+            },
+          ],
+          meta: { prev_cursor: 0, has_older: false },
+        },
+      })
     )
-  })
 
-  test('renders turn rows: time, model, success, code, latency, tokens, attempts', async () => {
-    const { host } = renderTab('session-abc')
-    await waitFor(host, () => textOf(host).includes('gpt-4o'))
-
-    const text = textOf(host)
-    assert.ok(text.includes('2026-08-01 01:02:10'), 'occurred_at formatted')
-    assert.ok(text.includes('claude-3-5-sonnet'), 'model shown')
-    assert.ok(
-      text.includes('Success') && text.includes('Failed'),
-      'status badges'
-    )
-    assert.ok(
-      text.includes('200') && text.includes('529'),
-      'status codes shown'
-    )
-    assert.ok(text.includes('1.23s'), 'latency formatted as seconds >= 1000')
-    assert.ok(text.includes('100 / 50'), 'prompt / completion tokens')
-    assert.ok(text.includes('cache 10'), 'cached tokens annotated')
-    assert.ok(text.includes('2'), 'attempt count shown for the retried turn')
-  })
-
-  test('paginates with cursors: next fetches cursor-1, back restores page 1', async () => {
-    handlers.set(
-      '/api/relay-observer/sessions/session-abc/turns?cursor=cursor-1',
-      () => TURN_PAGE_2
-    )
-    const { host } = renderTab('session-abc')
-    await waitFor(host, () => textOf(host).includes('gpt-4o'))
-
-    clickButton(host, 1) // Next
-    await waitFor(host, () => textOf(host).includes('gemini-2.0-flash'))
-    assert.ok(
-      calls.includes(
-        '/api/relay-observer/sessions/session-abc/turns?cursor=cursor-1'
-      ),
-      'next page fetched with the previous page cursor'
-    )
-    assert.match(textOf(host), /Page 2/)
-
-    clickButton(host, 0) // Previous
-    await waitFor(host, () => textOf(host).includes('gpt-4o'))
-    assert.match(textOf(host), /Page 1/, 'back restores the first page')
-    assert.ok(!textOf(host).includes('gemini-2.0-flash'))
-  })
-
-  test('shows the empty state when the session has no turns', async () => {
-    handlers.set('/api/relay-observer/sessions/session-abc/turns', () => ({
-      success: true,
-      message: '',
-      data: {
-        page_size: 50,
-        items: [],
-        meta: { next_cursor: '', has_more: false },
-      },
-    }))
-    const { host } = renderTab('session-abc')
-    await waitFor(host, () =>
-      textOf(host).includes('No turns recorded for this session yet.')
-    )
-    assert.ok(!textOf(host).includes('Success'), 'no table rows on empty turns')
-  })
-
-  test('shows an error state when listTurns fails', async () => {
-    handlers.set('/api/relay-observer/sessions/session-abc/turns', () => {
-      throw new Error('boom')
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nextProvider i18n={i18n}>
+            <SessionDetailTab sessionId='session-xyz-5678' />
+          </I18nextProvider>
+        </QueryClientProvider>
+      )
     })
-    const { host } = renderTab('session-abc')
-    await waitFor(host, () => textOf(host).includes('Failed to load turns'))
-  })
 
-  test('shows the degraded alert for turns data', async () => {
-    handlers.set(
-      '/api/relay-observer/sessions/session-abc/turns',
-      () => DEGRADED_PAYLOAD
-    )
-    const { host } = renderTab('session-abc')
-    await waitFor(host, () => textOf(host).includes('The store timed out'))
-  })
-})
-
-describe('SessionDetailTab — on-demand turn context', () => {
-  beforeEach(() => {
-    handlers.set(
-      '/api/relay-observer/sessions/session-abc',
-      () => SESSION_PAYLOAD
-    )
-    handlers.set(
-      '/api/relay-observer/sessions/session-abc/turns',
-      () => TURN_PAGE_1
-    )
-  })
-
-  test('fires the context query only after a turn row is selected (enabled)', async () => {
-    const { host } = renderTab('session-abc')
-    await waitFor(host, () => textOf(host).includes('gpt-4o'))
-    assert.ok(
-      !calls.some((u) => u.includes('/context')),
-      'no context request while no turn is selected'
-    )
-
-    clickRow(host, 0)
-    await waitFor(host, () => textOf(host).includes('Turn Context'))
-    assert.ok(
-      calls.includes(
-        '/api/relay-observer/turns/turn-1/context?session_id=session-abc'
-      ),
-      'context request carries turn id and mandatory session_id'
-    )
-  })
-
-  test('turn rows are keyboard-selectable with Enter and Space', async () => {
-    handlers.set(
-      '/api/relay-observer/turns/turn-1/context',
-      () => CONTEXT_PAYLOAD
-    )
-    handlers.set(
-      '/api/relay-observer/turns/turn-2/context',
-      () => EMPTY_CONTEXT_PAYLOAD
-    )
-    const { host } = renderTab('session-abc')
-    await waitFor(host, () => textOf(host).includes('gpt-4o'))
-
-    const rows = host.querySelectorAll('tbody tr')
-    assert.equal(rows[0]?.getAttribute('role'), 'button')
-    assert.equal(rows[0]?.getAttribute('tabindex'), '0')
-
-    pressRow(host, 0, 'Enter')
-    await waitFor(host, () => textOf(host).includes('Hello observer'))
-    assert.ok(
-      calls.includes(
-        '/api/relay-observer/turns/turn-1/context?session_id=session-abc'
-      )
-    )
-
-    pressRow(host, 1, ' ')
-    await waitFor(host, () =>
-      textOf(host).includes('No content captured for this turn.')
-    )
-    assert.ok(
-      calls.includes(
-        '/api/relay-observer/turns/turn-2/context?session_id=session-abc'
-      )
-    )
-  })
-
-  test('re-queries when the selection moves to another turn', async () => {
-    handlers.set(
-      '/api/relay-observer/turns/turn-1/context',
-      () => CONTEXT_PAYLOAD
-    )
-    handlers.set(
-      '/api/relay-observer/turns/turn-2/context',
-      () => EMPTY_CONTEXT_PAYLOAD
-    )
-    const { host } = renderTab('session-abc')
-    await waitFor(host, () => textOf(host).includes('gpt-4o'))
-
-    clickRow(host, 0)
-    await waitFor(host, () => textOf(host).includes('Turn Context'))
-    assert.ok(
-      calls.includes(
-        '/api/relay-observer/turns/turn-1/context?session_id=session-abc'
-      )
-    )
-
-    clickRow(host, 1)
-    await waitFor(host, () =>
-      textOf(host).includes('No content captured for this turn.')
-    )
-    assert.ok(
-      calls.includes(
-        '/api/relay-observer/turns/turn-2/context?session_id=session-abc'
-      ),
-      'selecting a different turn fires its own context request'
-    )
-  })
-
-  test('renders canonical items: kind/role/text, media summary, tool call, truncation', async () => {
-    handlers.set(
-      '/api/relay-observer/turns/turn-1/context',
-      () => CONTEXT_PAYLOAD
-    )
-    const { host } = renderTab('session-abc')
-    await waitFor(host, () => textOf(host).includes('gpt-4o'))
-    clickRow(host, 0)
-    await waitFor(host, () => textOf(host).includes('Hello observer'))
-
+    await waitFor(host, () => textOf(host).includes('Another session prompt'))
     const text = textOf(host)
-    assert.ok(text.includes('message'), 'item kind badge')
-    assert.ok(text.includes('user'), 'item role')
-    assert.ok(text.includes('Hello observer'), 'text part rendered')
-    assert.ok(text.includes('Media'), 'media part label')
-    assert.ok(text.includes('· image ·'), 'media kind in the summary line')
-    assert.ok(text.includes('image/png'), 'media_type in the summary line')
-    assert.match(text, /2,?048 bytes/, 'media logical_bytes with unit')
-    assert.match(text, /bbbbbbbb…bbbb/, 'media hmac shortened for display')
-    assert.ok(text.includes('Tool call'), 'tool call part label')
-    assert.ok(text.includes('search'), 'tool call name rendered')
-    assert.ok(text.includes('Tool result'), 'tool result part label')
-    assert.ok(text.includes('{"hits": 3}'), 'tool result output rendered')
-    assert.ok(text.includes('Truncated'), 'truncated marker shown')
-    assert.match(text, /2,?064 bytes/, 'item footer logical_bytes')
-  })
-
-  test('shows the empty state when the context has no items', async () => {
-    handlers.set(
-      '/api/relay-observer/turns/turn-1/context',
-      () => EMPTY_CONTEXT_PAYLOAD
-    )
-    const { host } = renderTab('session-abc')
-    await waitFor(host, () => textOf(host).includes('gpt-4o'))
-    clickRow(host, 0)
-    await waitFor(host, () =>
-      textOf(host).includes('No content captured for this turn.')
-    )
-  })
-
-  test('shows an error state when getTurnContext fails', async () => {
-    handlers.set('/api/relay-observer/turns/turn-1/context', () => {
-      throw new Error('boom')
-    })
-    const { host } = renderTab('session-abc')
-    await waitFor(host, () => textOf(host).includes('gpt-4o'))
-    clickRow(host, 0)
-    await waitFor(host, () =>
-      textOf(host).includes('Failed to load turn context')
-    )
-  })
-
-  test('shows the degraded alert for context data', async () => {
-    handlers.set(
-      '/api/relay-observer/turns/turn-1/context',
-      () => DEGRADED_PAYLOAD
-    )
-    const { host } = renderTab('session-abc')
-    await waitFor(host, () => textOf(host).includes('gpt-4o'))
-    clickRow(host, 0)
-    await waitFor(host, () => textOf(host).includes('The store timed out'))
+    assert.ok(!text.includes('List the files'), 'previous session cleared')
+    assert.ok(!text.includes('Tool Call × 2'), 'tool state not carried over')
   })
 })

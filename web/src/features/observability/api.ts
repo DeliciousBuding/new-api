@@ -36,16 +36,14 @@ import {
   observerTurnContextSchema,
   observerTurnPageSchema,
   parseObserverResponse,
-} from './types'
-import type {
-  ObserverOverview,
-  ObserverResponse,
-  ObserverSession,
-  ObserverSessionPage,
-  ObserverStatus,
-  ObserverTranscriptPage,
-  ObserverTurnContext,
-  ObserverTurnPage,
+  type ObserverOverview,
+  type ObserverResponse,
+  type ObserverSession,
+  type ObserverSessionPage,
+  type ObserverStatus,
+  type ObserverTranscriptPage,
+  type ObserverTurnContext,
+  type ObserverTurnPage,
 } from './types'
 
 // ============================================================================
