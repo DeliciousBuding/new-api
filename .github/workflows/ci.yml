@@ -7,7 +7,7 @@ on:
       - dev
   pull_request:
     types: [opened, synchronize, reopened]
-  # No paths-ignore on pull_request: dev/release enforce required status checks,
+  # No paths-ignore on pull_request: dev enforces required status checks,
   # and a skipped workflow leaves those checks pending forever on docs-only PRs.
 
 permissions:
