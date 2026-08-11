@@ -16,28 +16,23 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createFileRoute, redirect, Outlet } from '@tanstack/react-router'
+import { createFileRoute } from '@tanstack/react-router'
+import { z } from 'zod'
 
-import { ROLE } from '@/lib/roles'
-import { useAuthStore } from '@/stores/auth-store'
+import { ObservabilitySessionsPage } from '@/features/observability/pages/sessions-page'
 
 /**
- * Observability workspace parent route: the SUPER_ADMIN guard lives here and
- * the single child page (index.tsx) inherits it. The root path renders the
- * unified master-detail sessions view directly.
+ * Observability workspace — single unified page: master-detail sessions view
+ * (left session log list + right chat transcript). The `?session=<id>` URL
+ * state feeds the detail pane: clicking a session row writes the param, the
+ * detail pane reads it. Same pattern as usage-logs/$section.tsx
+ * validateSearch.
  */
-export const Route = createFileRoute('/_authenticated/observability')({
-  beforeLoad: () => {
-    const { auth } = useAuthStore.getState()
+export const observabilitySessionsSearchSchema = z.object({
+  session: z.string().optional(),
+})
 
-    if (auth.user?.role !== ROLE.SUPER_ADMIN) {
-      throw redirect({
-        to: '/403',
-      })
-    }
-  },
-  staticData: {
-    title: 'Observability',
-  },
-  component: () => <Outlet />,
+export const Route = createFileRoute('/_authenticated/observability/')({
+  validateSearch: observabilitySessionsSearchSchema,
+  component: ObservabilitySessionsPage,
 })
