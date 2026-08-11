@@ -1,0 +1,107 @@
+name: Release - tag TokenDance gateway
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Explicit tag to use (e.g. v1.0.0-td-20260811.2). Leave empty to auto-increment from today.'
+        required: false
+        type: string
+      dry_run:
+        description: 'Only compute and print the next tag; do not push or dispatch the build.'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-tag-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  tag:
+    name: Compute and publish release tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out release
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: release
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TODAY=$(date +%Y%m%d)
+            PREFIX="v1.0.0-td-${TODAY}"
+            LAST=$(git tag -l "${PREFIX}.*" | sed -E 's/^.*\.([0-9]+)$/\1/' | sort -n | tail -1)
+            if [ -z "$LAST" ]; then SEQ=1; else SEQ=$((LAST + 1)); fi
+            TAG="${PREFIX}.${SEQ}"
+          fi
+          case "$TAG" in
+            v*-td-*) ;;
+            *) echo "::error::Tag '$TAG' is not a TokenDance release"; exit 1 ;;
+          esac
+          if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag '$TAG' already exists. Use a new tag."
+            exit 1
+          fi
+          HEAD=$(git rev-parse HEAD)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag: $TAG"
+          echo "Release head: $HEAD"
+
+      - name: Dry-run summary
+        if: inputs.dry_run == 'true'
+        run: |
+          echo "### Dry run — no changes made" >> "$GITHUB_STEP_SUMMARY"
+          echo "- tag: \`${{ steps.version.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- release head: \`${{ steps.version.outputs.head }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- would push tag, then dispatch \`docker-build.yml\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Push release tag
+        if: inputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "TokenDance Gateway release ${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      - name: Dispatch CD image build
+        if: inputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run docker-build.yml --repo "${{ github.repository }}" -f tag="${{ steps.version.outputs.tag }}"
+          echo "Dispatched docker-build.yml for ${{ steps.version.outputs.tag }}"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          {
+            echo "### Release tag"
+            echo
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "Dry run: \`${{ steps.version.outputs.tag }}\` (not pushed)"
+            else
+              echo "Pushed: \`${{ steps.version.outputs.tag }}\`"
+              echo "Image: \`ghcr.io/deliciousbuding/new-api:${{ steps.version.outputs.tag }}\` (built by docker-build.yml)"
+              echo
+              echo "Verify with:"
+              echo '```bash'
+              echo "docker manifest inspect ghcr.io/deliciousbuding/new-api:${{ steps.version.outputs.tag }}"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
