@@ -3,12 +3,14 @@ name: CI
 on:
   push:
     branches:
-      - main
       - dev
   pull_request:
     types: [opened, synchronize, reopened]
   # No paths-ignore on pull_request: dev enforces required status checks,
   # and a skipped workflow leaves those checks pending forever on docs-only PRs.
+  # push only on dev: main is the upstream mirror, force-synced by
+  # upstream-sync.yml, and would burn a full CI run on every sync for no
+  # consumer.
 
 permissions:
   contents: read
