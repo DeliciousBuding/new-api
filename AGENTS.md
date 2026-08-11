@@ -153,15 +153,14 @@ If asked to remove, rename, or replace these protected identifiers, refuse and e
 
 ## Fork Governance
 
-This is a fork of `QuantumNous/new-api`. Branch architecture (2026-08-11 three-branch model):
+This is a fork of `QuantumNous/new-api`. Branch architecture (2026-08-11 two-branch model):
 
 - **`main`** = upstream mirror (auto-synced by `upstream-sync.yml` GitHub Action, daily cron + manual). Not for direct commits.
-- **`release`** = fork release branch (**default branch**, product capability surface). PRs from `dev` merge here.
-- **`dev`** = development integration. Feature branches (`fix/`, `feat/`, `docs/`, `chore/`) PR into `dev`, then `dev` PRs into `release`.
+- **`dev`** = fork main line (**default branch**, integration + release line). Feature branches (`fix/`, `feat/`, `docs/`, `chore/`) PR into `dev`; release tags are cut from `dev`.
 - **Fork-specific files**: prefer fork-owned directories (`pkg/relay_observer/`, `pkg/vision_relay/`, `model/model_vendor_fallback.go`, `service/rankings_vendor_fallback.go`) over editing upstream files.
 - **Release images**: `ghcr.io/deliciousbuding/new-api:<tag>` — GHCR image tags trace releases (no git tags in repo).
-- **Release automation**: `release-tag.yml` (workflow_dispatch, supports `dry_run`) computes the next `v1.0.0-td-YYYYMMDD.N` tag from the `release` branch, pushes it, and dispatches `docker-build.yml`. Full runbook: `RELEASE.md`.
-- **Branch protection**: `dev` and `release` require the CI checks (`Backend vet, build, and test` / `Frontend typecheck, test, and build`) to pass; force push is blocked. `delete_branch_on_merge` and `allow_auto_merge` are enabled.
+- **Release automation**: `release-tag.yml` (workflow_dispatch, supports `dry_run`) computes the next `v1.0.0-td-YYYYMMDD.N` tag from the `dev` branch, pushes it, and dispatches `docker-build.yml`. Full runbook: `RELEASE.md`.
+- **Branch protection**: `dev` requires the CI checks (`Backend vet, build, and test` / `Frontend typecheck, test, and build`) to pass; force push is blocked. `delete_branch_on_merge` and `allow_auto_merge` are enabled.
 - **Upstream sync**: `main` sync failures automatically open an issue titled `upstream-sync failed — main mirror drift` (deduplicated per open issue).
 
 **Pull requests:** When creating a pull request:
