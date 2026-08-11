@@ -11,7 +11,7 @@ import type { ClientProfile } from '../types'
 // Brand icons come from the same @lobehub/icons set the Model badge uses.
 // Profiles without a brand icon fall back to a neutral lucide glyph so the
 // chip still reads as a client identity.
-const BRAND_ICONS: Partial<Record<ClientProfile, string>> = {
+export const BRAND_ICONS: Partial<Record<ClientProfile, string>> = {
   codex_cli: 'Codex.Color',
   codex_desktop: 'Codex.Color',
   codex_app: 'Codex.Color',

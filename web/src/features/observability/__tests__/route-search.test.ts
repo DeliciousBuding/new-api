@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /**
- * seam test: the observability route must accept the `?session=<id>`
+ * T4.3 seam test: the observability route must accept the `?session=<id>`
  * search param (URL-state) that index.tsx reads to feed the Session Detail
  * tab. The schema lives on the route; a route without validateSearch parses
  * nothing and the Session Detail tab can never receive a session id.
