@@ -17,24 +17,61 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /**
- * seam test: the observability route must accept the `?session=<id>`
- * search param (URL-state) that index.tsx reads to feed the Session Detail
- * tab. The schema lives on the route; a route without validateSearch parses
- * nothing and the Session Detail tab can never receive a session id.
+ * Seam test: the observability route must accept the `?session=<id>` search
+ * param (URL-state) that index.tsx reads to feed the Session Detail tab. The
+ * schema lives on the index route's validateSearch; a route without
+ * validateSearch parses nothing and the Session Detail tab can never receive
+ * a session id.
+ *
+ * Note: importing the route module loads the full sessions-page component
+ * tree. The import is dynamic and happens after the happy-dom globals below
+ * are installed: a hoisted static import would evaluate those components
+ * without a DOM and corrupt the shared React event state, breaking the
+ * concurrent test runs in this directory.
  */
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
-import { observabilitySearchSchema } from '@/routes/_authenticated/observability/route'
+import { Window } from 'happy-dom'
+
+const domWindow = new Window()
+for (const key of [
+  'window',
+  'document',
+  'navigator',
+  'HTMLElement',
+  'SVGElement',
+  'Node',
+  'Element',
+  'Event',
+  'CustomEvent',
+  'MutationObserver',
+  'requestAnimationFrame',
+  'cancelAnimationFrame',
+  'getComputedStyle',
+  'matchMedia',
+  'customElements',
+] as const) {
+  Object.defineProperty(globalThis, key, {
+    configurable: true,
+    value: domWindow[key],
+  })
+}
+
+const { observabilitySessionsSearchSchema } = await import(
+  '@/routes/_authenticated/observability/index'
+)
 
 describe('observability route — ?session= URL-state', () => {
   test('parses the session search param', () => {
-    const parsed = observabilitySearchSchema.parse({ session: 'abc-123' })
+    const parsed = observabilitySessionsSearchSchema.parse({
+      session: 'abc-123',
+    })
     assert.deepEqual(parsed, { session: 'abc-123' })
   })
 
   test('an absent session parses to an empty search state', () => {
-    const parsed = observabilitySearchSchema.parse({})
+    const parsed = observabilitySessionsSearchSchema.parse({})
     assert.deepEqual(parsed, {})
   })
 })

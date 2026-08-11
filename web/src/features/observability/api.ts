@@ -32,18 +32,18 @@ import {
   observerSessionPageSchema,
   observerSessionSchema,
   observerStatusSchema,
+  observerTranscriptPageSchema,
   observerTurnContextSchema,
   observerTurnPageSchema,
   parseObserverResponse,
-} from './types'
-import type {
-  ObserverOverview,
-  ObserverResponse,
-  ObserverSession,
-  ObserverSessionPage,
-  ObserverStatus,
-  ObserverTurnContext,
-  ObserverTurnPage,
+  type ObserverOverview,
+  type ObserverResponse,
+  type ObserverSession,
+  type ObserverSessionPage,
+  type ObserverStatus,
+  type ObserverTranscriptPage,
+  type ObserverTurnContext,
+  type ObserverTurnPage,
 } from './types'
 
 // ============================================================================
@@ -163,4 +163,26 @@ export async function getTurnContext(
     })}`
   )
   return parseObserverResponse(observerTurnContextSchema, res.data)
+}
+
+/** GET /api/relay-observer/sessions/:id/transcript — one page of the
+ * flattened conversation stream. `direction=latest` (default) returns the
+ * trailing page; `direction=older` with `cursor` (the previous page's
+ * `prev_cursor`) returns the page before it. */
+export interface TranscriptQueryParams {
+  page_size?: number
+  cursor?: number
+  direction?: 'latest' | 'older'
+}
+
+export async function getSessionTranscript(
+  sessionId: string,
+  params: TranscriptQueryParams = {}
+): Promise<ObserverResponse<ObserverTranscriptPage>> {
+  const res = await api.get(
+    `/api/relay-observer/sessions/${sessionId}/transcript${buildQueryString(
+      params
+    )}`
+  )
+  return parseObserverResponse(observerTranscriptPageSchema, res.data)
 }

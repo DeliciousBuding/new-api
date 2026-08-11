@@ -17,9 +17,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /**
- * Sessions tab: keyset-paginated session list from GET
+ * Sessions tab (T4.2): keyset-paginated session list from GET
  * /api/relay-observer/sessions with a filter form (native input/select ui
- * components) and the cursor pagination pattern.
+ * components) and the T4.1 cursor pagination pattern.
  *
  * State handling mirrors features/usage-logs/usage-logs-table.tsx: loading →
  * skeleton (DataTableView renders TableSkeleton), empty → TableEmpty, error →
@@ -27,9 +27,9 @@ For commercial licensing, please contact support@quantumnous.com
  * notice. Filter state stays in memory (this route has no search-params
  * schema; use-table-url-state does not apply here).
  *
- * seam: the tab owns a selected-session highlight and
+ * T4.3 seam (PROGRESS): the tab owns a selected-session highlight and
  * exposes it as optional controlled props (`selectedSessionId` /
- * `onSelectSession`). lifts the state in index.tsx and feeds the
+ * `onSelectSession`). T4.3 lifts the state in index.tsx and feeds the
  * Session Detail tab; until then the tab keeps its own selection.
  *
  * pattern: features/usage-logs/common-logs-filter-bar.tsx (filter form
@@ -55,6 +55,7 @@ import { useTranslation } from 'react-i18next'
 
 import { DataTableRow, DataTableView } from '@/components/data-table'
 import { ErrorState } from '@/components/error-state'
+import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -72,8 +73,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { formatDateTimeStr } from '@/lib/format'
+import { ClientProfileBadge } from '@/features/usage-logs/components/client-profile-badge'
+import type { ClientProfile } from '@/features/usage-logs/types'
+import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
+import { formatTimestampToDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 
 import { listSessions, type SessionQueryParams } from '../api'
 import { CursorPagination } from '../components/cursor-pagination'
@@ -185,41 +195,94 @@ function SessionTable(props: SessionTableProps) {
     () => [
       {
         accessorKey: 'session_id',
-        header: t('Session ID'),
+        header: t('Session'),
         cell: ({ row }) => (
-          <span className='font-mono text-xs'>{row.original.session_id}</span>
+          <span
+            className='font-mono text-xs'
+            title={row.original.session_id}
+          >
+            {row.original.session_id.slice(0, 8)}
+          </span>
         ),
       },
-      { accessorKey: 'node_scope', header: t('Node Scope') },
-      { accessorKey: 'user_id', header: t('User ID') },
-      { accessorKey: 'client_family', header: t('Client Family') },
       {
-        accessorKey: 'first_seen',
-        header: t('First Seen'),
-        cell: ({ row }) =>
-          formatDateTimeStr(new Date(row.original.first_seen)),
+        accessorKey: 'user_id',
+        header: t('User'),
+        cell: ({ row }) => {
+          const username = row.original.username
+          if (!username) {
+            return <span className='font-mono text-xs'>#{row.original.user_id}</span>
+          }
+          return (
+            <span className='flex items-center gap-1.5'>
+              <Avatar className='ring-border/60 size-6 ring-1 max-sm:hidden'>
+                <AvatarFallback
+                  className='text-[11px] font-semibold'
+                  style={getUserAvatarStyle(username)}
+                >
+                  {getUserAvatarFallback(username)}
+                </AvatarFallback>
+              </Avatar>
+              <TooltipProvider delay={300}>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <span className='text-muted-foreground max-w-[100px] truncate text-sm hover:underline' />
+                    }
+                  >
+                    {username}
+                  </TooltipTrigger>
+                  {username.length > 12 && (
+                    <TooltipContent side='top'>{username}</TooltipContent>
+                  )}
+                </Tooltip>
+              </TooltipProvider>
+            </span>
+          )
+        },
+      },
+      {
+        accessorKey: 'client_family',
+        header: t('Client'),
+        cell: ({ row }) => (
+          <ClientProfileBadge profile={row.original.client_family as ClientProfile} />
+        ),
       },
       {
         accessorKey: 'last_seen',
         header: t('Last Seen'),
-        cell: ({ row }) => formatDateTimeStr(new Date(row.original.last_seen)),
+        cell: ({ row }) => (
+          <span className='truncate font-mono text-xs tabular-nums'>
+            {formatTimestampToDate(
+              Math.floor(new Date(row.original.last_seen).getTime() / 1000)
+            )}
+          </span>
+        ),
       },
       {
         accessorKey: 'turn_count',
         header: t('Turns'),
-        cell: ({ row }) => row.original.turn_count.toLocaleString(),
+        cell: ({ row }) => (
+          <span className='font-mono text-xs tabular-nums'>
+            {row.original.turn_count.toLocaleString()}
+          </span>
+        ),
       },
       {
         accessorKey: 'gap_count',
         header: t('Gaps'),
-        cell: ({ row }) => row.original.gap_count.toLocaleString(),
+        cell: ({ row }) => (
+          <span className='font-mono text-xs tabular-nums'>
+            {row.original.gap_count.toLocaleString()}
+          </span>
+        ),
       },
     ],
     [t]
   )
 
   // The selected row is driven by the external selection state (own state or
-  // the controlled prop), so TanStack selection is derived, not owned:
+  // the T4.3 controlled prop), so TanStack selection is derived, not owned:
   // clicking a row calls onSelectSession and the highlight follows.
   const rowSelection = useMemo<RowSelectionState>(
     () => (props.selectedSessionId ? { [props.selectedSessionId]: true } : {}),
@@ -267,12 +330,12 @@ function SessionTable(props: SessionTableProps) {
 
 export interface SessionsTabProps {
   /**
-   * seam — the currently selected session id. Optional: when the parent
+   * T4.3 seam — the currently selected session id. Optional: when the parent
    * passes it (with onSelectSession) the tab is controlled and the parent
    * owns the value; otherwise the tab keeps its own selection state.
    */
   selectedSessionId?: string | null
-  /** seam — selection change callback (id or null when deselected). */
+  /** T4.3 seam — selection change callback (id or null when deselected). */
   onSelectSession?: (sessionId: string | null) => void
 }
 

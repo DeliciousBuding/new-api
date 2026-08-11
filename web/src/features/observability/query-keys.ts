@@ -47,4 +47,9 @@ export const observabilityQueryKeys = {
   },
   context: (turnId: string, sessionId: string) =>
     [...observabilityQueryKeys.all, 'context', turnId, sessionId] as const,
+  transcript: {
+    lists: () => [...observabilityQueryKeys.all, 'transcript', 'list'] as const,
+    list: (sessionId: string) =>
+      [...observabilityQueryKeys.transcript.lists(), sessionId] as const,
+  },
 }

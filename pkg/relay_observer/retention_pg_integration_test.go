@@ -132,9 +132,10 @@ func openRetentionStores(t *testing.T, dsn string) (Store, RetentionStore) {
 }
 
 // TestIntegrationMigrationLifecycle covers the versioned migration path on
-// the live database: every complete historical prefix upgrades to v4,
-// repeated bootstrap is idempotent, verify rejects an unknown version, and
-// the v2/v3/v4 structural contracts are present with their expected shapes.
+// the live database: every complete historical prefix upgrades to the
+// current version, repeated bootstrap is idempotent, verify rejects an
+// unknown version, and the v2/v3/v4/v5 structural contracts are present
+// with their expected shapes.
 func TestIntegrationMigrationLifecycle(t *testing.T) {
 	dsn := integrationDSN(t)
 	db := openFixturePool(t, dsn)
@@ -144,9 +145,10 @@ func TestIntegrationMigrationLifecycle(t *testing.T) {
 		name       string
 		migrations int
 	}{
-		{name: "v1 upgrades through v4", migrations: 1},
-		{name: "v2 upgrades through v4", migrations: 2},
-		{name: "v3 upgrades through v4", migrations: 3},
+		{name: "v1 upgrades through v5", migrations: 1},
+		{name: "v2 upgrades through v5", migrations: 2},
+		{name: "v3 upgrades through v5", migrations: 3},
+		{name: "v4 upgrades through v5", migrations: 4},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cleanupObserverSchema(t, db)
@@ -164,7 +166,7 @@ func TestIntegrationMigrationLifecycle(t *testing.T) {
 			store, err = OpenPGStore(ctx, dsn, SchemaModeBootstrap)
 			require.NoError(t, err, "bootstrap must upgrade the prefix to current")
 			require.NoError(t, store.Close(ctx))
-			assertSchemaVersions(t, db, []int{1, 2, 3, 4})
+			assertSchemaVersions(t, db, []int{1, 2, 3, 4, 5})
 			assertCurrentSchemaShape(t, db)
 		})
 	}
@@ -173,7 +175,7 @@ func TestIntegrationMigrationLifecycle(t *testing.T) {
 	store, err := OpenPGStore(ctx, dsn, SchemaModeBootstrap)
 	require.NoError(t, err, "repeated bootstrap must be idempotent")
 	require.NoError(t, store.Close(ctx))
-	assertSchemaVersions(t, db, []int{1, 2, 3, 4})
+	assertSchemaVersions(t, db, []int{1, 2, 3, 4, 5})
 
 	// A version row is not sufficient: verify must reject an index with the
 	// right name but the legacy four-column shape.
@@ -205,7 +207,7 @@ func TestIntegrationMigrationLifecycle(t *testing.T) {
 	store, err = OpenPGStore(ctx, dsn, SchemaModeBootstrap)
 	require.NoError(t, err, "bootstrap must create the current schema on an empty database")
 	require.NoError(t, store.Close(ctx))
-	assertSchemaVersions(t, db, []int{1, 2, 3, 4})
+	assertSchemaVersions(t, db, []int{1, 2, 3, 4, 5})
 	assertCurrentSchemaShape(t, db)
 }
 
@@ -220,6 +222,19 @@ func assertCurrentSchemaShape(t *testing.T, db *sql.DB) {
 	assert.Zero(t, notNull, "created_at is NOT NULL")
 	assertV3Indexes(t, db)
 	assertV4AliasIndex(t, db)
+	assertV5TranscriptIndex(t, db)
+}
+
+// assertV5TranscriptIndex asserts the v5 transcript index exists with the
+// (session_id, id) shape the transcript read needs.
+func assertV5TranscriptIndex(t *testing.T, db *sql.DB) {
+	t.Helper()
+	var definition string
+	require.NoError(t, db.QueryRow(`SELECT indexdef FROM pg_indexes
+		WHERE schemaname = current_schema()
+		  AND tablename = 'observer_contexts'
+		  AND indexname = 'idx_observer_contexts_session_id_id'`).Scan(&definition))
+	assert.Contains(t, definition, "session_id, id")
 }
 
 func assertV4AliasIndex(t *testing.T, db *sql.DB) {
