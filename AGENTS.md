@@ -160,6 +160,9 @@ This is a fork of `QuantumNous/new-api`. Branch architecture (2026-08-11 three-b
 - **`dev`** = development integration. Feature branches (`fix/`, `feat/`, `docs/`, `chore/`) PR into `dev`, then `dev` PRs into `release`.
 - **Fork-specific files**: prefer fork-owned directories (`pkg/relay_observer/`, `pkg/vision_relay/`, `model/model_vendor_fallback.go`, `service/rankings_vendor_fallback.go`) over editing upstream files.
 - **Release images**: `ghcr.io/deliciousbuding/new-api:<tag>` — GHCR image tags trace releases (no git tags in repo).
+- **Release automation**: `release-tag.yml` (workflow_dispatch, supports `dry_run`) computes the next `v1.0.0-td-YYYYMMDD.N` tag from the `release` branch, pushes it, and dispatches `docker-build.yml`. Full runbook: `RELEASE.md`.
+- **Branch protection**: `dev` and `release` require the CI checks (`Backend vet, build, and test` / `Frontend typecheck, test, and build`) to pass; force push is blocked. `delete_branch_on_merge` and `allow_auto_merge` are enabled.
+- **Upstream sync**: `main` sync failures automatically open an issue titled `upstream-sync failed — main mirror drift` (deduplicated per open issue).
 
 **Pull requests:** When creating a pull request:
 

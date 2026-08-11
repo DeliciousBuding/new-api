@@ -11,6 +11,7 @@ concurrency:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   sync:
@@ -49,10 +50,11 @@ jobs:
             exit 0
           fi
 
-          git checkout main
-          git reset --hard "$UPSTREAM_HEAD"
-
-          git push "https://x-access-token:${UPSTREAM_SYNC_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" main --force
+          # Push the upstream ref directly instead of checking out a local
+          # `main` branch: with both `origin/main` and `official/main` present,
+          # `git checkout main` is ambiguous and fails with exit 128.
+          git push "https://x-access-token:${UPSTREAM_SYNC_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            refs/remotes/official/main:refs/heads/main --force
 
           {
             echo "### Upstream sync result"
@@ -61,3 +63,24 @@ jobs:
             echo "- previous main: \`$CURRENT_MAIN\`"
             echo "- action: main reset to upstream and force-pushed"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open tracking issue on sync failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE="upstream-sync failed — main mirror drift"
+          BODY="The scheduled upstream sync failed.
+
+          - Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          - Trigger: ${{ github.event_name }}
+          - Consequence: \`main\` is not a current mirror of QuantumNous/new-api.
+
+          Fix the workflow or resolve the failure, then re-run it manually."
+          EXISTING=$(gh issue list --repo "${{ github.repository }}" \
+            --search "in:title \"$TITLE\"" --state open --limit 1 --json number -q '.[0].number' 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body "$BODY"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$TITLE" --body "$BODY"
+          fi
