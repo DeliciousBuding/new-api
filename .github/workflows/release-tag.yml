@@ -33,6 +33,20 @@ jobs:
           ref: dev
           fetch-depth: 0
 
+      - name: Normalize dry-run flag
+        id: dryrun
+        shell: bash
+        run: |
+          # github.event.inputs is the raw string from the dispatch payload.
+          # Normalize once here; guard steps consume steps.dryrun.outputs.value.
+          RAW="${{ github.event.inputs.dry_run }}"
+          if [ "$RAW" = "true" ]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "dry_run=$RAW"
+
       - name: Resolve release tag
         id: version
         shell: bash
@@ -62,7 +76,7 @@ jobs:
           echo "Release head: $HEAD"
 
       - name: Dry-run summary
-        if: inputs.dry_run == 'true'
+        if: steps.dryrun.outputs.value == 'true'
         run: |
           echo "### Dry run — no changes made" >> "$GITHUB_STEP_SUMMARY"
           echo "- tag: \`${{ steps.version.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
@@ -70,20 +84,28 @@ jobs:
           echo "- would push tag, then dispatch \`docker-build.yml\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Push release tag
-        if: inputs.dry_run != 'true'
+        if: steps.dryrun.outputs.value != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if [ "${{ steps.dryrun.outputs.value }}" = "true" ]; then
+            echo "::error::dry_run is set — refusing to push tag"
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "${{ steps.version.outputs.tag }}" -m "TokenDance Gateway release ${{ steps.version.outputs.tag }}"
           git push origin "${{ steps.version.outputs.tag }}"
 
       - name: Dispatch CD image build
-        if: inputs.dry_run != 'true'
+        if: steps.dryrun.outputs.value != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if [ "${{ steps.dryrun.outputs.value }}" = "true" ]; then
+            echo "::error::dry_run is set — refusing to dispatch build"
+            exit 1
+          fi
           gh workflow run docker-build.yml --repo "${{ github.repository }}" -f tag="${{ steps.version.outputs.tag }}"
           echo "Dispatched docker-build.yml for ${{ steps.version.outputs.tag }}"
 
@@ -93,7 +115,7 @@ jobs:
           {
             echo "### Release tag"
             echo
-            if [ "${{ inputs.dry_run }}" = "true" ]; then
+            if [ "${{ steps.dryrun.outputs.value }}" = "true" ]; then
               echo "Dry run: \`${{ steps.version.outputs.tag }}\` (not pushed)"
             else
               echo "Pushed: \`${{ steps.version.outputs.tag }}\`"
