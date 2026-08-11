@@ -23,7 +23,7 @@ env:
 
 jobs:
   build-and-push:
-    name: Build and push amd64 image
+    name: Build and push multi-arch image
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -31,7 +31,7 @@ jobs:
       packages: write
 
     steps:
-      - name: Check out release
+      - name: Check out tag
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: ${{ github.event_name == 'workflow_dispatch' && 0 || 1 }}
@@ -56,6 +56,9 @@ jobs:
           esac
           printf '%s\n' "$TAG" > VERSION
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
@@ -95,12 +98,12 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=tokendance-gateway-amd64
-          cache-to: type=gha,mode=max,scope=tokendance-gateway-amd64
+          cache-from: type=gha,scope=tokendance-gateway
+          cache-to: type=gha,mode=max,scope=tokendance-gateway
           provenance: mode=max
           sbom: true
 
@@ -108,7 +111,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo '### TokenDance Gateway image'
+            echo '### TokenDance Gateway image (amd64 + arm64)'
             echo
             echo '```text'
             echo '${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}'
