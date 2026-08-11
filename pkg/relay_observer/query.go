@@ -294,6 +294,76 @@ type TurnContextResult struct {
 	Items   []CanonicalItem
 }
 
+// Transcript directions: "latest" (default) returns the trailing page of the
+// session's flattened message stream; "older" returns the page before the
+// cursor.
+const (
+	TranscriptDirLatest = "latest"
+	TranscriptDirOlder  = "older"
+)
+
+// TranscriptQuery selects one page of GET /sessions/:id/transcript. The
+// transcript is the session's conversation flow flattened into one ordered
+// message stream — each turn contributes only the messages that are new in
+// that turn (its digest list beyond the previous turn's length), so the
+// stream is append-only even though every context row stores the full
+// history. Cursor is the message index of the oldest message of the
+// previously loaded page; the page before it starts at Cursor - PageSize.
+type TranscriptQuery struct {
+	// SessionID restricts the page to one session's transcript.
+	SessionID uuid.UUID
+	// Direction selects the trailing page ("latest") or the page before
+	// Cursor ("older").
+	Direction string
+	// Cursor is the message index of the oldest already-loaded message;
+	// ignored when Direction is "latest".
+	Cursor int64
+	// PageSize is clamped into [DefaultPageSize, MaxPageSize].
+	PageSize int
+	// HMACKey re-verifies every item's content-layer digest during content
+	// load; an empty key skips the digest step but keeps the structural
+	// checks.
+	HMACKey string
+}
+
+// TranscriptMessage is one flattened message of a session transcript.
+type TranscriptMessage struct {
+	// TurnID identifies the turn the message belongs to.
+	TurnID uuid.UUID
+	// TurnSeq is the 0-based position of the turn within the session.
+	TurnSeq int64
+	// Seq is the 0-based position of the message within its turn's new
+	// messages.
+	Seq int64
+	// Kind is the canonical item kind (message, tool_call, tool_result,
+	// system, gap, unknown).
+	Kind string
+	// Role is the item role when the kind carries one.
+	Role string
+	// Content is the whitelisted content parts of the item.
+	Content []CanonicalPart
+	// Gap carries the gap marker of an over-limit capture, when any.
+	Gap *GapInfo
+	// LogicalBytes is the item's logical size before capture bounds.
+	LogicalBytes int64
+	// Hmac is the keyed digest of the item's content layer.
+	Hmac string
+	// Truncated reports whether the item was cut at the capture limit.
+	Truncated bool
+}
+
+// TranscriptPage is one page of a session transcript.
+type TranscriptPage struct {
+	// Items is the ordered page of messages (oldest first).
+	Items []TranscriptMessage
+	// PrevCursor is the message index of the oldest message of this page;
+	// it is the cursor of the next "older" page. Zero when the page starts
+	// at the beginning of the stream.
+	PrevCursor int64
+	// HasOlder reports whether older messages exist before this page.
+	HasOlder bool
+}
+
 // QueryStore is the bounded Root query port of the observer. All methods are
 // read-only, run under the single-query semaphore, and respect the caller's
 // context; every list response carries keyset pagination state.
@@ -310,6 +380,10 @@ type QueryStore interface {
 	// TurnContext reconstructs one turn's content, bounded to one checkpoint
 	// and one suffix row plus their objects.
 	TurnContext(ctx context.Context, query ContextQuery) (TurnContextResult, error)
+	// Transcript returns one page of a session's flattened conversation
+	// stream. Each turn contributes only its new messages, so the stream is
+	// append-only; content objects are loaded only for the returned page.
+	Transcript(ctx context.Context, query TranscriptQuery) (TranscriptPage, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -799,4 +873,129 @@ func (q *pgQueryStore) TurnContext(ctx context.Context, query ContextQuery) (Tur
 		return err
 	})
 	return out, err
+}
+
+// Transcript implements QueryStore.
+func (q *pgQueryStore) Transcript(ctx context.Context, query TranscriptQuery) (TranscriptPage, error) {
+	var out TranscriptPage
+	err := q.withSlot(ctx, func() error {
+		var err error
+		out, err = transcriptQ(ctx, sqlDBAdapter{db: q.store.db}, query)
+		return err
+	})
+	return out, err
+}
+
+// transcriptFlatRef is one message of the flattened stream before content
+// decode: the digest reference is enough to page the stream, and the content
+// objects are loaded only for the returned page.
+type transcriptFlatRef struct {
+	turnID  uuid.UUID
+	turnSeq int64
+	seq     int64
+	digest  string
+}
+
+// transcriptQ flattens a session's context rows into one ordered message
+// stream and returns one page. Every context row stores the turn's complete
+// history; a turn's new messages are its digest list beyond the previous
+// turn's list length (the append-only conversation view). A history
+// compaction (a shorter list than the previous turn) restarts the window so
+// the whole compacted view is shown once instead of dropping messages.
+func transcriptQ(ctx context.Context, q contentQuerier, query TranscriptQuery) (TranscriptPage, error) {
+	rows, err := q.Query(ctx, `SELECT id, turn_id::text, checkpoint_id, group_ordinal, common_prefix_count, item_count, item_digests, logical_bytes FROM observer_contexts WHERE session_id = $1 ORDER BY id`, query.SessionID.String())
+	if err != nil {
+		return TranscriptPage{}, fmt.Errorf("relayobserver: transcript: read context rows: %w", err)
+	}
+	defer func() {
+		if closer, ok := rows.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	}()
+
+	var flat []transcriptFlatRef
+	var prevCount int64
+	var turnSeq int64
+	for rows.Next() {
+		var row contextRow
+		var turnRaw string
+		if err := rows.Scan(&row.id, &turnRaw, &row.checkpointID, &row.groupOrdinal, &row.commonPrefix, &row.itemCount, &row.itemDigests, &row.logicalBytes); err != nil {
+			return TranscriptPage{}, fmt.Errorf("relayobserver: transcript: scan context row: %w", err)
+		}
+		turnID, err := uuid.Parse(turnRaw)
+		if err != nil {
+			return TranscriptPage{}, classifiedErrorWrap(ContentErrCorrupt, "invalid turn id in context row", err)
+		}
+		digests, err := reconstructDigests(row, func(id int64) (contextRow, error) {
+			return loadContextRowByIDQ(ctx, q, query.SessionID, id)
+		})
+		if err != nil {
+			return TranscriptPage{}, err
+		}
+		start := prevCount
+		if start > int64(len(digests)) {
+			start = 0
+		}
+		for i := start; i < int64(len(digests)); i++ {
+			flat = append(flat, transcriptFlatRef{turnID: turnID, turnSeq: turnSeq, seq: i - start, digest: digests[i]})
+		}
+		prevCount = int64(len(digests))
+		turnSeq++
+	}
+	if err := rows.Err(); err != nil {
+		return TranscriptPage{}, fmt.Errorf("relayobserver: transcript: read context rows: %w", err)
+	}
+
+	total := int64(len(flat))
+	var start, end int64
+	if query.Direction == TranscriptDirOlder && query.Cursor > 0 {
+		end = query.Cursor
+		if end > total {
+			end = total
+		}
+		start = end - int64(query.PageSize)
+		if start < 0 {
+			start = 0
+		}
+	} else {
+		end = total
+		start = total - int64(query.PageSize)
+		if start < 0 {
+			start = 0
+		}
+	}
+	page := flat[start:end]
+
+	out := TranscriptPage{
+		PrevCursor: start,
+		HasOlder:   start > 0,
+	}
+	if len(page) == 0 {
+		return out, nil
+	}
+	digests := make([]string, 0, len(page))
+	for _, ref := range page {
+		digests = append(digests, ref.digest)
+	}
+	items, err := loadContentItemsQ(ctx, q, query.SessionID, digests, query.HMACKey)
+	if err != nil {
+		return TranscriptPage{}, err
+	}
+	out.Items = make([]TranscriptMessage, 0, len(page))
+	for i, ref := range page {
+		item := items[i]
+		out.Items = append(out.Items, TranscriptMessage{
+			TurnID:       ref.turnID,
+			TurnSeq:      ref.turnSeq,
+			Seq:          ref.seq,
+			Kind:         item.Kind,
+			Role:         item.Role,
+			Content:      item.Content,
+			Gap:          item.Gap,
+			LogicalBytes: item.LogicalBytes,
+			Hmac:         item.Hmac,
+			Truncated:    item.Truncated,
+		})
+	}
+	return out, nil
 }

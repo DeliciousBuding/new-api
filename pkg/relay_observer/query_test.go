@@ -137,6 +137,19 @@ func (f *fakeQueryDB) QueryRow(ctx context.Context, query string, args ...any) r
 		return &fakeQueryRow{values: []any{n}}
 	case strings.Contains(query, "FROM observer_turns") && strings.Contains(query, "count(*)"):
 		return &fakeQueryRow{values: []any{int64(len(f.turns))}}
+	case strings.Contains(query, "FROM observer_contexts") && strings.Contains(query, "WHERE id ="):
+		id := args[0].(int64)
+		sid := args[1].(string)
+		for _, c := range f.contexts {
+			if c.sessionID == sid && c.id == id {
+				raw, err := common.Marshal(c.digests)
+				if err != nil {
+					return &fakeQueryRow{err: err}
+				}
+				return &fakeQueryRow{values: []any{c.id, c.checkpointID, c.ordinal, c.prefix, c.itemCount, raw, c.logicalBytes}}
+			}
+		}
+		return &fakeQueryRow{err: sql.ErrNoRows}
 	case strings.Contains(query, "FROM observer_contexts WHERE session_id"):
 		sid := args[0].(string)
 		turn := args[1].(string)
@@ -177,6 +190,22 @@ func (f *fakeQueryDB) Query(ctx context.Context, query string, args ...any) (row
 		return &fakeQueryRows{rows: rows, scanErr: f.scanErr, rowsErr: f.rowsErr}, nil
 	case strings.Contains(query, "FROM observer_turns"):
 		rows := f.turnRows(args)
+		return &fakeQueryRows{rows: rows, scanErr: f.scanErr, rowsErr: f.rowsErr}, nil
+	case strings.Contains(query, "FROM observer_contexts"):
+		sid := args[0].(string)
+		var rows []*fakeQueryRow
+		for _, c := range f.contexts {
+			if c.sessionID != sid {
+				continue
+			}
+			raw, err := common.Marshal(c.digests)
+			if err != nil {
+				return nil, err
+			}
+			rows = append(rows, &fakeQueryRow{values: []any{
+				c.id, c.turnID, c.checkpointID, c.ordinal, c.prefix, c.itemCount, raw, c.logicalBytes,
+			}})
+		}
 		return &fakeQueryRows{rows: rows, scanErr: f.scanErr, rowsErr: f.rowsErr}, nil
 	case strings.Contains(query, "FROM observer_content_objects"):
 		digests := args[1].([][]byte)
@@ -857,6 +886,123 @@ func TestTurnContextMissingContext(t *testing.T) {
 	code, ok := ContentErrorOf(err)
 	require.True(t, ok, "a missing context must surface the classified content error")
 	assert.Equal(t, ContentErrMissingContext, code)
+}
+
+// ---------------------------------------------------------------------------
+// transcript (flattened conversation stream)
+
+// transcriptFixture builds a session with three context rows — one full
+// checkpoint plus two deltas referencing it — whose flattened message stream
+// is [d0 d1 d2 d3 d4]: turn 0 contributes d0/d1, turn 1 d2/d3, turn 2 d4.
+func transcriptFixture(t *testing.T, f *fakeQueryDB, sid uuid.UUID) {
+	t.Helper()
+	s := sid.String()
+	var stored []string
+	store := func(kind string) string {
+		it := CanonicalItem{Kind: kind, Role: "user", LogicalBytes: 4, Hmac: fmt.Sprintf("%064x", len(stored)+1)}
+		payload, logical, err := encodeItem(it)
+		require.NoError(t, err)
+		f.objects[it.Hmac] = contentObjectRow{payload: payload, logicalBytes: logical}
+		stored = append(stored, it.Hmac)
+		return it.Hmac
+	}
+	d0, d1 := store("text"), store("text")
+	d2, d3 := store("text"), store("tool_call")
+	d4 := store("text")
+	f.contexts = []fakeContextRow{
+		{id: 1, sessionID: s, turnID: "00000000-0000-0000-0000-000000000001", checkpointID: 1, ordinal: 0, prefix: 0, itemCount: 2, digests: []string{d0, d1}},
+		{id: 2, sessionID: s, turnID: "00000000-0000-0000-0000-000000000002", checkpointID: 1, ordinal: 1, prefix: 2, itemCount: 4, digests: []string{d2, d3}},
+		{id: 3, sessionID: s, turnID: "00000000-0000-0000-0000-000000000003", checkpointID: 3, ordinal: 0, prefix: 0, itemCount: 5, digests: []string{d0, d1, d2, d3, d4}},
+	}
+}
+
+func TestTranscriptPagination(t *testing.T) {
+	f := newFakeQueryDB()
+	sid := uuid.MustParse("00000000-0000-0000-0000-0000000000aa")
+	transcriptFixture(t, f, sid)
+
+	latest, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 3})
+	require.NoError(t, err)
+	require.Len(t, latest.Items, 3)
+	assert.Equal(t, int64(2), latest.PrevCursor)
+	assert.True(t, latest.HasOlder)
+	// The trailing page is the newest three messages: turn 1 (d2, d3) then
+	// turn 2 (d4) — kind and position survive the flatten.
+	assert.Equal(t, int64(1), latest.Items[0].TurnSeq)
+	assert.Equal(t, int64(0), latest.Items[0].Seq)
+	assert.Equal(t, "tool_call", latest.Items[1].Kind)
+	assert.Equal(t, int64(2), latest.Items[2].TurnSeq)
+	assert.Equal(t, int64(0), latest.Items[2].Seq)
+
+	older, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirOlder, Cursor: 2, PageSize: 3})
+	require.NoError(t, err)
+	require.Len(t, older.Items, 2)
+	assert.Equal(t, int64(0), older.PrevCursor)
+	assert.False(t, older.HasOlder)
+	assert.Equal(t, int64(0), older.Items[0].TurnSeq)
+	assert.Equal(t, int64(0), older.Items[0].Seq)
+	assert.Equal(t, int64(0), older.Items[1].TurnSeq)
+	assert.Equal(t, int64(1), older.Items[1].Seq)
+
+	// An out-of-range older page degrades to the trailing page.
+	edge, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirOlder, Cursor: 100, PageSize: 3})
+	require.NoError(t, err)
+	require.Len(t, edge.Items, 3)
+	assert.Equal(t, int64(2), edge.PrevCursor)
+	assert.True(t, edge.HasOlder)
+}
+
+func TestTranscriptEmptySession(t *testing.T) {
+	f := newFakeQueryDB()
+	sid := uuid.MustParse("00000000-0000-0000-0000-0000000000aa")
+	page, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 10})
+	require.NoError(t, err)
+	assert.Empty(t, page.Items)
+	assert.False(t, page.HasOlder)
+	assert.Zero(t, page.PrevCursor)
+}
+
+func TestTranscriptCompactionRestartsWindow(t *testing.T) {
+	f := newFakeQueryDB()
+	sid := uuid.MustParse("00000000-0000-0000-0000-0000000000aa")
+	s := sid.String()
+	store := func(i int) string {
+		it := CanonicalItem{Kind: "text", Role: "user", LogicalBytes: 4, Hmac: fmt.Sprintf("%064x", i)}
+		payload, logical, err := encodeItem(it)
+		require.NoError(t, err)
+		f.objects[it.Hmac] = contentObjectRow{payload: payload, logicalBytes: logical}
+		return it.Hmac
+	}
+	a, b, c := store(1), store(2), store(3)
+	a2, b2 := store(4), store(5)
+	// The second turn is a compaction: its complete list is shorter than the
+	// previous turn's, so the window restarts and the whole compacted view
+	// is shown once instead of dropping messages.
+	f.contexts = []fakeContextRow{
+		{id: 1, sessionID: s, turnID: "00000000-0000-0000-0000-000000000001", checkpointID: 1, ordinal: 0, prefix: 0, itemCount: 3, digests: []string{a, b, c}},
+		{id: 2, sessionID: s, turnID: "00000000-0000-0000-0000-000000000002", checkpointID: 2, ordinal: 0, prefix: 0, itemCount: 2, digests: []string{a2, b2}},
+	}
+	page, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 10})
+	require.NoError(t, err)
+	require.Len(t, page.Items, 5)
+	assert.Equal(t, a, page.Items[0].Hmac)
+	assert.Equal(t, a2, page.Items[3].Hmac)
+	assert.Equal(t, int64(1), page.Items[3].TurnSeq)
+	assert.Equal(t, int64(0), page.Items[3].Seq)
+}
+
+func TestTranscriptMissingObjectClassified(t *testing.T) {
+	f := newFakeQueryDB()
+	sid := uuid.MustParse("00000000-0000-0000-0000-0000000000aa")
+	s := sid.String()
+	f.contexts = []fakeContextRow{
+		{id: 1, sessionID: s, turnID: "00000000-0000-0000-0000-000000000001", checkpointID: 1, ordinal: 0, prefix: 0, itemCount: 1, digests: []string{fmt.Sprintf("%064x", 99)}},
+	}
+	_, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 10})
+	require.Error(t, err)
+	code, ok := ContentErrorOf(err)
+	require.True(t, ok)
+	assert.Equal(t, ContentErrMissingContent, code)
 }
 
 // ---------------------------------------------------------------------------

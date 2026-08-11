@@ -580,6 +580,10 @@ func (fakeQueryStore) TurnContext(ctx context.Context, query ContextQuery) (Turn
 	return TurnContextResult{}, nil
 }
 
+func (fakeQueryStore) Transcript(ctx context.Context, query TranscriptQuery) (TranscriptPage, error) {
+	return TranscriptPage{}, nil
+}
+
 func (fakeQueryStore) GetSession(ctx context.Context, id uuid.UUID) (SessionSummary, error) {
 	return SessionSummary{}, nil
 }

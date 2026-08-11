@@ -34,6 +34,7 @@ var observerQueryRoutes = []string{
 	"/api/relay-observer/sessions",
 	"/api/relay-observer/sessions/:id",
 	"/api/relay-observer/sessions/:id/turns",
+	"/api/relay-observer/sessions/:id/transcript",
 	"/api/relay-observer/turns/:id/context",
 }
 
@@ -44,6 +45,7 @@ var observerQueryRequestPaths = []string{
 	"/api/relay-observer/sessions",
 	"/api/relay-observer/sessions/00000000-0000-0000-0000-000000000001",
 	"/api/relay-observer/sessions/00000000-0000-0000-0000-000000000001/turns",
+	"/api/relay-observer/sessions/00000000-0000-0000-0000-000000000001/transcript",
 	"/api/relay-observer/turns/00000000-0000-0000-0000-000000000001/context",
 }
 
@@ -80,6 +82,8 @@ type fakeObserverQueryStore struct {
 	turnsErr       error
 	contextResult  relayobserver.TurnContextResult
 	contextErr     error
+	transcriptPage relayobserver.TranscriptPage
+	transcriptErr  error
 }
 
 func (f *fakeObserverQueryStore) Overview(ctx context.Context, query relayobserver.OverviewQuery) (relayobserver.OverviewResult, error) {
@@ -100,6 +104,10 @@ func (f *fakeObserverQueryStore) ListTurns(ctx context.Context, query relayobser
 
 func (f *fakeObserverQueryStore) TurnContext(ctx context.Context, query relayobserver.ContextQuery) (relayobserver.TurnContextResult, error) {
 	return f.contextResult, f.contextErr
+}
+
+func (f *fakeObserverQueryStore) Transcript(ctx context.Context, query relayobserver.TranscriptQuery) (relayobserver.TranscriptPage, error) {
+	return f.transcriptPage, f.transcriptErr
 }
 
 // relayObserverTestEnv builds the sqlite-backed engine with root/admin/user
