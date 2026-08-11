@@ -12,6 +12,7 @@ import (
 	relayobserver "github.com/QuantumNous/new-api/pkg/relay_observer"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -460,11 +461,44 @@ type observerSessionDTO struct {
 	SessionID    string    `json:"session_id"`
 	NodeScope    string    `json:"node_scope"`
 	UserID       int64     `json:"user_id"`
+	Username     string    `json:"username,omitempty"`
 	ClientFamily string    `json:"client_family"`
 	FirstSeen    time.Time `json:"first_seen"`
 	LastSeen     time.Time `json:"last_seen"`
 	TurnCount    int64     `json:"turn_count"`
 	GapCount     int64     `json:"gap_count"`
+}
+
+// resolveSessionUsernames maps user ids of one session page onto their
+// usernames from the primary users table. The observer store lives in its
+// own database (no cross-database join), and a user that was deleted since
+// the session was captured simply stays absent — the caller renders the
+// numeric id in that case.
+func resolveSessionUsernames(sessions []relayobserver.SessionSummary) map[int64]string {
+	out := make(map[int64]string, len(sessions))
+	ids := make([]int64, 0, len(sessions))
+	seen := make(map[int64]bool, len(sessions))
+	for _, s := range sessions {
+		if s.UserID <= 0 || seen[s.UserID] {
+			continue
+		}
+		seen[s.UserID] = true
+		ids = append(ids, s.UserID)
+	}
+	if len(ids) == 0 {
+		return out
+	}
+	var users []model.User
+	if err := model.DB.Select("id", "username").Where("id IN ?", ids).Find(&users).Error; err != nil {
+		// Usernames are a display convenience; a lookup failure must not
+		// degrade the session list.
+		common.SysError("relay observer resolve usernames: " + err.Error())
+		return out
+	}
+	for _, u := range users {
+		out[int64(u.Id)] = u.Username
+	}
+	return out
 }
 
 type observerTurnDTO struct {
@@ -558,12 +592,17 @@ func GetRelayObserverSessions(c *gin.Context) {
 		relayObserverQueryError(c, "sessions", err)
 		return
 	}
+	// The observer store lives in its own database, so usernames cannot be
+	// joined in SQL: resolve them here against the primary users table and
+	// attach them to the DTOs (missing users render as their numeric id).
+	usernames := resolveSessionUsernames(page.Items)
 	items := make([]observerSessionDTO, 0, len(page.Items))
 	for _, s := range page.Items {
 		items = append(items, observerSessionDTO{
 			SessionID:    s.SessionID.String(),
 			NodeScope:    s.NodeScope,
 			UserID:       s.UserID,
+			Username:     usernames[s.UserID],
 			ClientFamily: s.ClientFamily,
 			FirstSeen:    s.FirstSeen,
 			LastSeen:     s.LastSeen,
@@ -656,6 +695,112 @@ func GetRelayObserverSessionTurns(c *gin.Context) {
 			"meta": observerPageMetaDTO{
 				NextCursor: page.Meta.NextCursor,
 				HasMore:    page.Meta.HasMore,
+			},
+		},
+	})
+}
+
+// parseTranscriptQuery assembles the bounded TranscriptQuery: direction is
+// whitelisted ("latest" default, "older"), cursor is a non-negative message
+// index, and page_size reuses the shared clamp.
+func parseTranscriptQuery(c *gin.Context, sessionID uuid.UUID) (relayobserver.TranscriptQuery, bool) {
+	direction := strings.ToLower(strings.TrimSpace(c.Query("direction")))
+	if direction == "" {
+		direction = relayobserver.TranscriptDirLatest
+	}
+	if direction != relayobserver.TranscriptDirLatest && direction != relayobserver.TranscriptDirOlder {
+		writeRelayObserverBadRequest(c, "direction must be one of latest, older")
+		return relayobserver.TranscriptQuery{}, false
+	}
+	var cursor int64
+	raw := strings.TrimSpace(c.Query("cursor"))
+	if raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n < 0 {
+			writeRelayObserverBadRequest(c, "cursor must be a non-negative integer")
+			return relayobserver.TranscriptQuery{}, false
+		}
+		cursor = n
+	}
+	pageSize, ok := parsePageSize(c)
+	if !ok {
+		return relayobserver.TranscriptQuery{}, false
+	}
+	return relayobserver.TranscriptQuery{
+		SessionID: sessionID,
+		Direction: direction,
+		Cursor:    cursor,
+		PageSize:  pageSize,
+		HMACKey:   relayObserverHMACKey(),
+	}, true
+}
+
+// observerTranscriptMessageDTO is one flattened message of a session
+// transcript.
+type observerTranscriptMessageDTO struct {
+	TurnID       string                        `json:"turn_id"`
+	TurnSeq      int64                         `json:"turn_seq"`
+	Seq          int64                         `json:"seq"`
+	Kind         string                        `json:"kind"`
+	Role         string                        `json:"role,omitempty"`
+	Content      []relayobserver.CanonicalPart `json:"content,omitempty"`
+	Gap          *relayobserver.GapInfo        `json:"gap,omitempty"`
+	LogicalBytes int64                         `json:"logical_bytes"`
+	Hmac         string                        `json:"hmac"`
+	Truncated    bool                          `json:"truncated,omitempty"`
+}
+
+// GetRelayObserverSessionTranscript serves GET /api/relay-observer/sessions/
+// :id/transcript: one page of the session's flattened conversation stream.
+// An unknown session is a 404 even when the stream is empty.
+func GetRelayObserverSessionTranscript(c *gin.Context) {
+	qs, timeout, ok := observerQuerySurface(c)
+	if !ok {
+		return
+	}
+	id, ok := parseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+	query, ok := parseTranscriptQuery(c, id)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
+	defer cancel()
+	if _, err := qs.GetSession(ctx, id); err != nil {
+		relayObserverQueryError(c, "session", err)
+		return
+	}
+	page, err := qs.Transcript(ctx, query)
+	if err != nil {
+		relayObserverQueryError(c, "session transcript", err)
+		return
+	}
+	items := make([]observerTranscriptMessageDTO, 0, len(page.Items))
+	for _, m := range page.Items {
+		items = append(items, observerTranscriptMessageDTO{
+			TurnID:       m.TurnID.String(),
+			TurnSeq:      m.TurnSeq,
+			Seq:          m.Seq,
+			Kind:         m.Kind,
+			Role:         m.Role,
+			Content:      m.Content,
+			Gap:          m.Gap,
+			LogicalBytes: m.LogicalBytes,
+			Hmac:         m.Hmac,
+			Truncated:    m.Truncated,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data": gin.H{
+			"page_size": query.PageSize,
+			"items":     items,
+			"meta": gin.H{
+				"prev_cursor": page.PrevCursor,
+				"has_older":   page.HasOlder,
 			},
 		},
 	})

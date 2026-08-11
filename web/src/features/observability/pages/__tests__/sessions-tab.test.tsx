@@ -74,6 +74,7 @@ await i18n.use(initReactI18next).init({
         // Missing keys fall back to the key itself, so assertions use the
         // English source strings (project i18n convention: key = English).
         'Page {{current}}': 'Page {{current}}',
+        'Selected session: {{sessionId}}': 'Selected session: {{sessionId}}',
       },
     },
   },
@@ -141,13 +142,17 @@ let handler: (url: string) => unknown = () => ({
   data: {},
 })
 const originalGet = api.get
-api.get = (async (url: unknown) => {
+const stubGet = (async (url: unknown) => {
   calls.push(String(url))
   return { data: handler(String(url)) }
 }) as typeof api.get
+api.get = stubGet
 
 after(() => {
-  api.get = originalGet
+  // Chain-safe restore: only unwrap when this file's stub is still the one
+  // installed (bun runs test files concurrently and every file swaps the
+  // shared http-client singleton).
+  if (api.get === stubGet) api.get = originalGet
 })
 
 afterEach(() => {
@@ -203,6 +208,20 @@ async function waitForText(host: HTMLElement, text: string): Promise<boolean> {
   return textOf(host).includes(text)
 }
 
+/** Poll a predicate (e.g. for network calls) inside act() until it holds. */
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2000
+  while (Date.now() < deadline) {
+    let reached = false
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      reached = predicate()
+    })
+    if (reached) return
+  }
+  assert.ok(predicate(), 'waitFor timeout')
+}
+
 function setInputValue(input: Element, value: string) {
   const descriptor = Object.getOwnPropertyDescriptor(
     domWindow.HTMLInputElement.prototype,
@@ -253,13 +272,14 @@ describe('SessionsTab', () => {
   test('renders session rows from the first page', async () => {
     handler = pageHandler
     const { host } = renderTab()
-    await waitForText(host, '11111111-1111-4111-8111-111111111111')
+    // The session column renders the short id (first 8 chars), the same
+    // compact display as the task summary card.
+    await waitForText(host, '11111111')
 
     const text = textOf(host)
-    assert.ok(text.includes('22222222-2222-4222-8222-222222222222'))
-    assert.ok(text.includes('scope-a'))
-    assert.ok(text.includes('openai'))
-    assert.ok(text.includes('7'), 'user id value')
+    assert.ok(text.includes('22222222'))
+    assert.ok(text.includes('#7'), 'user id value without username')
+    assert.ok(text.includes('openai'), 'client profile fallback label')
     assert.ok(text.includes('Page 1'), 'first page index')
     assert.equal(
       host.querySelectorAll('tbody tr').length,
@@ -271,13 +291,17 @@ describe('SessionsTab', () => {
   test('passes applied filters to the sessions query', async () => {
     handler = pageHandler
     const { host } = renderTab()
-    await waitForText(host, '11111111-1111-4111-8111-111111111111')
+    await waitForText(host, '11111111')
 
     const modelInput = host.querySelector('input[placeholder="Model"]')
     assert.ok(modelInput, 'model filter input')
     setInputValue(modelInput, 'gpt-4o')
     clickButton(host, 'Search')
-    await waitForText(host, '11111111-1111-4111-8111-111111111111')
+    // The first page stays on screen while the refetch is in flight, so
+    // wait for the filtered request itself instead of a text change.
+    await waitFor(() =>
+      calls.some((url) => url.includes('model=gpt-4o'))
+    )
 
     const lastCall = calls.at(-1) ?? ''
     assert.ok(
@@ -293,14 +317,14 @@ describe('SessionsTab', () => {
   test('passes advanced filters (expand + numeric user id) to the query', async () => {
     handler = pageHandler
     const { host } = renderTab()
-    await waitForText(host, '11111111-1111-4111-8111-111111111111')
+    await waitForText(host, '11111111')
 
     clickButton(host, 'Expand')
     const userIdInput = host.querySelector('input[placeholder="User ID"]')
     assert.ok(userIdInput, 'advanced filter input after expand')
     setInputValue(userIdInput, '7')
     clickButton(host, 'Search')
-    await waitForText(host, '11111111-1111-4111-8111-111111111111')
+    await waitFor(() => calls.some((url) => url.includes('user_id=7')))
 
     assert.ok(
       calls.at(-1)?.includes('user_id=7'),
@@ -311,10 +335,10 @@ describe('SessionsTab', () => {
   test('advances to the next page with the fetched cursor', async () => {
     handler = pageHandler
     const { host } = renderTab()
-    await waitForText(host, '11111111-1111-4111-8111-111111111111')
+    await waitForText(host, '11111111')
 
     clickButton(host, 'Next')
-    await waitForText(host, '33333333-3333-4333-8333-333333333333')
+    await waitForText(host, '33333333')
 
     assert.ok(
       calls.at(-1)?.includes('cursor=cursor-2'),
@@ -326,12 +350,12 @@ describe('SessionsTab', () => {
   test('steps back to the previous page', async () => {
     handler = pageHandler
     const { host } = renderTab()
-    await waitForText(host, '11111111-1111-4111-8111-111111111111')
+    await waitForText(host, '11111111')
     clickButton(host, 'Next')
-    await waitForText(host, '33333333-3333-4333-8333-333333333333')
+    await waitForText(host, '33333333')
 
     clickButton(host, 'Previous')
-    await waitForText(host, '11111111-1111-4111-8111-111111111111')
+    await waitForText(host, '11111111')
 
     const lastCall = calls.at(-1) ?? ''
     assert.ok(
@@ -370,7 +394,11 @@ describe('SessionsTab', () => {
   })
 
   test('shows skeletons while loading, then the rows', async () => {
-    handler = pageHandler
+    let release!: (value: unknown) => void
+    const pending = new Promise((resolve) => {
+      release = resolve
+    })
+    handler = () => pending
     const { host } = renderTab()
 
     assert.ok(
@@ -378,7 +406,14 @@ describe('SessionsTab', () => {
       'table skeleton while loading'
     )
 
-    await waitForText(host, '11111111-1111-4111-8111-111111111111')
+    await act(async () => {
+      release({
+        success: true,
+        message: '',
+        data: PAGE_1,
+      })
+    })
+    await waitForText(host, '11111111')
     assert.equal(
       host.querySelectorAll('[data-slot=skeleton]').length,
       0,
@@ -389,9 +424,9 @@ describe('SessionsTab', () => {
   test('selects a session row on click (uncontrolled) and toggles it off', async () => {
     handler = pageHandler
     const { host } = renderTab()
-    await waitForText(host, '11111111-1111-4111-8111-111111111111')
+    await waitForText(host, '11111111')
 
-    const row = findRow(host, '11111111-1111-4111-8111-111111111111')
+    const row = findRow(host, '11111111')
     act(() => {
       row.dispatchEvent(clickEvent())
     })
@@ -415,10 +450,10 @@ describe('SessionsTab', () => {
       selectedSessionId: null,
       onSelectSession: (id) => selected.push(id),
     })
-    await waitForText(host, '11111111-1111-4111-8111-111111111111')
+    await waitForText(host, '11111111')
 
-    const first = findRow(host, '11111111-1111-4111-8111-111111111111')
-    const second = findRow(host, '22222222-2222-4222-8222-222222222222')
+    const first = findRow(host, '11111111')
+    const second = findRow(host, '22222222')
     assert.equal(first.getAttribute('role'), 'button')
     assert.equal(first.getAttribute('tabindex'), '0')
 
@@ -433,7 +468,7 @@ describe('SessionsTab', () => {
     ])
   })
 
-  test('reports selection changes through the controlled props', async () => {
+  test('reports selection changes through the controlled props (T4.3 seam)', async () => {
     handler = pageHandler
     const selected: (string | null)[] = []
     const { host } = renderTab({
@@ -442,9 +477,9 @@ describe('SessionsTab', () => {
         selected.push(id)
       },
     })
-    await waitForText(host, '11111111-1111-4111-8111-111111111111')
+    await waitForText(host, '11111111')
 
-    const row = findRow(host, '11111111-1111-4111-8111-111111111111')
+    const row = findRow(host, '11111111')
     act(() => {
       row.dispatchEvent(clickEvent())
     })

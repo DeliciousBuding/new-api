@@ -20,7 +20,7 @@ For commercial licensing, please contact support@quantumnous.com
  * Zod schemas and types for the Root-only relay observer API.
  *
  * Field names keep the backend JSON snake_case verbatim — the SSOT is
- * controller/relay_observer_query.go.
+ * controller/relay_observer_query.go (T3.2 implementation is the spec).
  * Timestamps are RFC3339 strings (Go time.Time JSON encoding). The one
  * exception is /api/relay-observer/status, whose DTO (relayobserver.Status)
  * carries no JSON tags and therefore serializes with Go's default PascalCase
@@ -89,6 +89,7 @@ export const observerSessionSchema = z.object({
   session_id: z.string(), // UUID
   node_scope: z.string(),
   user_id: z.number(),
+  username: z.string().optional(),
   client_family: z.string(),
   first_seen: z.string(), // RFC3339
   last_seen: z.string(), // RFC3339
@@ -219,6 +220,62 @@ export const observerTurnContextSchema = z.object({
   items: z.array(observerCanonicalItemSchema),
 })
 export type ObserverTurnContext = z.infer<typeof observerTurnContextSchema>
+
+// ============================================================================
+// Session transcript (flattened conversation stream)
+// ============================================================================
+
+export const observerOversizedUnitSchema = z.object({
+  kind: z.string(),
+  call_ids: z.array(z.string()).optional(),
+  logical_bytes: z.number(),
+})
+export type ObserverOversizedUnit = z.infer<
+  typeof observerOversizedUnitSchema
+>
+
+export const observerGapInfoSchema = z.object({
+  position: z.string(),
+  reason: z.string(),
+  omitted_items: z.number(),
+  logical_bytes: z.number(),
+  source_truncated: z.boolean().optional(),
+  oversized_units: z.array(observerOversizedUnitSchema).optional(),
+})
+export type ObserverGapInfo = z.infer<typeof observerGapInfoSchema>
+
+export const observerTranscriptMessageSchema = z.object({
+  turn_id: z.string(), // UUID
+  turn_seq: z.number(),
+  seq: z.number(),
+  kind: z.string(),
+  role: z.string().optional(),
+  content: z.array(observerCanonicalPartSchema).optional(),
+  gap: observerGapInfoSchema.optional(),
+  logical_bytes: z.number(),
+  hmac: z.string(),
+  truncated: z.boolean().optional(),
+})
+export type ObserverTranscriptMessage = z.infer<
+  typeof observerTranscriptMessageSchema
+>
+
+export const observerTranscriptMetaSchema = z.object({
+  prev_cursor: z.number(),
+  has_older: z.boolean(),
+})
+export type ObserverTranscriptMeta = z.infer<
+  typeof observerTranscriptMetaSchema
+>
+
+export const observerTranscriptPageSchema = z.object({
+  page_size: z.number(),
+  items: z.array(observerTranscriptMessageSchema),
+  meta: observerTranscriptMetaSchema,
+})
+export type ObserverTranscriptPage = z.infer<
+  typeof observerTranscriptPageSchema
+>
 
 // ============================================================================
 // Degraded envelope & response wrapper
