@@ -300,6 +300,14 @@ type TurnContextResult struct {
 const (
 	TranscriptDirLatest = "latest"
 	TranscriptDirOlder  = "older"
+
+	// maxTranscriptContextRows bounds how many observer_contexts rows a
+	// transcript read materializes before paging. Each row is a turn's full
+	// checkpoint or a delta; without this cap a session with a very long
+	// history makes the Root transcript endpoint do O(session) memory and
+	// time regardless of PageSize. Rows beyond the cap are the oldest and are
+	// dropped, which also disables older-direction paging for that session.
+	maxTranscriptContextRows = 5000
 )
 
 // TranscriptQuery selects one page of GET /sessions/:id/transcript. The
@@ -922,6 +930,11 @@ func transcriptQ(ctx context.Context, q contentQuerier, query TranscriptQuery) (
 	var prevCount int64
 	var prevDigests []string
 	var turnSeq int64
+	// truncatedOlder is set when the row cap is hit: the oldest rows are
+	// dropped, so the caller cannot page further back and HasOlder must be
+	// reported false even if start > 0.
+	var truncatedOlder bool
+	rowCount := 0
 	// currentFull is the full checkpoint of the current storage group,
 	// captured from the row set already in hand (rows come ORDER BY id, so a
 	// full row always precedes its deltas). Deltas reconstruct against it in
@@ -929,6 +942,11 @@ func transcriptQ(ctx context.Context, q contentQuerier, query TranscriptQuery) (
 	// must stay bounded for sessions with thousands of turns.
 	var currentFull *contextRow
 	for rows.Next() {
+		if rowCount >= maxTranscriptContextRows {
+			truncatedOlder = true
+			break
+		}
+		rowCount++
 		var row contextRow
 		var turnRaw string
 		if err := rows.Scan(&row.id, &turnRaw, &row.checkpointID, &row.groupOrdinal, &row.commonPrefix, &row.itemCount, &row.itemDigests, &row.logicalBytes); err != nil {
@@ -987,7 +1005,7 @@ func transcriptQ(ctx context.Context, q contentQuerier, query TranscriptQuery) (
 
 	out := TranscriptPage{
 		PrevCursor: start,
-		HasOlder:   start > 0,
+		HasOlder:   start > 0 && !truncatedOlder,
 	}
 	if len(page) == 0 {
 		return out, nil

@@ -39,12 +39,17 @@ jobs:
         run: |
           # github.event.inputs is the raw string from the dispatch payload.
           # Normalize once here; guard steps consume steps.dryrun.outputs.value.
+          # Case-insensitive, and unrecognized values are rejected outright so a
+          # stray `-f dry_run=TRUE` or `=1` cannot silently turn into a real
+          # release (the previous exact-match `= "true"` only treated the
+          # literal lowercase string as a dry run).
           RAW="${{ github.event.inputs.dry_run }}"
-          if [ "$RAW" = "true" ]; then
-            echo "value=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=false" >> "$GITHUB_OUTPUT"
-          fi
+          NORM=$(printf '%s' "$RAW" | tr '[:upper:]' '[:lower:]')
+          case "$NORM" in
+            ""|"false") echo "value=false" >> "$GITHUB_OUTPUT" ;;
+            "true")      echo "value=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::dry_run must be true or false, got '$RAW'"; exit 1 ;;
+          esac
           echo "dry_run=$RAW"
 
       - name: Resolve release tag

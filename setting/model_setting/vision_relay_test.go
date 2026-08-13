@@ -231,8 +231,9 @@ func TestValidateVisionRelayWrite(t *testing.T) {
 	}
 }
 
-// 自环防线：base_url 指向 loopback 且 sidecall_secret 为空 → enabled=true 拒写
-func TestValidateVisionRelayWriteSelfLoopRequiresSecret(t *testing.T) {
+// 递归防线：enabled=true 且 sidecall_secret 为空 → 拒写（无条件要求，覆盖
+// loopback 与网关自身公网域名两种自环；见 ValidateVisionRelayWrite）。
+func TestValidateVisionRelayWriteEnabledRequiresSidecallSecret(t *testing.T) {
 	common.OptionMapRWMutex.Lock()
 	common.OptionMap = map[string]string{
 		"vision_relay.enabled":       "false",
@@ -245,14 +246,33 @@ func TestValidateVisionRelayWriteSelfLoopRequiresSecret(t *testing.T) {
 	common.OptionMapRWMutex.Unlock()
 
 	if err := ValidateVisionRelayWrite("vision_relay.enabled", "true"); err == nil {
-		t.Fatal("self-loop without sidecall_secret must be rejected")
+		t.Fatal("loopback without sidecall_secret must be rejected")
 	}
 
 	common.OptionMapRWMutex.Lock()
 	common.OptionMap["vision_relay.sidecall_secret"] = "secret-48-hex"
 	common.OptionMapRWMutex.Unlock()
 	if err := ValidateVisionRelayWrite("vision_relay.enabled", "true"); err != nil {
-		t.Fatalf("self-loop with sidecall_secret must pass, got: %v", err)
+		t.Fatalf("loopback with sidecall_secret must pass, got: %v", err)
+	}
+}
+
+// 非 loopback 自环：base_url 指向网关自身公网域名，secret 为空同样必须拒写
+// （旧逻辑只在 loopback 主机名时强制，会漏掉公网域名自环）。
+func TestValidateVisionRelayWritePublicDomainRequiresSidecallSecret(t *testing.T) {
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap = map[string]string{
+		"vision_relay.enabled":       "false",
+		"vision_relay.target_models": `["deepseek*"]`,
+		"vision_relay.models":        `["grok-4.5"]`,
+		"vision_relay.base_url":      "https://api.example-relay.com/v1",
+		"vision_relay.api_key":       "sk-test",
+		"vision_relay.timeout_sec":   "15",
+	}
+	common.OptionMapRWMutex.Unlock()
+
+	if err := ValidateVisionRelayWrite("vision_relay.enabled", "true"); err == nil {
+		t.Fatal("non-loopback without sidecall_secret must be rejected")
 	}
 }
 

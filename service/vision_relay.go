@@ -31,7 +31,10 @@ const relayRequestHeader = "X-NewAPI-Vision-Relay"
 type visionRelayFetcher struct{}
 
 func (visionRelayFetcher) Fetch(ctx context.Context, url string, maxBytes int64) ([]byte, string, error) {
-	client := GetSSRFProtectedHTTPClient()
+	// 用户提供的图片 URL 永远走受保护客户端，不随全局 EnableSSRFProtection
+	// 开关降级为 general client（general client 无拨号校验）。全局开关关闭时
+	// GetSSRFProtectedHTTPClientForUserInput 返回 nil → 拒绝抓取，fail closed。
+	client := GetSSRFProtectedHTTPClientForUserInput()
 	if client == nil {
 		return nil, "", fmt.Errorf("%w: protected HTTP client unavailable", vision_relay.ErrDownload)
 	}

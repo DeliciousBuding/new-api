@@ -245,8 +245,9 @@ func (v *VisionRelaySettings) ValidateEndpoint() error {
 // 语义：
 //   - enabled=true 时校验已存端点配置完整性（设置页按依赖顺序先写字段、
 //     最后写 enabled——见 vision-relay-settings-card.tsx 提交排序）
-//   - 自环场景（base_url 指向 loopback）强制 sidecall_secret 非空：
-//     secret 空时 sidecall 不携带 marker，宽 allowlist 下会无界递归放大
+//   - 自环场景强制 sidecall_secret 非空（enabled 时无条件要求，覆盖
+//     loopback 与网关自身公网域名两种自环）：secret 空时 sidecall 不携带
+//     marker，宽 allowlist 下会无界递归放大
 //   - 数组/数字/URL 键做无状态格式校验（不依赖写入顺序）
 //   - api_key/sidecall_secret 敏感键做最小格式校验（audit-2026-08 #48）：
 //     非空时禁止空白/控制字符 + 长度下限，防手滑/注入直进 DB
@@ -279,14 +280,13 @@ func ValidateVisionRelayWrite(key, value string) error {
 		if err := snap.ValidateEndpoint(); err != nil {
 			return err
 		}
-		u, err := url.Parse(strings.TrimSpace(snap.BaseURL))
-		if err != nil {
-			return err
-		}
-		host := u.Hostname()
-		if (host == "127.0.0.1" || host == "::1" || host == "localhost") &&
-			strings.TrimSpace(snap.SidecallSecret) == "" {
-			return fmt.Errorf("vision_relay.sidecall_secret is required for self-loop base_url (recursion protection)")
+		// 递归保护：enabled 时无条件要求 sidecall_secret 非空。
+		// 旧逻辑只在 base_url 为 loopback（127.0.0.1/::1/localhost）时强制，
+		// 但 base_url 同样可指向网关自身公网域名（自环）或任意内网服务；空
+		// secret 时旁路请求不带认证 marker，宽 allowlist 下会无界递归放大。
+		// sidecall_secret 成本极低（一个 16+ 字符串），无条件要求覆盖所有自环场景。
+		if strings.TrimSpace(snap.SidecallSecret) == "" {
+			return fmt.Errorf("vision_relay.sidecall_secret is required when enabled (recursion protection)")
 		}
 		return nil
 	case "vision_relay.api_key", "vision_relay.sidecall_secret":

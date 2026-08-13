@@ -36,7 +36,7 @@ func TestApplyRankingVendorFallbacks(t *testing.T) {
 		"deepseek-v3.2": 10,
 	}
 
-	applyRankingVendorFallbacksWith(meta, vendorByID, modelVendorMap)
+	applyRankingVendorFallbacksWith(meta, vendorByID, modelVendorMap, nil)
 
 	// pricing 层不被动
 	assert.Equal(t, rankingModelMeta{vendor: "OpenAI", vendorIcon: "OpenAI"}, meta["gpt-5.6-sol"])
@@ -112,7 +112,7 @@ func TestAugmentRankingMetaWithNameRules(t *testing.T) {
 			"grok-4.5-console": {vendor: rankingUnknownVendor},
 			"glm-5-turbo":      {vendor: rankingUnknownVendor},
 		}
-		augmentRankingMetaWithNameRules(meta, vendorByName)
+		augmentRankingMetaWithNameRules(meta, vendorByName, nil)
 
 		assert.Equal(t, rankingModelMeta{vendor: "OpenAI", vendorIcon: "OpenAI"}, meta["gpt-5.6-terra"])
 		assert.Equal(t, rankingModelMeta{vendor: "DeepSeek", vendorIcon: "DeepSeek.Color"}, meta["deepseek-v3.2"])
@@ -125,7 +125,7 @@ func TestAugmentRankingMetaWithNameRules(t *testing.T) {
 		meta := map[string]rankingModelMeta{
 			"gpt-5.5": {vendor: "OpenAI", vendorIcon: "OpenAI"},
 		}
-		augmentRankingMetaWithNameRules(meta, vendorByName)
+		augmentRankingMetaWithNameRules(meta, vendorByName, nil)
 		assert.Equal(t, rankingModelMeta{vendor: "OpenAI", vendorIcon: "OpenAI"}, meta["gpt-5.5"])
 	})
 
@@ -133,7 +133,7 @@ func TestAugmentRankingMetaWithNameRules(t *testing.T) {
 		meta := map[string]rankingModelMeta{
 			"mystery-model": {vendor: rankingUnknownVendor},
 		}
-		augmentRankingMetaWithNameRules(meta, vendorByName)
+		augmentRankingMetaWithNameRules(meta, vendorByName, nil)
 		assert.Equal(t, rankingModelMeta{vendor: rankingUnknownVendor}, meta["mystery-model"])
 	})
 
@@ -141,7 +141,31 @@ func TestAugmentRankingMetaWithNameRules(t *testing.T) {
 		meta := map[string]rankingModelMeta{
 			"vidu-any": {vendor: rankingUnknownVendor},
 		}
-		augmentRankingMetaWithNameRules(meta, map[string]model.PricingVendor{})
+		augmentRankingMetaWithNameRules(meta, map[string]model.PricingVendor{}, nil)
 		assert.Equal(t, rankingModelMeta{vendor: "Vidu", vendorIcon: "Vidu"}, meta["vidu-any"])
+	})
+
+	t.Run("quota-only model names get a prefix-rule entry", func(t *testing.T) {
+		// 已删目录行/别名：只出现在 quota totals，不在 pricing 也不在 models 表。
+		// 修复前它们永不进入 meta，前缀规则对其形同虚设，厂商恒为 Unknown。
+		meta := map[string]rankingModelMeta{}
+		totals := []model.RankingQuotaTotal{
+			{ModelName: "deepseek-chat-old-alias", TotalTokens: 1234},
+			{ModelName: "qwen-max-legacy", TotalTokens: 567},
+		}
+		augmentRankingMetaWithNameRules(meta, vendorByName, totals)
+
+		assert.Equal(t, rankingModelMeta{vendor: "DeepSeek", vendorIcon: "DeepSeek.Color"}, meta["deepseek-chat-old-alias"])
+		assert.Equal(t, rankingModelMeta{vendor: "阿里巴巴", vendorIcon: "Qwen.Color"}, meta["qwen-max-legacy"])
+	})
+
+	t.Run("quota-only model with no prefix match stays absent", func(t *testing.T) {
+		meta := map[string]rankingModelMeta{}
+		totals := []model.RankingQuotaTotal{
+			{ModelName: "no-such-prefix-model", TotalTokens: 1},
+		}
+		augmentRankingMetaWithNameRules(meta, vendorByName, totals)
+		_, exists := meta["no-such-prefix-model"]
+		assert.False(t, exists, "unmatched quota-only model must not be added as a dangling entry")
 	})
 }

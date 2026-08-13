@@ -17,19 +17,19 @@ import "github.com/QuantumNous/new-api/model"
 //
 // 已解析出厂商的模型不会被后层覆盖；前层优先。
 
-func applyRankingVendorFallbacks(meta map[string]rankingModelMeta, vendorByID map[int]model.PricingVendor) {
-	applyRankingVendorFallbacksWith(meta, vendorByID, model.GetModelVendorMap())
+func applyRankingVendorFallbacks(meta map[string]rankingModelMeta, vendorByID map[int]model.PricingVendor, totals []model.RankingQuotaTotal) {
+	applyRankingVendorFallbacksWith(meta, vendorByID, model.GetModelVendorMap(), totals)
 }
 
 // applyRankingVendorFallbacksWith 可注入 modelVendorMap，便于单测覆盖整体链路。
-func applyRankingVendorFallbacksWith(meta map[string]rankingModelMeta, vendorByID map[int]model.PricingVendor, modelVendorMap map[string]int) {
+func applyRankingVendorFallbacksWith(meta map[string]rankingModelMeta, vendorByID map[int]model.PricingVendor, modelVendorMap map[string]int, totals []model.RankingQuotaTotal) {
 	vendorByName := make(map[string]model.PricingVendor)
 	for _, vendor := range vendorByID {
 		vendorByName[vendor.Name] = vendor
 	}
 
 	augmentRankingMetaWithModelsTable(meta, vendorByID, modelVendorMap)
-	augmentRankingMetaWithNameRules(meta, vendorByName)
+	augmentRankingMetaWithNameRules(meta, vendorByName, totals)
 }
 
 // augmentRankingMetaWithModelsTable 第三层：models 目录里挂了 vendor_id 的
@@ -45,9 +45,30 @@ func augmentRankingMetaWithModelsTable(meta map[string]rankingModelMeta, vendorB
 	}
 }
 
-// augmentRankingMetaWithNameRules 第四层：models 表也无归属时按模型名前缀
-// 规则推断基础厂商。已解析出厂商的模型不覆盖。
-func augmentRankingMetaWithNameRules(meta map[string]rankingModelMeta, vendorByName map[string]model.PricingVendor) {
+// augmentRankingMetaWithNameRules 第四层：按模型名前缀规则推断基础厂商。
+// 已解析出厂商的模型不覆盖。
+//
+// totals 是排行榜当前周期的 quota 聚合结果，用于覆盖"仅剩历史流量"的模型名：
+// 这些模型名（软删目录行 / 别名 / 从未进 models 表）不在 pricing 也不在
+// models 表，若不传入 totals 就永远不会进入 meta，前缀规则对它们形同虚设。
+func augmentRankingMetaWithNameRules(meta map[string]rankingModelMeta, vendorByName map[string]model.PricingVendor, totals []model.RankingQuotaTotal) {
+	// 先为 totals 里出现但 meta 缺失的模型名建 entry（quota-only 模型名）。
+	for _, item := range totals {
+		if _, exists := meta[item.ModelName]; exists {
+			continue
+		}
+		vendorName, defaultIcon := model.GetDefaultVendorForModel(item.ModelName)
+		if vendorName == "" {
+			continue
+		}
+		icon := defaultIcon
+		if vendor, ok := vendorByName[vendorName]; ok && vendor.Icon != "" {
+			icon = vendor.Icon
+		}
+		meta[item.ModelName] = rankingModelMeta{vendor: vendorName, vendorIcon: icon}
+	}
+
+	// 再为 meta 里仍无厂商的模型名兜底。
 	for modelName, item := range meta {
 		if item.vendor != "" && item.vendor != rankingUnknownVendor {
 			continue

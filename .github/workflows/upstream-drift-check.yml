@@ -1,0 +1,71 @@
+name: Upstream drift check
+
+# Independent safety net for main-mirror drift. `upstream-sync.yml` reports its
+# own failures via `if: failure()`, but a startup_failure (e.g. a workflow whose
+# YAML or a pinned action is rejected before any step runs) never reaches that
+# step and opens no issue. This workflow does not depend on the sync workflow's
+# health: it re-checks the mirror itself on a schedule and reports any drift.
+
+on:
+  schedule:
+    # 30 minutes after the daily sync (02:00 UTC), plus an evening pass.
+    - cron: '30 2 * * *'
+    - cron: '0 14 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout default branch for workflow context
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Report main-mirror drift
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git remote add official https://github.com/QuantumNous/new-api.git 2>/dev/null || \
+            git remote set-url official https://github.com/QuantumNous/new-api.git
+          git fetch --quiet official '+refs/heads/main:refs/remotes/official/main'
+
+          UPSTREAM_HEAD=$(git rev-parse refs/remotes/official/main)
+          CURRENT_MAIN=$(git rev-parse refs/remotes/origin/main 2>/dev/null || echo "")
+
+          echo "Upstream main: $UPSTREAM_HEAD"
+          echo "Current main:  $CURRENT_MAIN"
+
+          if [ "$CURRENT_MAIN" = "$UPSTREAM_HEAD" ]; then
+            echo '::notice::main is in sync with upstream.'
+            exit 0
+          fi
+
+          BEHIND=$(git rev-list --count "refs/remotes/origin/main..refs/remotes/official/main" 2>/dev/null || echo "?")
+          echo "::warning::main is ${BEHIND} commit(s) behind upstream — mirror drifted."
+
+          TITLE="upstream-sync failed — main mirror drift"
+          BODY="The daily mirror check found \`main\` drifting from QuantumNous/new-api.
+
+          - upstream main: \`${UPSTREAM_HEAD}\`
+          - current main: \`${CURRENT_MAIN}\`
+          - behind by: ${BEHIND} commit(s)
+          - run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          \`main\` should be a current mirror of upstream. If the scheduled
+          \`upstream-sync.yml\` is failing (check its runs), fix the workflow,
+          then re-run it manually to close the drift."
+          EXISTING=$(gh issue list --repo "${{ github.repository }}" \
+            --search "in:title \"$TITLE\"" --state open --limit 1 --json number -q '.[0].number' 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body "$BODY"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$TITLE" --body "$BODY"
+          fi

@@ -198,7 +198,7 @@ func buildRankingsSnapshot(config rankingPeriodConfig, now time.Time) (*Rankings
 		}
 	}
 
-	meta := buildRankingModelMeta()
+	meta := buildRankingModelMeta(currentTotals)
 	totalTokens := sumRankingTokens(currentTotals)
 	previousRankByModel := rankingRankMap(previousTotals)
 	previousTokensByModel := rankingTokenMap(previousTotals)
@@ -233,7 +233,7 @@ func previousRankingTimeRange(config rankingPeriodConfig, currentStart int64) (i
 	return previousStart, previousEnd
 }
 
-func buildRankingModelMeta() map[string]rankingModelMeta {
+func buildRankingModelMeta(totals []model.RankingQuotaTotal) map[string]rankingModelMeta {
 	vendorByID := make(map[int]model.PricingVendor)
 	for _, vendor := range model.GetVendors() {
 		vendorByID[vendor.ID] = vendor
@@ -251,7 +251,7 @@ func buildRankingModelMeta() map[string]rankingModelMeta {
 		meta[pricing.ModelName] = item
 	}
 
-	applyRankingVendorFallbacks(meta, vendorByID)
+	applyRankingVendorFallbacks(meta, vendorByID, totals)
 	return meta
 }
 

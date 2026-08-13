@@ -140,6 +140,20 @@ func GetSSRFProtectedHTTPClient() *http.Client {
 	return ssrfProtectedHTTPClient
 }
 
+// GetSSRFProtectedHTTPClientForUserInput returns the SSRF-protected client for
+// fetching user-supplied URLs. Unlike GetSSRFProtectedHTTPClient, it never
+// falls back to the general client when the global SSRF-protection setting is
+// off: user-controlled URLs (e.g. vision-relay image fetches) must always be
+// dialed through the protected transport, regardless of the operator's
+// channel-level fetch setting. It returns nil when protection is unavailable,
+// so callers can fail closed instead of fetching unvalidated.
+func GetSSRFProtectedHTTPClientForUserInput() *http.Client {
+	if fetchSetting := system_setting.GetFetchSetting(); fetchSetting != nil && !fetchSetting.EnableSSRFProtection {
+		return nil
+	}
+	return ssrfProtectedHTTPClient
+}
+
 func newProxyURLConfig(parsedURL *url.URL) *proxyURLConfig {
 	return &proxyURLConfig{
 		parsedURL: parsedURL,
