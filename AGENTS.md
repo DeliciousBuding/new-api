@@ -8,7 +8,7 @@ This is an AI API gateway/proxy built with Go. It aggregates 40+ upstream AI pro
 
 ## Tech Stack
 
-- **Backend**: Go 1.22+, Gin web framework, GORM v2 ORM
+- **Backend**: Go 1.25+, Gin web framework, GORM v2 ORM
 - **Frontend**: React 19, TypeScript, Rsbuild, Base UI, Tailwind CSS
 - **Databases**: SQLite, MySQL, PostgreSQL (all three must be supported)
 - **Cache**: Redis (go-redis) + in-memory cache
@@ -158,7 +158,7 @@ This is a fork of `QuantumNous/new-api`. Branch architecture (2026-08-11 two-bra
 - **`main`** = upstream mirror (auto-synced by `upstream-sync.yml` GitHub Action, daily cron + manual). Not for direct commits.
 - **`dev`** = fork main line (**default branch**, integration + release line). Feature branches (`fix/`, `feat/`, `docs/`, `chore/`) PR into `dev`; release tags are cut from `dev`.
 - **Fork-specific files**: prefer fork-owned directories (`pkg/relay_observer/`, `pkg/vision_relay/`, `model/model_vendor_fallback.go`, `service/rankings_vendor_fallback.go`) over editing upstream files.
-- **Release images**: `ghcr.io/deliciousbuding/new-api:<tag>` — GHCR image tags trace releases (no git tags in repo).
+- **Release images**: `ghcr.io/deliciousbuding/new-api:<tag>` — GHCR image tags mirror repo release tags (`v1.0.0-td-YYYYMMDD.N`，由 `release-tag.yml` push → dispatch `docker-build.yml`)。镜像为 amd64 + arm64 原生矩阵构建（无 QEMU）；上游 electron 桌面应用与遗留 workflow 已移除。
 - **Release automation**: `release-tag.yml` (workflow_dispatch, supports `dry_run`) computes the next `v1.0.0-td-YYYYMMDD.N` tag from the `dev` branch, pushes it, and dispatches `docker-build.yml`. Full runbook: `RELEASE.md`.
 - **Branch protection**: `dev` requires the CI checks (`Backend vet, build, and test` / `Frontend typecheck, test, and build`) to pass; force push is blocked. `delete_branch_on_merge` and `allow_auto_merge` are enabled.
 - **Upstream sync**: `main` sync failures automatically open an issue titled `upstream-sync failed — main mirror drift` (deduplicated per open issue).
