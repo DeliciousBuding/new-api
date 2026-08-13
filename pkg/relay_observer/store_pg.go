@@ -56,19 +56,51 @@ const (
 	// timeout, and statement timeout").
 	bootstrapLockTimeout      = 2 * time.Second
 	bootstrapStatementTimeout = 15 * time.Second
+
+	// indexMigrationTimeout bounds a single asynchronous index build. Index
+	// construction is O(table size): on a production database the v5
+	// transcript index already spans hundreds of MB, far beyond the 15s
+	// structure timeout. CONCURRENTLY builds never block concurrent writes,
+	// so a generous budget is safe and future-proof against data growth.
+	indexMigrationTimeout = 10 * time.Minute
 )
 
-// observerMigrations is the ordered migration file list. An empty schema
-// applies every file in order; a complete v1 schema applies only the v2
-// upgrade. Each file is idempotent and runs inside the bootstrap transaction.
-// The list is frozen by convention: future migrations append a new file and a
-// new schema version constant, never mutate this list.
+// observerMigrations is the ordered structure-migration file list. Every file
+// creates or alters tables/columns/constraints and runs inside the bootstrap
+// transaction under the short lock/statement timeouts above. Index migrations
+// are deliberately NOT in this list: CREATE INDEX is O(table size), so indexes
+// are applied asynchronously via observerIndexMigrations after the structure
+// is ready, keeping NewAPI startup bounded regardless of data volume.
+//
+// The list is frozen by convention: future structure migrations append a new
+// file and a new schema version constant, never mutate existing entries.
 var observerMigrations = []string{
 	"migrations/001_v1.sql",
 	"migrations/002_v2.sql",
 	"migrations/003_v3.sql",
 	"migrations/004_v4.sql",
-	"migrations/005_v5.sql",
+}
+
+// observerIndexMigration describes one asynchronously-applied index. Index
+// creation is non-transactional (CREATE INDEX CONCURRENTLY) and idempotent via
+// a valid-index existence check; the schema version row is recorded only after
+// the index is actually built, so the version reflects the index's real
+// presence rather than an intent.
+type observerIndexMigration struct {
+	name       string // index name, checked against pg_indexes (valid only)
+	createStmt string // CREATE INDEX CONCURRENTLY statement
+	version    int    // schema version row recorded once the index exists
+}
+
+// observerIndexMigrations is the ordered index-migration list. v5 adds the
+// transcript access-path index (session_id, id) that the transcript endpoint
+// filters and orders by; before v5 that read degraded to a full-table scan.
+var observerIndexMigrations = []observerIndexMigration{
+	{
+		name:       "idx_observer_contexts_session_id_id",
+		createStmt: "CREATE INDEX CONCURRENTLY idx_observer_contexts_session_id_id ON observer_contexts (session_id, id)",
+		version:    observerSchemaV5,
+	},
 }
 
 // ErrUnsupportedDSN classifies a SQL DSN the observer cannot use: it is empty,
@@ -168,7 +200,29 @@ func OpenPGStore(ctx context.Context, dsn string, mode SchemaMode) (Store, error
 		db.Close()
 		return nil, err
 	}
+	// Structure is ready. In bootstrap mode, apply any missing index
+	// migrations asynchronously: CREATE INDEX CONCURRENTLY is O(table size)
+	// and must not block NewAPI startup or the observer's first writes. The
+	// goroutine carries its own long budget; a failure is logged and retried
+	// on the next startup (the index build is idempotent), and it never
+	// disables the observer.
+	if mode == SchemaModeBootstrap {
+		go applyIndexMigrationsAsync(db)
+	}
 	return store, nil
+}
+
+// applyIndexMigrationsAsync runs the index migrations on a background
+// goroutine with the generous indexMigrationTimeout budget. It is fire-and-
+// forget: the observer is already enabled, and a failed build is retried on
+// the next startup. A closed pool (process shutdown) simply fails the build,
+// which is logged and harmless.
+func applyIndexMigrationsAsync(db *sql.DB) {
+	ctx, cancel := context.WithTimeout(context.Background(), indexMigrationTimeout)
+	defer cancel()
+	if err := applyIndexMigrations(ctx, db); err != nil {
+		common.SysError("relayobserver: index migration failed: " + err.Error())
+	}
 }
 
 // dbtxRow is the concrete database/sql surface verify and bootstrap need;
@@ -462,12 +516,13 @@ func bootstrapSchema(ctx context.Context, db *sql.DB) error {
 	return tx.Commit()
 }
 
-// bootstrapSchemaTx applies the schema upgrades the current state needs,
-// inside the caller's transaction: an empty schema applies every migration in
-// order, a complete v1 schema applies the v2 and v3 upgrades, a complete v2
-// schema applies only the v3 upgrade, and a complete current schema is an
-// idempotent no-op. A partial or mismatched schema fails with an error and is
-// left untouched.
+// bootstrapSchemaTx applies the structure upgrades the current state needs,
+// inside the caller's transaction: an empty schema applies every structure
+// migration in order, a complete v1-v4 schema applies its pending structure
+// suffix, and a complete current schema is an idempotent no-op. A partial or
+// mismatched schema fails with an error and is left untouched. Index
+// migrations are not applied here — they run asynchronously via
+// applyIndexMigrations after the structure is ready.
 func bootstrapSchemaTx(ctx context.Context, tx dbtx, tables map[string]bool, versions []int) error {
 	switch {
 	case len(tables) == 0 && len(versions) == 0:
@@ -511,10 +566,12 @@ func applyMigrationTx(ctx context.Context, tx dbtx, file string) error {
 	return nil
 }
 
-// pendingMigrations returns the migrations a complete schema with the given
-// version rows still needs, in order: [1] yields 002 and 003; [1, 2] yields
-// 003. Version rows are 1-indexed against the migration file order, so the
-// count of applied migrations equals the number of version rows.
+// pendingMigrations returns the structure migrations a complete schema with
+// the given version rows still needs, in order: [1] yields 002, 003, 004;
+// [1, 2] yields 003, 004. Version rows are 1-indexed against the structure
+// migration file order, so the count of applied structure migrations equals
+// the number of version rows. Index migrations are excluded — they are applied
+// asynchronously, not from this list.
 func pendingMigrations(versions []int) []string {
 	var pending []string
 	for i, file := range observerMigrations {
@@ -534,6 +591,96 @@ func allRequiredTablesPresent(tables map[string]bool) bool {
 		}
 	}
 	return true
+}
+
+// applyIndexMigrations builds every missing observer index in order, outside
+// any transaction. Each index uses CREATE INDEX CONCURRENTLY so it never
+// blocks the observer's concurrent writes, and it is idempotent: a valid index
+// already present is skipped, while an invalid index left by a previous failed
+// CONCURRENTLY attempt is dropped before retrying. The schema version row is
+// recorded only after the index is actually built, so the version always
+// reflects the index's real presence. Each index runs under the generous
+// indexMigrationTimeout, not the structure bootstrap timeout.
+func applyIndexMigrations(ctx context.Context, db *sql.DB) error {
+	for _, m := range observerIndexMigrations {
+		valid, err := validIndexExists(ctx, db, m.name)
+		if err != nil {
+			return fmt.Errorf("relayobserver: index migration: check %s: %w", m.name, err)
+		}
+		if valid {
+			continue
+		}
+		// A previous CONCURRENTLY attempt may have left an INVALID index;
+		// drop it so the retry starts clean. The name is a compile-time
+		// constant, never user input.
+		if _, err := db.ExecContext(ctx, "DROP INDEX IF EXISTS "+m.name); err != nil {
+			return fmt.Errorf("relayobserver: index migration: drop stale %s: %w", m.name, err)
+		}
+		if err := buildIndexConcurrently(ctx, db, m.createStmt); err != nil {
+			return fmt.Errorf("relayobserver: index migration: build %s: %w", m.name, err)
+		}
+		if err := recordIndexVersion(ctx, db, m.version); err != nil {
+			return fmt.Errorf("relayobserver: index migration: record version %d: %w", m.version, err)
+		}
+	}
+	return nil
+}
+
+// validIndexExists reports whether the named index exists and is VALID in the
+// current schema. An index left INVALID by a failed CREATE INDEX CONCURRENTLY
+// must not count as present, so it is dropped and rebuilt on the next pass.
+func validIndexExists(ctx context.Context, db *sql.DB, name string) (bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT EXISTS (
+		SELECT 1
+		FROM pg_class c
+		JOIN pg_index i ON i.indexrelid = c.oid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = current_schema()
+		  AND c.relname = $1
+		  AND i.indisvalid)`, name)
+	if err != nil {
+		return false, err
+	}
+	defer closeRows(rows)
+	if !rows.Next() {
+		return false, errors.New("relayobserver: index migration: no result row")
+	}
+	var exists bool
+	if err := rows.Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, rows.Err()
+}
+
+// buildIndexConcurrently executes one CREATE INDEX CONCURRENTLY on a dedicated
+// connection with a session-level statement timeout matching the generous
+// indexMigrationTimeout. CONCURRENTLY cannot run inside a transaction, so the
+// statement executes on a fresh connection outside the bootstrap transaction.
+func buildIndexConcurrently(ctx context.Context, db *sql.DB, stmt string) error {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	// Session-level timeout on this dedicated connection only; the pool's
+	// other connections keep their normal limits. Milliseconds avoids the
+	// float-second rounding of SET statement_timeout = '600000ms' vs '600s'.
+	ms := int64(indexMigrationTimeout / time.Millisecond)
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf("SET statement_timeout = '%d'", ms)); err != nil {
+		return err
+	}
+	_, err = conn.ExecContext(ctx, stmt)
+	return err
+}
+
+// recordIndexVersion records the schema version row for a built index,
+// idempotently. It is a separate statement from the index build so the version
+// row is only present once the index actually exists.
+func recordIndexVersion(ctx context.Context, db *sql.DB, version int) error {
+	_, err := db.ExecContext(ctx, `INSERT INTO observer_schema_versions (version, applied_at)
+		VALUES ($1, now())
+		ON CONFLICT (version) DO NOTHING`, version)
+	return err
 }
 
 // insertTurnSQL inserts one turn row with a store-generated row UUID and

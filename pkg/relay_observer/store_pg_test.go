@@ -386,10 +386,10 @@ func TestBootstrapSchemaTxBranches(t *testing.T) {
 		name     string
 		versions []int
 	}{
-		{name: "complete v1 applies v2 through v5", versions: []int{1}},
-		{name: "complete v2 applies v3 through v5", versions: []int{1, 2}},
-		{name: "complete v3 applies v4 and v5", versions: []int{1, 2, 3}},
-		{name: "complete v4 applies only v5", versions: []int{1, 2, 3, 4}},
+		{name: "complete v1 applies v2 through v4", versions: []int{1}},
+		{name: "complete v2 applies v3 through v4", versions: []int{1, 2}},
+		{name: "complete v3 applies v4", versions: []int{1, 2, 3}},
+		{name: "complete v4 applies no structure migration", versions: []int{1, 2, 3, 4}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			fx := &fakeDbtx{}
@@ -447,14 +447,33 @@ func TestBootstrapSchemaTxBranches(t *testing.T) {
 	})
 }
 
-// TestPendingMigrations locks the pending-migration mapping: the version row
-// count selects the migration suffix that still needs to run.
+// TestPendingMigrations locks the pending structure-migration mapping: the
+// version row count selects the structure suffix that still needs to run.
+// Index migrations are excluded — they are applied asynchronously.
 func TestPendingMigrations(t *testing.T) {
-	assert.Equal(t, []string{"migrations/002_v2.sql", "migrations/003_v3.sql", "migrations/004_v4.sql", "migrations/005_v5.sql"}, pendingMigrations([]int{1}))
-	assert.Equal(t, []string{"migrations/003_v3.sql", "migrations/004_v4.sql", "migrations/005_v5.sql"}, pendingMigrations([]int{1, 2}))
-	assert.Equal(t, []string{"migrations/004_v4.sql", "migrations/005_v5.sql"}, pendingMigrations([]int{1, 2, 3}))
-	assert.Equal(t, []string{"migrations/005_v5.sql"}, pendingMigrations([]int{1, 2, 3, 4}))
+	assert.Equal(t, []string{"migrations/002_v2.sql", "migrations/003_v3.sql", "migrations/004_v4.sql"}, pendingMigrations([]int{1}))
+	assert.Equal(t, []string{"migrations/003_v3.sql", "migrations/004_v4.sql"}, pendingMigrations([]int{1, 2}))
+	assert.Equal(t, []string{"migrations/004_v4.sql"}, pendingMigrations([]int{1, 2, 3}))
+	assert.Empty(t, pendingMigrations([]int{1, 2, 3, 4}))
 	assert.Empty(t, pendingMigrations([]int{1, 2, 3, 4, 5}))
+}
+
+// TestObserverIndexMigrations locks the asynchronous index-migration contract:
+// every entry names its index, carries a CONCURRENTLY create statement that
+// mentions that name, and maps to a positive schema version. The v5 transcript
+// index specifically targets observer_contexts (session_id, id).
+func TestObserverIndexMigrations(t *testing.T) {
+	require.NotEmpty(t, observerIndexMigrations)
+	for _, m := range observerIndexMigrations {
+		require.NotEmpty(t, m.name, "index name must be set")
+		require.NotEmpty(t, m.createStmt, "create statement must be set")
+		assert.Contains(t, m.createStmt, "CONCURRENTLY", "index build must not block writes: %s", m.name)
+		assert.Contains(t, m.createStmt, m.name, "create statement must name its index")
+		assert.Greater(t, m.version, 0, "index must map to a positive schema version")
+	}
+	assert.Equal(t, observerSchemaV5, observerIndexMigrations[0].version)
+	assert.Equal(t, "idx_observer_contexts_session_id_id", observerIndexMigrations[0].name)
+	assert.Contains(t, observerIndexMigrations[0].createStmt, "(session_id, id)")
 }
 
 // TestReadSchemaVersions locks the version listing: rows come back in version
@@ -487,13 +506,13 @@ func TestMissingObserverTables(t *testing.T) {
 	assert.Equal(t, requiredObserverTables[3:], missing)
 }
 
-// TestMigrationsEmbedded locks the embedded migration set: all files exist,
-// 001 creates the v1 version row, 002 adds retention metadata, 003 adds query
-// indexes, 004 fixes provider-scoped session-alias identity, and 005 adds the
-// transcript session index. The observer schema is never complete without all
-// version rows.
+// TestMigrationsEmbedded locks the embedded structure-migration set: all files
+// exist, 001 creates the v1 version row, 002 adds retention metadata, 003 adds
+// query indexes, and 004 fixes provider-scoped session-alias identity. The v5
+// transcript index is an asynchronous index migration (observerIndexMigrations),
+// not an embedded structure file.
 func TestMigrationsEmbedded(t *testing.T) {
-	require.Len(t, observerMigrations, 5)
+	require.Len(t, observerMigrations, 4)
 	for _, file := range observerMigrations {
 		data, err := migrationsFS.ReadFile(file)
 		require.NoError(t, err, "migration %s must be embedded", file)
@@ -532,12 +551,4 @@ func TestMigrationsEmbedded(t *testing.T) {
 	assert.Contains(t, body4, "idx_observer_session_aliases_identity")
 	assert.Contains(t, body4, "alias_digest,\n        provider")
 	assert.Contains(t, body4, "VALUES (4, now())")
-
-	v5, err := migrationsFS.ReadFile(observerMigrations[4])
-	require.NoError(t, err)
-	body5 := strings.ReplaceAll(string(v5), "\r\n", "\n")
-	// The transcript endpoint filters observer_contexts by session_id and
-	// orders by id; the composite index serves exactly that shape.
-	assert.Contains(t, body5, "CREATE INDEX IF NOT EXISTS idx_observer_contexts_session_id_id ON observer_contexts (session_id, id)")
-	assert.Contains(t, body5, "VALUES (5, now())")
 }
