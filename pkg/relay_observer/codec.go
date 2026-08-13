@@ -183,11 +183,12 @@ func encodeItem(item CanonicalItem) (payload []byte, logical int64, err error) {
 
 // decodeItem decompresses and validates one stored content payload. The
 // declared logical byte count and the stored digest come from the content
-// row; the HMAC key re-verifies the item's content-layer digest. Gap markers
-// skip the re-digest step: v1 rows may hold markers keyed by a dropped item's
-// digest (the pre-self-checksum scheme), so re-verifying them would fail
-// closed on legitimate old data; the structural checks (frame, length, JSON)
-// still apply. Without the key, the structural checks also apply. Every
+// row; the HMAC key re-verifies the item's content-layer digest, including
+// gap markers (they are written with a self-checksum digest like every other
+// item, so they verify the same way). The legacy v1 pre-self-checksum
+// exemption is deliberately dropped: a forged gap digest now fails closed,
+// which is the correct behavior for tampered truncation evidence. Without
+// the key, only the structural checks (frame, length, JSON) apply. Every
 // failure is classified.
 func decodeItem(payload []byte, wantDigest string, wantLogical int64, key string) (CanonicalItem, error) {
 	if wantLogical > maxItemDecodeBytes {
@@ -210,7 +211,7 @@ func decodeItem(payload []byte, wantDigest string, wantLogical int64, key string
 	if err := common.Unmarshal(raw, &item); err != nil {
 		return CanonicalItem{}, classifiedErrorWrap(ContentErrCorrupt, "decode canonical item JSON", err)
 	}
-	if item.Kind != CanonicalKindGap && key != "" && wantDigest != "" {
+	if key != "" && wantDigest != "" {
 		// Re-compute the digest over the already-parsed item with the digest
 		// field cleared. The old path re-unmarshaled and re-marshaled the raw
 		// bytes just to do this; the item is already in hand, so clearing the

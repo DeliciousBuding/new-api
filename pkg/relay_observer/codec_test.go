@@ -14,9 +14,8 @@ import (
 // flipped, oversized, length-mismatched, or digest-mismatched payloads with a
 // classified ContentError; a decode never silently produces wrong content.
 // The digest rule mirrors the normalizer contract: an item's Hmac covers its
-// content layer (all fields except the digest itself), and a gap marker's
-// Hmac is the digest of the dropped tail start, not a self-checksum, so gap
-// markers skip the re-digest step.
+// content layer (all fields except the digest itself), and gap markers use
+// the same self-checksum, so they re-verify like every other item.
 
 // sampleItem returns a canonical message item with a valid content-layer
 // digest for the test key.
@@ -193,18 +192,18 @@ func TestDecodeRejectsDigestMismatch(t *testing.T) {
 	assert.Equal(t, ContentErrDigestMismatch, code)
 }
 
-// TestDecodeSkipsDigestForGapMarker locks the gap-marker rule: decode
-// validates a gap item's shape but does not re-digest it, because v1 rows
-// may hold markers keyed by a dropped item's digest (the pre-self-checksum
-// scheme) and re-verifying those would fail closed on legitimate old data.
-// The marker itself still roundtrips.
-func TestDecodeSkipsDigestForGapMarker(t *testing.T) {
+// TestDecodeVerifiesGapMarkerDigest locks the gap-marker rule change: a gap
+// item now re-verifies its content-layer digest like every other item. The
+// legacy v1 pre-self-checksum exemption is gone — a forged or placeholder
+// gap digest fails closed, which is the correct behavior for tampered
+// truncation evidence. A properly self-checksummed gap item still roundtrips.
+func TestDecodeVerifiesGapMarkerDigest(t *testing.T) {
 	gap := CanonicalItem{
 		Kind:         CanonicalKindGap,
 		LogicalBytes: 42,
-		Hmac:         "a1b2c3", // short non-self value: still accepted, shape-only check
 		Truncated:    true,
 	}
+	gap.Hmac = digestOfItem(t, gap)
 	logical := itemJSONBytes(t, gap)
 	payload, _, err := encodeItem(gap)
 	require.NoError(t, err)
@@ -212,6 +211,13 @@ func TestDecodeSkipsDigestForGapMarker(t *testing.T) {
 	got, err := decodeItem(payload, gap.Hmac, logical, testHMACKey)
 	require.NoError(t, err)
 	assert.Equal(t, gap, got)
+
+	// A placeholder digest (or a forged legacy value) must fail closed.
+	_, err = decodeItem(payload, "a1b2c3", logical, testHMACKey)
+	require.Error(t, err)
+	code, ok := ContentErrorOf(err)
+	require.True(t, ok)
+	assert.Equal(t, ContentErrDigestMismatch, code)
 }
 
 // TestDecodeWithoutKeySkipsDigest locks the keyless decode path: without the

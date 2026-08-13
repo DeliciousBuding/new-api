@@ -316,6 +316,16 @@ func TestResolveScopeDetection(t *testing.T) {
 	h = http.Header{}
 	h.Set("X-App", "claude-desktop/1.0")
 	assert.Equal(t, ScopeUnknown, DetectSessionScope(h))
+
+	// Claude CLI carries a non-codex Originator (curl/8.0) plus the X-App
+	// chain: the non-codex Originator must fall through to X-App, not return
+	// ScopeUnknown and silently drop the session. Mirrors
+	// service.DetectClientProfile's own corpus.
+	h = http.Header{}
+	h.Set("Originator", "curl/8.0")
+	h.Set("X-App", "claude-cli/1.0")
+	h.Set("X-Claude-Code-Session-Id", "c-1")
+	assert.Equal(t, ScopeClaudeCLI, DetectSessionScope(h))
 }
 
 // TestResolveDesktopScopeHasChain covers the codex_desktop scope resolving

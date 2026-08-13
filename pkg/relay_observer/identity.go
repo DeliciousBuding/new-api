@@ -149,9 +149,11 @@ func DetectSessionScope(h http.Header) SessionScope {
 		case strings.HasPrefix(v, "codex_desktop"):
 			return ScopeCodexDesktop
 		}
-		// Other codex variants (codex_app, codex_vscode, codex_browser) have
-		// no session identity chain in this phase.
-		return ScopeUnknown
+		// A non-codex Originator (for example curl/8.0, which Claude CLI
+		// sends) is not a scope by itself: fall through to the X-Codex-* and
+		// X-App chains below, mirroring service.DetectClientProfile. Returning
+		// ScopeUnknown here would silently drop Claude CLI sessions that carry
+		// an Originator.
 	}
 	for _, name := range []string{"X-Codex-Turn-State", "X-Codex-Turn-Metadata", "X-Codex-Window-Id", "X-OpenAI-Subagent"} {
 		if h.Get(name) != "" {

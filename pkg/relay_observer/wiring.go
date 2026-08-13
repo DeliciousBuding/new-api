@@ -262,11 +262,18 @@ func (r *Runtime) HMACKey() string {
 }
 
 // disableLocked moves the runtime into the fail-open disabled state with a
-// safe reason. Caller holds r.mu.
+// safe reason. Caller holds r.mu. The observer is strictly fail-open (NewAPI
+// still starts), but a disable for any reason other than an explicit off
+// switch is an operational signal that must not be silent — log it exactly
+// once here, with the safe reason only (never the raw error, which may
+// contain secrets).
 func (r *Runtime) disableLocked(reason ReasonCode) {
 	r.state = stateDisabled
 	r.reason = reason
 	r.publishable.Store(false)
+	if reason != ReasonDisabled {
+		common.SysError("relayobserver: disabled (reason=" + string(reason) + ")")
+	}
 }
 
 // CanPublish reports whether the request-path hooks may allocate observer
