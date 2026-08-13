@@ -145,10 +145,10 @@ func TestIntegrationMigrationLifecycle(t *testing.T) {
 		name       string
 		migrations int
 	}{
-		{name: "v1 upgrades through v5", migrations: 1},
-		{name: "v2 upgrades through v5", migrations: 2},
-		{name: "v3 upgrades through v5", migrations: 3},
-		{name: "v4 upgrades through v5", migrations: 4},
+		{name: "v1 upgrades through v4", migrations: 1},
+		{name: "v2 upgrades through v4", migrations: 2},
+		{name: "v3 upgrades through v4", migrations: 3},
+		{name: "v4 upgrades through v4", migrations: 4},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cleanupObserverSchema(t, db)
@@ -164,10 +164,17 @@ func TestIntegrationMigrationLifecycle(t *testing.T) {
 			require.NoError(t, store.Close(ctx))
 
 			store, err = OpenPGStore(ctx, dsn, SchemaModeBootstrap)
-			require.NoError(t, err, "bootstrap must upgrade the prefix to current")
+			require.NoError(t, err, "bootstrap must upgrade the prefix to current structure")
 			require.NoError(t, store.Close(ctx))
+			// Structure migrates synchronously; the index migration runs
+			// asynchronously, so bootstrap leaves [1,2,3,4] and the v5 index
+			// is applied separately (idempotently) below.
+			assertSchemaVersions(t, db, []int{1, 2, 3, 4})
+			assertStructureSchemaShape(t, db)
+
+			require.NoError(t, applyIndexMigrations(ctx, db))
 			assertSchemaVersions(t, db, []int{1, 2, 3, 4, 5})
-			assertCurrentSchemaShape(t, db)
+			assertV5TranscriptIndex(t, db)
 		})
 	}
 
@@ -202,16 +209,24 @@ func TestIntegrationMigrationLifecycle(t *testing.T) {
 	_, err = db.Exec("DELETE FROM observer_schema_versions WHERE version = 99")
 	require.NoError(t, err)
 
-	// A fully empty schema bootstraps straight to the current version.
+	// A fully empty schema bootstraps straight to the current structure, then
+	// the index migration completes it.
 	cleanupObserverSchema(t, db)
 	store, err = OpenPGStore(ctx, dsn, SchemaModeBootstrap)
 	require.NoError(t, err, "bootstrap must create the current schema on an empty database")
 	require.NoError(t, store.Close(ctx))
+	assertSchemaVersions(t, db, []int{1, 2, 3, 4})
+	assertStructureSchemaShape(t, db)
+	require.NoError(t, applyIndexMigrations(ctx, db))
 	assertSchemaVersions(t, db, []int{1, 2, 3, 4, 5})
-	assertCurrentSchemaShape(t, db)
+	assertV5TranscriptIndex(t, db)
 }
 
-func assertCurrentSchemaShape(t *testing.T, db *sql.DB) {
+// assertStructureSchemaShape asserts the structure-only shape after bootstrap:
+// the v2 created_at column, the v3 composite indexes, and the v4 alias
+// identity index. The v5 transcript index is asserted separately after the
+// asynchronous index migration runs.
+func assertStructureSchemaShape(t *testing.T, db *sql.DB) {
 	t.Helper()
 	var colExists bool
 	require.NoError(t, db.QueryRow(`SELECT EXISTS (SELECT 1 FROM information_schema.columns
@@ -222,7 +237,6 @@ func assertCurrentSchemaShape(t *testing.T, db *sql.DB) {
 	assert.Zero(t, notNull, "created_at is NOT NULL")
 	assertV3Indexes(t, db)
 	assertV4AliasIndex(t, db)
-	assertV5TranscriptIndex(t, db)
 }
 
 // assertV5TranscriptIndex asserts the v5 transcript index exists with the
