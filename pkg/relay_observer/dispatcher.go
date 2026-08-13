@@ -786,6 +786,11 @@ func (d *Dispatcher) openCircuit() {
 	if d.circuitCooldown > maxCooldown {
 		d.circuitCooldown = maxCooldown
 	}
+	// Circuit transitions are operator-visible events: a silently open
+	// circuit looks identical to a healthy one in the status counters until
+	// someone polls CircuitOpen. Log the transition so a store outage or code
+	// bug is not mistaken for a quiet observer.
+	common.SysError("relayobserver: circuit opened (cooldown " + cd.String() + ")")
 }
 
 // closeCircuit closes the circuit and resets the cooldown to its initial
@@ -793,6 +798,7 @@ func (d *Dispatcher) openCircuit() {
 func (d *Dispatcher) closeCircuit() {
 	d.circuitState.Store(int32(circuitClosed))
 	d.circuitCooldown = initialCooldown
+	common.SysLog("relayobserver: circuit closed")
 }
 
 // closeCircuitAfterDrainingBacklog drops every event still queued before the
@@ -825,9 +831,13 @@ func (d *Dispatcher) closeCircuitAfterDrainingBacklog() {
 
 // onWorkerPanic treats any worker panic as a failed write: the current batch
 // is dropped and counted, the circuit opens, and the worker is restarted by
-// run. Reservations were already released when each event was received.
+// run. Reservations were already released when each event was received. The
+// recovered value is logged so a code bug (not just a store outage) leaves
+// evidence; without it a crash-looping worker looks identical to a healthy
+// circuit cycle in the status counters.
 func (d *Dispatcher) onWorkerPanic(r any, batch []queuedEvent) {
 	d.droppedTotal.Add(int64(len(batch)))
+	common.SysError(fmt.Sprintf("relayobserver: worker panic: %v", r))
 	d.openCircuit()
 }
 

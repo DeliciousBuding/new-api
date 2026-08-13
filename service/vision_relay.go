@@ -140,7 +140,13 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 		return visionRelayFail(relayInfo, "enhance", &cfg, &stats, err)
 	}
 	if enhanced == nil {
-		return nil // 真 no-op：无图，原始状态完全不动
+		// 真 no-op：无图。上面的 io.ReadAll 已把共享 BodyStorage 的偏移
+		// 推到 EOF；回绕到 0 才能兑现"原始状态完全不动"的契约，否则后续
+		// 读取 c.Request.Body 的消费者会拿到空 body。
+		if _, err := originalStorage.Seek(0, io.SeekStart); err != nil {
+			return visionRelayFail(relayInfo, "seek_body", &cfg, nil, fmt.Errorf("rewind body storage: %w", err))
+		}
+		return nil
 	}
 
 	// 8. 先验证增强 JSON 能反序列化为正确请求 DTO（提交前验证，防半提交）

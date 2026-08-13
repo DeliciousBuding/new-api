@@ -13,6 +13,7 @@ func TestVisionRelayValidate(t *testing.T) {
 	valid.APIKey = "sk-test"
 	valid.TargetModels = []string{"deepseek*"}
 	valid.BaseURL = "https://vision.example.com"
+	valid.SidecallSecret = "test-sidecall-secret-123"
 
 	cases := []struct {
 		name    string

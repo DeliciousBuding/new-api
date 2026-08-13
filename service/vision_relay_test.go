@@ -31,12 +31,13 @@ func setupVisionRelayEnv(t *testing.T, visionURL string, enabled bool) (*gin.Con
 	t.Helper()
 	common.OptionMapRWMutex.Lock()
 	common.OptionMap = map[string]string{
-		"vision_relay.enabled":       "false",
-		"vision_relay.target_models": `["deepseek*"]`,
-		"vision_relay.models":        `["vision-model-a"]`,
-		"vision_relay.base_url":      visionURL,
-		"vision_relay.api_key":       "sk-test",
-		"vision_relay.timeout_sec":   "5",
+		"vision_relay.enabled":         "false",
+		"vision_relay.target_models":   `["deepseek*"]`,
+		"vision_relay.models":          `["vision-model-a"]`,
+		"vision_relay.base_url":        visionURL,
+		"vision_relay.api_key":         "sk-test",
+		"vision_relay.sidecall_secret": "test-sidecall-secret-123",
+		"vision_relay.timeout_sec":     "5",
 	}
 	if enabled {
 		common.OptionMap["vision_relay.enabled"] = "true"

@@ -234,6 +234,14 @@ func (v *VisionRelaySettings) ValidateEndpoint() error {
 		if len(v.Models) == 0 {
 			return fmt.Errorf("models must not be empty when enabled")
 		}
+		// 递归保护必须在运行时也强制：写时校验（ValidateVisionRelayWrite）
+		// 已要求 enabled 时 secret 非空，但 secret 可被后续写空值清空（敏感键
+		// 空值放行）或直接改库。运行时这层是最终防线——空 secret 会让旁路请求
+		// 不带认证 marker，base_url 自环（loopback 或自身公网域名）时无界递归
+		// 放大。此处 fail-closed 拒绝，而不是无 marker 继续。
+		if strings.TrimSpace(v.SidecallSecret) == "" {
+			return fmt.Errorf("sidecall_secret must not be empty when enabled (recursion protection)")
+		}
 	}
 	return nil
 }

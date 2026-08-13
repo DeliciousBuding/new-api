@@ -259,11 +259,14 @@ func buildTurnEvent(c *gin.Context, info *relaycommon.RelayInfo, usage TurnUsage
 	}
 	// Dual-opt-in IP capture (SSOT IP And GeoIP): the effective trust tier of
 	// the running configuration comes from the runtime status, which is
-	// "none" unless both opt-ins hold. Capture is in-memory only — the
-	// peer string is parsed into the event; persistence lands with T2.3, and
-	// no GeoIP lookup happens here.
+	// "none" unless both opt-ins hold at startup. The system-level opt-in
+	// (common.LogRecordIpEnabled) is a runtime-dynamic option, so it is
+	// re-checked here on every request — an operator who turns IP logging off
+	// mid-process stops capture immediately, without a restart. Capture is
+	// in-memory only: the peer string is parsed into the event; persistence
+	// lands with T2.3, and no GeoIP lookup happens here.
 	status := relayObserverSnapshot().Status()
-	if status.Enabled && status.IPTrust != relayobserver.IPTrustNone {
+	if status.Enabled && status.IPTrust != relayobserver.IPTrustNone && common.LogRecordIpEnabled {
 		ev.ClientIP, ev.IPTrust = relayobserver.CaptureClientIP(status.IPTrust, c.ClientIP())
 	}
 	if st := turnObserverStateFrom(c); st != nil {

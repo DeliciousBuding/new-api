@@ -62,8 +62,10 @@ func PrepareImage(ctx context.Context, p Patch, fetcher ImageFetcher, maxBytes i
 		img.Data = data
 		if mediaType != "" {
 			// 回填真实 Content-Type：OpenAI URL 块默认 image/png（transform.go），
-			// 实际可能是 JPEG/WebP——小图透传分支按真实 mime 发给视觉端点
-			p.Source.MediaType = mediaType
+			// 实际可能是 JPEG/WebP——小图透传分支按真实 mime 发给视觉端点。
+			// 必须写到 img.Patch（存储的副本）而非局部参数 p：p 是值拷贝，
+			// 改 p.Source 会让下游 CompressForVision 永远看到默认 image/png。
+			img.Patch.Source.MediaType = mediaType
 		}
 	} else {
 		img.Err = fmt.Errorf("%w: block has neither data nor url", ErrExtract)
