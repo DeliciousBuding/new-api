@@ -326,6 +326,21 @@ func (f *fakeContentTx) Exec(ctx context.Context, query string, args ...any) (sq
 			}
 		}
 		return fakeResult{n: 1}, nil
+	case strings.Contains(query, "DELETE FROM observer_sessions"):
+		// deleteOrphanSessionTx: a losing concurrent claim removes the fresh
+		// session it created, but only while that session has no turns and no
+		// alias bindings — the same guarded predicate as the real adapter.
+		sid := args[0].(string)
+		if f.counts[sid][0] != 0 {
+			return fakeResult{n: 0}, nil
+		}
+		for _, bound := range f.aliases {
+			if bound == sid {
+				return fakeResult{n: 0}, nil
+			}
+		}
+		delete(f.sessions, sid)
+		return fakeResult{n: 1}, nil
 	case strings.Contains(query, "DELETE FROM observer_contexts"):
 		sid := args[0].(string)
 		cp := args[1].(int64)
