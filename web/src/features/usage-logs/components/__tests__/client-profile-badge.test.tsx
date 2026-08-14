@@ -76,6 +76,7 @@ describe('ClientProfileBadge', () => {
     'codex_app',
     'claude_cli',
     'claude_desktop',
+    'claude_desktop_3p',
     'claude_plugin',
     'claude_app',
     'claude_sdk',

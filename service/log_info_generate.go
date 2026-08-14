@@ -71,7 +71,7 @@ func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other
 
 // DetectClientProfile 按官方渠道亲和性同源的头清单识别客户端，返回细粒度档位：
 //   - codex_cli / codex_desktop / codex_app / codex_vscode / codex_browser（Originator 前缀 + X-Codex-* 头 + UA 兜底）
-//   - claude_cli / claude_desktop / claude_plugin / claude_app（X-App 值 + claude-cli UA 细分）
+//   - claude_cli / claude_desktop / claude_desktop_3p / claude_plugin / claude_app（X-App 值 + claude-cli UA 细分 + claude-desktop-3p 第三方桌面）
 //   - claude_sdk / openai_sdk / mistral_sdk / cohere_sdk / ai_sdk（Stainless 生态官方 SDK UA）
 //   - gemini_cli / gemini_code_assist / gemini_sdk（Gemini-CLI UA / CloudCodeVSCode / google-genai、genai-py、Vertex SDK UA）
 //   - litellm（UA + x-litellm-* 头）
@@ -206,6 +206,11 @@ func DetectClientProfile(c *gin.Context) string {
 	case strings.Contains(ua, "codex"):
 		return "codex_cli"
 	// Claude 族（UA 层兜底；X-App 头已在上层细分）
+	case strings.Contains(ua, "claude-desktop-3p"):
+		// 第三方 Claude Desktop 应用（UA 形态为 claude-cli/<ver> (external,
+		// claude-desktop-3p, agent-sdk/<ver>)），与官方 Claude Desktop（X-App:
+		// desktop）区分。须置于 claude-cli/ 之前，因该 UA 以 claude-cli/ 为前缀。
+		return "claude_desktop_3p"
 	case strings.Contains(ua, "claude-cli/"):
 		switch {
 		case strings.Contains(ua, "desktop"):
@@ -215,8 +220,6 @@ func DetectClientProfile(c *gin.Context) string {
 		default:
 			return "claude_cli"
 		}
-	case strings.Contains(ua, "claude-desktop-3p"):
-		return "claude_desktop"
 	case strings.Contains(ua, "claude/") && (strings.Contains(ua, "electron") || strings.Contains(ua, "msix")):
 		return "claude_desktop"
 	// 官方 SDK / 平台客户端。Stainless 生成器覆盖 OpenAI/Anthropic/Mistral/Groq/

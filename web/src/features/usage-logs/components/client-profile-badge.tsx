@@ -19,6 +19,7 @@ export const BRAND_ICONS: Partial<Record<ClientProfile, string>> = {
   codex_browser: 'Codex.Color',
   claude_cli: 'ClaudeCode.Color',
   claude_desktop: 'Claude.Color',
+  claude_desktop_3p: 'Claude.Color',
   claude_plugin: 'Claude.Color',
   claude_app: 'Claude.Color',
   claude_sdk: 'Claude.Color',
