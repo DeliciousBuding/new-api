@@ -325,6 +325,7 @@ export const CLIENT_PROFILE_LABELS: Record<string, string> = {
   claude_cli: 'Claude CLI',
   claude_desktop: 'Claude Desktop',
   claude_desktop_3p: 'Claude Desktop (3P)',
+  claude_vscode: 'Claude VSCode',
   claude_plugin: 'Claude Plugin',
   claude_app: 'Claude App',
   claude_sdk: 'Claude SDK',

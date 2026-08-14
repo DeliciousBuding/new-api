@@ -858,6 +858,7 @@ func (d *Dispatcher) planContent(batch []queuedEvent) []ContentInput {
 		appends = append(appends, ContentInput{
 			NodeScope:       ev.NodeScope,
 			UserID:          ev.UserID,
+			ClientProfile:   ev.ClientProfile,
 			Aliases:         aliases,
 			PreviousAliases: previousAliases,
 			TurnID:          turnRowID(ev.NodeScope, ev.EventID),

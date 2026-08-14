@@ -86,6 +86,30 @@ func TestDetectClientProfile(t *testing.T) {
 			want: "claude_plugin",
 		},
 		{
+			name: "claude cli x-app with vscode ua variant",
+			headers: map[string]string{
+				"X-App":      "cli",
+				"User-Agent": "claude-cli/2.1.232 (external, claude-vscode, agent-sdk/0.3.232)",
+			},
+			want: "claude_vscode",
+		},
+		{
+			name: "claude cli x-app with desktop-3p ua variant",
+			headers: map[string]string{
+				"X-App":      "cli",
+				"User-Agent": "claude-cli/2.1.227 (external, claude-desktop-3p, agent-sdk/0.3.227)",
+			},
+			want: "claude_desktop_3p",
+		},
+		{
+			name: "claude cli x-app with plain cli ua",
+			headers: map[string]string{
+				"X-App":      "cli",
+				"User-Agent": "claude-cli/2.1.154 (external, cli)",
+			},
+			want: "claude_cli",
+		},
+		{
 			name: "anthropic sdk version header only",
 			headers: map[string]string{
 				"Anthropic-Version": "2023-06-01",
@@ -580,7 +604,7 @@ func TestDetectClientProfile(t *testing.T) {
 		{
 			name:    "claude cli vscode ua",
 			headers: map[string]string{"User-Agent": "claude-cli/2.1.185 (external, claude-vscode, agent-sdk/0.3.185)"},
-			want:    "claude_plugin",
+			want:    "claude_vscode",
 		},
 		{
 			name:    "claude desktop electron msix ua",

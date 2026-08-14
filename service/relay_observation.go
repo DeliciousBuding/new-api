@@ -206,6 +206,7 @@ func buildTurnEvent(c *gin.Context, info *relaycommon.RelayInfo, usage TurnUsage
 		OccurredAt:         time.Now(),
 		UserID:             int64(info.UserId),
 		TokenID:            int64(info.TokenId),
+		ClientProfile:      DetectClientProfile(c),
 		Model:              info.OriginModelName,
 		UpstreamModel:      info.UpstreamModelName,
 		RelayFormat:        string(info.GetFinalRequestRelayFormat()),
