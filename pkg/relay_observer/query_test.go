@@ -1060,6 +1060,57 @@ func TestTranscriptDivergenceShowsEditedMessages(t *testing.T) {
 	assert.Equal(t, int64(1), page.Items[2].TurnSeq)
 }
 
+// TestTranscriptMultiGroupFlatten locks the cached-checkpoint flatten across
+// group boundaries: several groups (each a full checkpoint followed by
+// deltas) must emit the append-only message stream exactly once, in order,
+// with no message duplicated or dropped when the cached full checkpoint is
+// swapped at each rotate.
+func TestTranscriptMultiGroupFlatten(t *testing.T) {
+	f := newFakeQueryDB()
+	sid := uuid.MustParse("00000000-0000-0000-0000-0000000000aa")
+	s := sid.String()
+	store := func(i int) string {
+		it := CanonicalItem{Kind: "text", Role: "user", LogicalBytes: 4, Hmac: fmt.Sprintf("%064x", i)}
+		payload, logical, err := encodeItem(it)
+		require.NoError(t, err)
+		f.objects[it.Hmac] = contentObjectRow{payload: payload, logicalBytes: logical}
+		return it.Hmac
+	}
+	m := make([]string, 8)
+	for i := range m {
+		m[i] = store(i)
+	}
+	// Three storage groups. Group 1: checkpoint 1 with two deltas (each delta
+	// stores the cumulative suffix since the full checkpoint); group 2: rotate
+	// at checkpoint 4; group 3: rotate at checkpoint 6. The flattened stream
+	// is m0..m7 — turn 0 contributes m0,m1, then one new message per turn.
+	f.contexts = []fakeContextRow{
+		{id: 1, sessionID: s, turnID: "00000000-0000-0000-0000-000000000001", checkpointID: 1, ordinal: 0, prefix: 0, itemCount: 2, digests: []string{m[0], m[1]}},
+		{id: 2, sessionID: s, turnID: "00000000-0000-0000-0000-000000000002", checkpointID: 1, ordinal: 1, prefix: 2, itemCount: 3, digests: []string{m[2]}},
+		{id: 3, sessionID: s, turnID: "00000000-0000-0000-0000-000000000003", checkpointID: 1, ordinal: 2, prefix: 2, itemCount: 4, digests: []string{m[2], m[3]}},
+		{id: 4, sessionID: s, turnID: "00000000-0000-0000-0000-000000000004", checkpointID: 4, ordinal: 0, prefix: 0, itemCount: 5, digests: []string{m[0], m[1], m[2], m[3], m[4]}},
+		{id: 5, sessionID: s, turnID: "00000000-0000-0000-0000-000000000005", checkpointID: 4, ordinal: 1, prefix: 5, itemCount: 6, digests: []string{m[5]}},
+		{id: 6, sessionID: s, turnID: "00000000-0000-0000-0000-000000000006", checkpointID: 6, ordinal: 0, prefix: 0, itemCount: 7, digests: []string{m[0], m[1], m[2], m[3], m[4], m[5], m[6]}},
+		{id: 7, sessionID: s, turnID: "00000000-0000-0000-0000-000000000007", checkpointID: 6, ordinal: 1, prefix: 7, itemCount: 8, digests: []string{m[7]}},
+	}
+	page, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 20}, "")
+	require.NoError(t, err)
+	require.Len(t, page.Items, 8)
+	// turn 0 contributes m0,m1 (seq 0,1); every later turn contributes one
+	// message (seq 0). No message may repeat or be dropped across rotates.
+	for i, want := range m {
+		assert.Equal(t, want, page.Items[i].Hmac, "message %d must appear exactly once, in order", i)
+	}
+	assert.Equal(t, int64(0), page.Items[0].TurnSeq)
+	assert.Equal(t, int64(0), page.Items[0].Seq)
+	assert.Equal(t, int64(0), page.Items[1].TurnSeq)
+	assert.Equal(t, int64(1), page.Items[1].Seq)
+	for i := 2; i < 8; i++ {
+		assert.Equal(t, int64(i-1), page.Items[i].TurnSeq, "turn %d's single new message", i-1)
+		assert.Equal(t, int64(0), page.Items[i].Seq)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // timeout and degraded paths
 

@@ -935,12 +935,14 @@ func transcriptQ(ctx context.Context, q contentQuerier, query TranscriptQuery, p
 	// reported false even if start > 0.
 	var truncatedOlder bool
 	rowCount := 0
-	// currentFull is the full checkpoint of the current storage group,
-	// captured from the row set already in hand (rows come ORDER BY id, so a
-	// full row always precedes its deltas). Deltas reconstruct against it in
-	// memory instead of issuing one query per delta — the transcript read
+	// currentFullID and currentFullDigests track the full checkpoint of the
+	// current storage group: its row id and its already-decoded digest list.
+	// Rows come ORDER BY id, so a full row always precedes its deltas; deltas
+	// reconstruct against the cached digest list in memory instead of
+	// re-decoding the full checkpoint JSONB on every row — the transcript read
 	// must stay bounded for sessions with thousands of turns.
-	var currentFull *contextRow
+	var currentFullID int64
+	var currentFullDigests []string
 	for rows.Next() {
 		if rowCount >= maxTranscriptContextRows {
 			truncatedOlder = true
@@ -957,16 +959,32 @@ func transcriptQ(ctx context.Context, q contentQuerier, query TranscriptQuery, p
 			return TranscriptPage{}, classifiedErrorWrap(ContentErrCorrupt, "invalid turn id in context row", err)
 		}
 		if row.groupOrdinal == groupFullOrdinal {
-			currentFull = &row
-		}
-		digests, err := reconstructDigests(row, func(id int64) (contextRow, error) {
-			if currentFull == nil || currentFull.id != id {
-				return contextRow{}, classifiedError(ContentErrMissingBase, "delta %d references missing full checkpoint %d", row.id, id)
+			currentFullID = row.id
+			var full []string
+			if err := common.Unmarshal(row.itemDigests, &full); err != nil {
+				return TranscriptPage{}, classifiedErrorWrap(ContentErrCorrupt, "decode full checkpoint digests", err)
 			}
-			return *currentFull, nil
-		})
-		if err != nil {
-			return TranscriptPage{}, err
+			if len(full) != row.itemCount {
+				return TranscriptPage{}, classifiedError(ContentErrCorrupt, "full checkpoint declares %d digests, row says %d", len(full), row.itemCount)
+			}
+			currentFullDigests = full
+		}
+		var digests []string
+		if row.groupOrdinal == groupFullOrdinal {
+			digests = currentFullDigests
+		} else {
+			if currentFullDigests == nil || currentFullID != row.checkpointID {
+				return TranscriptPage{}, classifiedError(ContentErrMissingBase, "delta %d references missing full checkpoint %d", row.id, row.checkpointID)
+			}
+			var suffix []string
+			if err := common.Unmarshal(row.itemDigests, &suffix); err != nil {
+				return TranscriptPage{}, classifiedErrorWrap(ContentErrCorrupt, "decode delta suffix digests", err)
+			}
+			var assembleErr error
+			digests, assembleErr = assembleDigests(currentFullDigests, row.commonPrefix, suffix, row.itemCount)
+			if assembleErr != nil {
+				return TranscriptPage{}, assembleErr
+			}
 		}
 		start := int64(commonPrefix(prevDigests, digests))
 		if int64(len(digests)) < prevCount {
