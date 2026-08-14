@@ -1290,3 +1290,36 @@ func TestLookupAliasRejectsCorruptBinding(t *testing.T) {
 	_, ok := ContentErrorOf(err)
 	assert.False(t, ok, "a corrupt binding is a data error, not a content classification")
 }
+
+// TestSessionFamily 验证会话行展示 client_family 的取值：优先细粒度
+// ClientProfile，否则用主别名的分组 Scope。展示粒度不影响分组（alias digest
+// 仍绑定 Scope），同一个 Claude Code 会话在 CLI / VS Code / 第三方桌面
+// 形态间切换时仍解析到同一个 observer session。
+func TestSessionFamily(t *testing.T) {
+	cases := []struct {
+		name string
+		in   ContentInput
+		want string
+	}{
+		{
+			name: "fine-grained client profile wins for display",
+			in:   ContentInput{ClientProfile: "claude_vscode", Aliases: []Alias{{Scope: ScopeClaudeCLI}}},
+			want: "claude_vscode",
+		},
+		{
+			name: "falls back to primary alias scope",
+			in:   ContentInput{Aliases: []Alias{{Scope: ScopeClaudeCLI}}},
+			want: "claude_cli",
+		},
+		{
+			name: "empty profile and aliases yield empty family",
+			in:   ContentInput{},
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, sessionFamily(&tc.in))
+		})
+	}
+}
