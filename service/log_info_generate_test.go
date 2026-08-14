@@ -266,21 +266,21 @@ func TestDetectClientProfile(t *testing.T) {
 			want: "mcp_sdk",
 		},
 		{
-			name: "zapier automation ua",
+			name: "zapier ua",
 			headers: map[string]string{
 				"User-Agent": "Zapier/1.0",
 			},
-			want: "automation",
+			want: "zapier",
 		},
 		{
-			name: "make.com automation ua",
+			name: "make ua",
 			headers: map[string]string{
 				"User-Agent": "make.com/1.0",
 			},
-			want: "automation",
+			want: "make",
 		},
 		{
-			name: "bare make is not automation",
+			name: "bare make is not make",
 			headers: map[string]string{
 				"User-Agent": "make/1.0",
 			},
@@ -294,12 +294,12 @@ func TestDetectClientProfile(t *testing.T) {
 			want: "chat",
 		},
 		{
-			name: "n8n via claude protocol stays automation",
+			name: "n8n via claude protocol stays n8n",
 			headers: map[string]string{
 				"User-Agent":        "n8n/1.80.0",
 				"Anthropic-Version": "2023-06-01",
 			},
-			want: "automation",
+			want: "n8n",
 		},
 		{
 			name: "langchain via claude protocol stays langchain",
@@ -375,11 +375,11 @@ func TestDetectClientProfile(t *testing.T) {
 			want: "mcp_sdk",
 		},
 		{
-			name: "n8n automation ua",
+			name: "n8n ua",
 			headers: map[string]string{
 				"User-Agent": "n8n/1.80.0",
 			},
-			want: "automation",
+			want: "n8n",
 		},
 		{
 			name: "python httpx ua",

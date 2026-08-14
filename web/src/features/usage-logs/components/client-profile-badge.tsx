@@ -1,4 +1,4 @@
-import { Bot, Braces, Globe, Repeat, Smartphone } from 'lucide-react'
+import { Bot, Braces, Repeat, Smartphone } from 'lucide-react'
 import type { ComponentType } from 'react'
 
 import { StatusBadge } from '@/components/status-badge'
@@ -16,6 +16,7 @@ export const BRAND_ICONS: Partial<Record<ClientProfile, string>> = {
   codex_desktop: 'Codex.Color',
   codex_app: 'Codex.Color',
   codex_vscode: 'Codex.Color',
+  codex_browser: 'Codex.Color',
   claude_cli: 'ClaudeCode.Color',
   claude_desktop: 'Claude.Color',
   claude_plugin: 'Claude.Color',
@@ -36,14 +37,21 @@ export const BRAND_ICONS: Partial<Record<ClientProfile, string>> = {
   gemini_sdk: 'Gemini.Color',
   qoder: 'Qoder.Color',
   openai_agents: 'OpenAI.Color',
+  semantic_kernel: 'Microsoft.Color',
   langchain: 'LangChain.Color',
   llama_index: 'LlamaIndex.Color',
   mistral_sdk: 'Mistral.Color',
   cohere_sdk: 'Cohere.Color',
   // Grok/MCP 无 Color 变体（仅 mono），'Grok.Color' 经 getLobeIcon 静默降级为
-  // mono 标志，与 model-badge 的 Grok 用法保持一致。
+  // mono 标志，与 model-badge 的 Grok 用法保持一致；HermesAgent/Vercel 同样无
+  // Color，用 .Avatar（圆形彩色头像）替代。
   grok: 'Grok.Color',
   mcp_sdk: 'MCP',
+  hermes_agent: 'HermesAgent.Avatar',
+  ai_sdk: 'Vercel.Avatar',
+  n8n: 'N8n.Color',
+  zapier: 'Zapier.Color',
+  make: 'Make.Color',
   perplexity: 'Perplexity.Color',
   poe: 'Poe.Color',
   openrouter: 'OpenRouter.Color',
@@ -53,6 +61,7 @@ export const BRAND_ICONS: Partial<Record<ClientProfile, string>> = {
   qwen: 'Qwen.Color',
   doubao: 'Doubao.Color',
   zhipu: 'Zhipu.Color',
+  sub2api: 'Sub2API',
   deepseek_harness: 'DeepSeek.Color',
   deepseek: 'DeepSeek.Color',
   chatgpt: 'ChatGPT.Color',
@@ -64,16 +73,12 @@ const FALLBACK_ICONS: Partial<
   gohttp: Bot,
   cliproxyapi: Repeat,
   chat: Smartphone,
-  hermes_agent: Bot,
   workbuddy: Bot,
   rikkahub: Smartphone,
-  sub2api: Repeat,
   minis: Smartphone,
   continue: Braces,
   zed: Braces,
-  codex_browser: Globe,
   litellm: Repeat,
-  ai_sdk: Braces,
   http_client: Braces,
 }
 

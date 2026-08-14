@@ -80,7 +80,7 @@ func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other
 //     groq、grok、ollama、kimi、qwen、doubao、zhipu、deepseek、chatgpt、minis、opencode、
 //     hermes_agent、workbuddy、openclaw、rikkahub、sub2api（UA 特异性词，见函数内矩阵）
 //   - LLM 框架与自动化：openai_agents、semantic_kernel、langchain、llama_index、mcp_sdk、
-//     automation（n8n/zapier/make.com）
+//     n8n、zapier、make（自动化工作流）
 //   - 通用工具：gohttp、cliproxyapi、http_client（curl/requests/httpx/urllib/okhttp/axios 等）
 //   - chat（兜底）
 //
@@ -310,8 +310,12 @@ func DetectClientProfile(c *gin.Context) string {
 	case strings.Contains(ua, "mcp-python-sdk"), strings.Contains(ua, "mcp-typescript-sdk"), strings.Contains(ua, "modelcontextprotocol"):
 		return "mcp_sdk"
 	// 自动化工作流（empirical：n8n / Zapier / Make.com 作为客户端调用 LLM API）
-	case strings.Contains(ua, "n8n"), strings.Contains(ua, "zapier"), strings.Contains(ua, "make.com"):
-		return "automation"
+	case strings.Contains(ua, "n8n"):
+		return "n8n"
+	case strings.Contains(ua, "zapier"):
+		return "zapier"
+	case strings.Contains(ua, "make.com"):
+		return "make"
 	// 裸 HTTP 客户端（curl/wget/requests/httpx/urllib/okhttp/axios 等）
 	case strings.Contains(ua, "curl/"), strings.Contains(ua, "wget/"), strings.Contains(ua, "python-requests"),
 		strings.Contains(ua, "python-httpx"), strings.Contains(ua, "urllib"), strings.Contains(ua, "node-fetch"),
