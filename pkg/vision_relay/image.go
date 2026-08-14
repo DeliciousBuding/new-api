@@ -81,6 +81,14 @@ func DigestBytes(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// descriptionCacheKey 跨请求描述缓存的 key：digest 与识图指令（instruction）
+// 的绑定哈希。描述是"图片内容 × 识图指令"的函数——同一张图配不同 prompt
+// 应产出不同描述，所以 key 必须同时绑定两者，prompt 变更后旧缓存自然失效。
+func descriptionCacheKey(digest, instruction string) string {
+	sum := sha256.Sum256([]byte(digest + "\x00" + instruction))
+	return hex.EncodeToString(sum[:])
+}
+
 // CompressForVision 像素校验 + 压缩（必须在解码并发闸内调用）：
 //  1. DecodeConfig 只读头校验（宽/高/像素，超限拒绝——解压炸弹防线，
 //     不触发完整 Decode）

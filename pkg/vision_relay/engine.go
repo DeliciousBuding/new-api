@@ -43,6 +43,11 @@ type Engine struct {
 	// 敏感词检查，命中 → 该图 blocked 稳定占位，不注入原文）。nil = 不检查。
 	// NewAPI 适配在 service 层注入 CheckSensitiveText 包装。
 	SensitiveCheck func(text string) bool
+	// Cache 跨请求识图描述缓存（纯优化，nil = 不启用）。命中后跳过该 digest
+	// 的旁路调用；Get/Set 失败静默降级为主流程，绝不影响正确性。
+	Cache DescriptionCache
+	// CacheTTL 成功描述写缓存的过期时间（Cache 非 nil 时生效）。
+	CacheTTL time.Duration
 }
 
 // Enhance 一次请求的完整增强（事务由调用方保证）：
@@ -72,22 +77,24 @@ func (e *Engine) Enhance(ctx context.Context, raw []byte, format Format, cfg Con
 	images := make([]*PatchedImage, 0, min(len(patches), MaxImages))
 	for i := range patches {
 		if i >= MaxImages {
-			images = append(images, &PatchedImage{Patch: patches[i], Err: ErrImageLimit})
-			stats.Failed++
+			img := &PatchedImage{Patch: patches[i], Err: ErrImageLimit}
+			images = append(images, img)
+			recordFailure([]*PatchedImage{img}, stats, EnumImageLimit)
 			continue
 		}
 		gateCh, err := globalDecodeGate.acquire(ctx)
 		if err != nil {
 			// 闸等待被取消 → 保持无结果（Apply 按 service_unavailable 占位）
-			images = append(images, &PatchedImage{Patch: patches[i], Err: err})
-			stats.Failed++
+			img := &PatchedImage{Patch: patches[i], Err: err}
+			images = append(images, img)
+			recordFailure([]*PatchedImage{img}, stats, EnumServiceUnavailable)
 			continue
 		}
 		img := PrepareImage(ctx, patches[i], e.Fetcher, MaxDecodedBytes)
 		globalDecodeGate.release(gateCh)
 		images = append(images, img)
 		if img.Err != nil {
-			stats.Failed++
+			recordFailure([]*PatchedImage{img}, stats, enumFromErr(img.Err))
 		}
 	}
 
@@ -111,6 +118,8 @@ func (e *Engine) Enhance(ctx context.Context, raw []byte, format Format, cfg Con
 // 然后在 call gate 内完成 HTTP 调用。
 // 请求级熔断（审核 P0-2 §3）：首个 401/403（Abort）→ 尚未开始的任务全部
 // 停止（不再发起 sidecall），未处理图由 Apply 以稳定占位兜底。
+// 跨请求缓存（纯优化）：识别前按 digest 查缓存，命中跳过旁路调用；成功后
+// 写缓存。缓存失败静默降级（Get 失败 = 未命中，Set 失败忽略）。
 func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cfg Config, stats *Stats) map[string]string {
 	// 分组：每唯一 digest 一个任务（含 Err 的图不参与识别）
 	groups := make(map[string][]*PatchedImage)
@@ -142,7 +151,7 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 		if ctx.Err() != nil || abort.Load() {
 			// P2-6：ctx 取消/熔断未调度的图计入 Failed（mu 保护——goroutine 并发写）
 			mu.Lock()
-			stats.Failed += len(group)
+			recordFailure(group, stats, EnumServiceUnavailable)
 			mu.Unlock()
 			continue
 		}
@@ -153,17 +162,35 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 			defer func() { <-sem }()
 			mu.Lock()
 			if abort.Load() {
-				stats.Failed += len(g) // 在途队列中已被熔断
+				recordFailure(g, stats, EnumServiceUnavailable) // 在途队列中已被熔断
 				mu.Unlock()
 				return
 			}
 			mu.Unlock()
+			// ⓪ 跨请求缓存：识别前按 cacheKey 查缓存，命中直接复用（跳过
+			//    压缩与旁路调用）。cacheKey 同时绑定 digest 与 instruction
+			//    （描述依赖识图指令，prompt 变更后旧缓存必须失效）。
+			//    缓存是纯优化——命中仍需过敏感词检查（敏感词库可能热更新），
+			//    命中敏感词则丢弃缓存走正常占位。
+			cacheKey := descriptionCacheKey(d, instruction)
+			if e.Cache != nil {
+				if cached, ok := e.Cache.Get(ctx, cacheKey); ok && cached != "" {
+					if e.SensitiveCheck == nil || !e.SensitiveCheck(cached) {
+						mu.Lock()
+						results[d] = cached
+						stats.Success += len(g)
+						stats.CacheServed++
+						mu.Unlock()
+						return
+					}
+				}
+			}
 			// ① decode gate（2）：完整解码/降采样/JPEG 编码——内存峰值闸门
 			decodeGateCh, err := globalDecodeGate.acquire(ctx)
 			if err != nil {
 				// 审查 P2-2：ctx 取消/闸获取失败 → 与调度前置检查对称，补记 Failed
 				mu.Lock()
-				stats.Failed += len(g)
+				recordFailure(g, stats, EnumServiceUnavailable)
 				mu.Unlock()
 				return
 			}
@@ -189,6 +216,9 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 					if r.Abort {
 						abort.Store(true) // 请求级熔断：后续任务不再发起 sidecall
 					}
+				} else {
+					// 闸获取失败（ctx 取消）→ 与 decode 闸失败对称，占位兜底
+					enum = EnumServiceUnavailable
 				}
 			}
 			mu.Lock()
@@ -198,10 +228,7 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 			if enum == "" && desc != "" {
 				if e.SensitiveCheck != nil && e.SensitiveCheck(desc) {
 					// 审核 P1-3（A6）：敏感词命中 → 该图 blocked 稳定占位，不注入原文
-					for _, im := range g {
-						im.Err = ErrBlocked
-					}
-					stats.Failed += len(g)
+					recordFailure(g, stats, EnumBlocked)
 					return
 				}
 				results[d] = desc
@@ -209,13 +236,37 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 				if stats.ModelsUsed == "" {
 					stats.ModelsUsed = model
 				}
+				// ③ 跨请求缓存：成功后写入（纯优化，失败静默忽略）。
+				//     key 与查询一致（digest + instruction 绑定）。
+				if e.Cache != nil {
+					_ = e.Cache.Set(ctx, cacheKey, desc, e.CacheTTL)
+				}
 			} else {
-				stats.Failed += len(g)
+				// 失败：显式回写占位枚举，保留精确失败原因（timeout/auth_error/
+				// blocked/size_limit 等），不再笼统 service_unavailable
+				recordFailure(g, stats, enum)
 			}
 		}(digest, group)
 	}
 	wg.Wait()
 	return results
+}
+
+// recordFailure 统一登记一组图片块的失败：回写显式占位枚举 + 累计 Failed +
+// 失败原因分布。必须在持有 stats 写锁时调用（describeGrouped 内 mu 保护）。
+// enum 为空时兜底 service_unavailable。
+func recordFailure(group []*PatchedImage, stats *Stats, enum string) {
+	if enum == "" {
+		enum = EnumServiceUnavailable
+	}
+	for _, im := range group {
+		im.Enum = enum
+	}
+	stats.Failed += len(group)
+	if stats.FailedReasons == nil {
+		stats.FailedReasons = make(map[string]int)
+	}
+	stats.FailedReasons[enum] += len(group)
 }
 
 // truncateResults 严格截断（v0.2.2）：
@@ -229,7 +280,7 @@ func truncateResults(images []*PatchedImage, results map[string]string, stats *S
 		desc, ok := results[img.Digest]
 		if !ok {
 			// 占位文本（含边界），计入总量
-			total += len(placeholderUnavailable(img.Patch, enumFromErr(img.Err), len(images)))
+			total += len(placeholderUnavailable(img.Patch, imageEnum(img), len(images)))
 			continue
 		}
 		// wrap 后注入长度：prefix + \n + desc + \n + suffix

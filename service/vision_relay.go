@@ -24,6 +24,42 @@ import (
 // 防 VisionBaseURL 误配本实例导致无限递归）
 const relayRequestHeader = "X-NewAPI-Vision-Relay"
 
+// 跨请求识图描述缓存的 Redis key 前缀与默认 TTL。
+// key = prefix + descriptionCacheKey(digest, instruction)（纯核心已把
+// digest 与识图指令绑定哈希，prompt 变更后旧缓存自然失效）。
+// 描述是"图片内容 × 识图指令"的稳定转述，24h 内同图同指令复用是纯收益；
+// 缓存未启用/读写失败静默降级，绝不影响识图主流程。
+const (
+	visionRelayCacheKeyPrefix = "vision:desc:"
+	visionRelayCacheTTL       = 24 * time.Hour
+)
+
+// visionRelayCache DescriptionCache 的 NewAPI 适配：Redis 跨请求描述缓存。
+// Get 命中即跳过该 digest 的旁路调用；任何错误（Redis 未启用/连接失败/key
+// 不存在）都返回未命中，由核心引擎继续正常识图。
+type visionRelayCache struct{}
+
+func (visionRelayCache) Get(ctx context.Context, key string) (string, bool) {
+	if !common.RedisEnabled || common.RDB == nil {
+		return "", false
+	}
+	val, err := common.RDB.Get(ctx, visionRelayCacheKeyPrefix+key).Result()
+	if err != nil {
+		return "", false
+	}
+	return val, true
+}
+
+func (visionRelayCache) Set(ctx context.Context, key, value string, ttl time.Duration) error {
+	if !common.RedisEnabled || common.RDB == nil {
+		return nil
+	}
+	if ttl <= 0 {
+		ttl = visionRelayCacheTTL
+	}
+	return common.RDB.Set(ctx, visionRelayCacheKeyPrefix+key, value, ttl).Err()
+}
+
 // visionRelayFetcher ImageFetcher 的 NewAPI 适配：SSRF 保护客户端 + 有限流下载。
 // 纯核心包不感知 SSRF 客户端/下载策略（v0.2.1 边界）。
 // SSRF 保护客户端不可用时**返回错误**（该图 service_unavailable 占位），
@@ -125,6 +161,10 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 			ok, _ := CheckSensitiveText(desc)
 			return ok
 		},
+		// 跨请求描述缓存（纯优化）：同图同指令第二次起跳过旁路识图。
+		// 纯核心只依赖接口，Redis 未启用时 Get 恒未命中、Set 静默忽略。
+		Cache:    visionRelayCache{},
+		CacheTTL: visionRelayCacheTTL,
 	}
 	coreCfg := vision_relay.Config{
 		Enabled:        cfg.Enabled,
@@ -178,10 +218,10 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 
 	// 12. 结构化统计日志（A12）
 	logger.LogInfo(c, fmt.Sprintf(
-		"vision: target_model=%s images_total=%d images_success=%d images_failed=%d unique=%d cache_hits=%d vision_calls=%d fallback_count=%d elapsed_ms=%d models_used=%s description_bytes=%d",
+		"vision: target_model=%s images_total=%d images_success=%d images_failed=%d unique=%d cache_hits=%d cache_served=%d vision_calls=%d fallback_count=%d elapsed_ms=%d models_used=%s description_bytes=%d failed_reasons=%s",
 		relayInfo.OriginModelName, stats.Total, stats.Success, stats.Failed, stats.UniqueImages,
-		stats.CacheHits, stats.VisionCalls, stats.FallbackCount, stats.ElapsedMs,
-		stats.ModelsUsed, stats.DescriptionBytes))
+		stats.CacheHits, stats.CacheServed, stats.VisionCalls, stats.FallbackCount, stats.ElapsedMs,
+		stats.ModelsUsed, stats.DescriptionBytes, visionRelayFailedReasons(&stats)))
 	// 12b. 上游识别链劣化（5xx/超时/解析失败 → 图片级占位，请求本身未 5xx）——
 	//      系统级 SysLog，运营无需翻请求日志即可感知（audit-2026-08 #47）
 	if stats.Failed > 0 {
@@ -201,6 +241,20 @@ func visionRelayMatchPatterns(patterns []*regexp.Regexp, model string) bool {
 		}
 	}
 	return false
+}
+
+// visionRelayFailedReasons 序列化失败原因分布为稳定可读字符串（日志用）。
+// 空分布返回空串；分布非空时输出 JSON（如 {"timeout":2,"size_limit":1}）。
+// 不含 URL/key/模型名/错误体，仅稳定枚举与计数。
+func visionRelayFailedReasons(stats *vision_relay.Stats) string {
+	if stats == nil || len(stats.FailedReasons) == 0 {
+		return ""
+	}
+	b, err := common.Marshal(stats.FailedReasons)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // visionRelayFormat 协议格式映射（未知格式返回 ok=false）
@@ -277,8 +331,9 @@ func visionRelayFail(relayInfo *relaycommon.RelayInfo, stage string, cfg *model_
 // 只记模型名/计数/耗时，绝不打印 api_key/sidecall_secret/请求体明文。
 func visionRelayLogChainFailure(relayInfo *relaycommon.RelayInfo, cfg *model_setting.VisionRelaySnapshot, stats *vision_relay.Stats) {
 	common.SysLog(fmt.Sprintf(
-		"vision relay chain degraded: request_id=%s target_model=%s chain_models=%s status=%d images_total=%d images_success=%d images_failed=%d unique=%d cache_hits=%d vision_calls=%d fallback_count=%d elapsed_ms=%d models_used=%s",
+		"vision relay chain degraded: request_id=%s target_model=%s chain_models=%s status=%d images_total=%d images_success=%d images_failed=%d unique=%d cache_hits=%d cache_served=%d vision_calls=%d fallback_count=%d elapsed_ms=%d models_used=%s failed_reasons=%s",
 		relayInfo.RequestId, relayInfo.OriginModelName, strings.Join(cfg.Models, ","),
 		http.StatusOK, stats.Total, stats.Success, stats.Failed, stats.UniqueImages,
-		stats.CacheHits, stats.VisionCalls, stats.FallbackCount, stats.ElapsedMs, stats.ModelsUsed))
+		stats.CacheHits, stats.CacheServed, stats.VisionCalls, stats.FallbackCount, stats.ElapsedMs,
+		stats.ModelsUsed, visionRelayFailedReasons(stats)))
 }
