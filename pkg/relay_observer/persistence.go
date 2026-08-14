@@ -410,6 +410,21 @@ func claimTurnForSessionTx(ctx context.Context, tx contentTx, turnID, sessionID 
 // Lookup is scoped by the alias's profile (the provider column): an alias is
 // an identity of all five fields, so equal raw values across profiles stay
 // separate sessions. Schema v4 enforces that same identity in PostgreSQL.
+// sessionFamily is the display client_family for a session row: the
+// fine-grained ClientProfile when present, else the SessionScope used for
+// grouping. Display granularity must not change grouping — the alias digest
+// stays on Scope, so the CLI / VS Code / third-party-desktop variants of the
+// same Claude Code session still resolve to one observer session.
+func sessionFamily(in *ContentInput) string {
+	if in.ClientProfile != "" {
+		return in.ClientProfile
+	}
+	if len(in.Aliases) > 0 {
+		return string(in.Aliases[0].Scope)
+	}
+	return ""
+}
+
 func resolvePrimarySessionTx(ctx context.Context, tx contentTx, in *ContentInput) (SessionResolution, error) {
 	primary := in.Aliases[0]
 	sid, err := lookupAliasSessionTx(ctx, tx, in.NodeScope, in.UserID, primary, true)
@@ -440,7 +455,7 @@ func resolvePrimarySessionTx(ctx context.Context, tx contentTx, in *ContentInput
 	// First sight of this primary alias: create the session and bind it.
 	sid = uuid.New()
 	if _, err := tx.Exec(ctx, `INSERT INTO observer_sessions (id, node_scope, user_id, client_family, first_seen, last_seen, turn_count, gap_count) VALUES ($1, $2, $3, $4, now(), now(), 0, 0) ON CONFLICT (id) DO NOTHING`,
-		sid.String(), in.NodeScope, in.UserID, string(primary.Scope)); err != nil {
+		sid.String(), in.NodeScope, in.UserID, sessionFamily(in)); err != nil {
 		return SessionResolution{}, fmt.Errorf("relayobserver: append content: insert session: %w", err)
 	}
 	bound, err := bindAliasRowTx(ctx, tx, in.NodeScope, in.UserID, primary, sid)
@@ -767,7 +782,7 @@ func bumpSessionTx(ctx context.Context, tx contentTx, in *ContentInput, sessionI
 		gapInc = 1
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO observer_sessions (id, node_scope, user_id, client_family, first_seen, last_seen, turn_count, gap_count) VALUES ($1, $2, $3, $4, now(), now(), 1, $5) ON CONFLICT (id) DO UPDATE SET last_seen = now(), turn_count = observer_sessions.turn_count + 1, gap_count = observer_sessions.gap_count + excluded.gap_count`,
-		sessionID.String(), in.NodeScope, in.UserID, string(in.Aliases[0].Scope), gapInc); err != nil {
+		sessionID.String(), in.NodeScope, in.UserID, sessionFamily(in), gapInc); err != nil {
 		return fmt.Errorf("relayobserver: append content: update session counters: %w", err)
 	}
 	return nil

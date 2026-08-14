@@ -71,7 +71,8 @@ func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other
 
 // DetectClientProfile 按官方渠道亲和性同源的头清单识别客户端，返回细粒度档位：
 //   - codex_cli / codex_desktop / codex_app / codex_vscode / codex_browser（Originator 前缀 + X-Codex-* 头 + UA 兜底）
-//   - claude_cli / claude_desktop / claude_desktop_3p / claude_plugin / claude_app（X-App 值 + claude-cli UA 细分 + claude-desktop-3p 第三方桌面）
+//   - claude_cli / claude_desktop / claude_desktop_3p / claude_vscode / claude_plugin / claude_app
+//     （X-App 值 + claude-cli UA 细分：claude-desktop-3p 第三方桌面、claude-vscode VS Code 扩展）
 //   - claude_sdk / openai_sdk / mistral_sdk / cohere_sdk / ai_sdk（Stainless 生态官方 SDK UA）
 //   - gemini_cli / gemini_code_assist / gemini_sdk（Gemini-CLI UA / CloudCodeVSCode / google-genai、genai-py、Vertex SDK UA）
 //   - litellm（UA + x-litellm-* 头）
@@ -129,7 +130,20 @@ func DetectClientProfile(c *gin.Context) string {
 		lv := strings.ToLower(v)
 		switch {
 		case strings.Contains(lv, "cli"):
-			return "claude_cli"
+			// X-App=cli 只说明内核是 Claude Code CLI。官方 VS Code 扩展与第三方
+			// 桌面壳（claude-desktop-3p）同样发 X-App=cli，但 UA 的
+			// (external, <variant>) 括号里携带更精确的封装形态，须优先细分，
+			// 否则会整体落 claude_cli（生产日志实证：claude-vscode / claude-desktop-3p
+			// 两种 variant 曾都被识别为 claude_cli）。
+			ua := strings.ToLower(c.Request.UserAgent())
+			switch {
+			case strings.Contains(ua, "claude-vscode"):
+				return "claude_vscode"
+			case strings.Contains(ua, "claude-desktop-3p"):
+				return "claude_desktop_3p"
+			default:
+				return "claude_cli"
+			}
 		case strings.Contains(lv, "desktop"):
 			return "claude_desktop"
 		case strings.Contains(lv, "vscode") || strings.Contains(lv, "jetbrains") || strings.Contains(lv, "intellij") || strings.Contains(lv, "cursor"):
@@ -216,7 +230,7 @@ func DetectClientProfile(c *gin.Context) string {
 		case strings.Contains(ua, "desktop"):
 			return "claude_desktop"
 		case strings.Contains(ua, "vscode"):
-			return "claude_plugin"
+			return "claude_vscode"
 		default:
 			return "claude_cli"
 		}

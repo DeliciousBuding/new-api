@@ -112,6 +112,12 @@ type ContentInput struct {
 	// alias values across profiles never collide.
 	NodeScope string
 	UserID    int64
+	// ClientProfile is the fine-grained client profile for display only (the
+	// service-layer DetectClientProfile result). It never participates in
+	// alias resolution: session grouping stays on SessionScope, so the same
+	// Claude Code session opened from VS Code and CLI still resolves to one
+	// observer session even though their display profile differs.
+	ClientProfile string
 	// Aliases are the resolved session aliases, primary first. A turn with no
 	// aliases has no session and produces no content or context rows.
 	Aliases []Alias
