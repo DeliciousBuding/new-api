@@ -43,7 +43,20 @@ type PatchedImage struct {
 	Patch  Patch
 	Digest string
 	Data   []byte // 解码后原始字节（base64 源；URL 源下载后回填）
-	Err    error  // 提取/下载/校验失败（非 nil → 占位替换）
+	Err    error  // 提取/下载/校验/识图失败（非 nil → 占位替换）
+	// Enum 显式占位枚举（prepare 阶段错误经 enumFromErr(Err) 推导；
+	// describe 阶段失败由引擎回写 r.Enum）。空 = 用 enumFromErr(Err) 兜底。
+	// 独立于 Err 的原因是：describe 阶段的失败原因是"字符串枚举"（timeout/
+	// blocked/auth_error 等）而非 Go error，必须显式回写才能保留精确原因。
+	Enum string
+}
+
+// imageEnum 返回图片块最终占位枚举：优先显式回写的 Enum，否则用 Err 映射。
+func imageEnum(img *PatchedImage) string {
+	if img.Enum != "" {
+		return img.Enum
+	}
+	return enumFromErr(img.Err)
 }
 
 // Discover 路径感知扫描：收集协议路径上的图片块 Patch（只读）。
@@ -282,7 +295,7 @@ func Apply(raw []byte, images []*PatchedImage, results map[string]string) ([]byt
 	for _, img := range images {
 		desc, ok := results[img.Digest]
 		if !ok {
-			desc = placeholderUnavailable(img.Patch, enumFromErr(img.Err), len(images))
+			desc = placeholderUnavailable(img.Patch, imageEnum(img), len(images))
 		} else {
 			desc = wrapResult(img.Patch.Index, len(images), desc)
 		}

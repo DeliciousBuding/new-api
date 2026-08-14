@@ -17,14 +17,27 @@ import (
 var (
 	ErrBlocked = errors.New("vision provider content blocked")   // 451
 	ErrAuth    = errors.New("vision provider auth/config error") // 401/403 → 终止整条 fallback
+	ErrTimeout = errors.New("vision provider deadline exceeded") // 请求级/单调用 deadline 耗尽
 )
 
-// transportError 网络传输层错误（连接失败/超时）——唯一允许同模型重试的类型
+// transportError 网络传输层错误（连接失败）——唯一允许同模型重试的类型
 // （v0.2.2：429/5xx/空响应等 provider 瞬时错误不重试，直接换模型）。
+// 超时（context.DeadlineExceeded）不归入本类：超时重试无意义且会吞掉
+// timeout 枚举，见 classifyNetworkErr。
 type transportError struct{ err error }
 
 func (e *transportError) Error() string { return e.err.Error() }
 func (e *transportError) Unwrap() error { return e.err }
+
+// classifyNetworkErr 归类网络层错误：
+//   - context.DeadlineExceeded → ErrTimeout（不重试：预算已耗尽，重试只会再超时）
+//   - 其余（连接拒绝/DNS/读中断等）→ transportError（同模型重试 ≤1 次）
+func classifyNetworkErr(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %v", ErrTimeout, err)
+	}
+	return &transportError{err: err}
+}
 
 // 默认识图指令（保真基线，与 vision-bridge 同款防幻觉前缀）
 const defaultInstruction = "你是图片转述桥接器。你的输出会被原样注入给另一个看不到图片的文本模型，" +
@@ -33,11 +46,17 @@ const defaultInstruction = "你是图片转述桥接器。你的输出会被原�
 	"表格转 Markdown；代码/报错保持原文；UI 按 顶部→中部→底部 说明布局和关键控件；" +
 	"普通图描述主体、动作、背景、细节。只描述这一张图片，不评论、不解释。"
 
-// enumFromErr 把图片级错误映射为稳定枚举（映射失败 → service_unavailable）
+// enumFromErr 把图片级错误映射为稳定枚举（映射失败 → service_unavailable）。
+// 覆盖 prepare 阶段（fetch/decode/校验）与 describe 阶段（识图链）两类错误：
+// 超时与鉴权错误有独立枚举，避免与"provider 瞬时不可用"混为一谈。
 func enumFromErr(err error) string {
 	switch {
 	case err == nil:
 		return EnumServiceUnavailable
+	case errors.Is(err, ErrTimeout):
+		return EnumTimeout
+	case errors.Is(err, ErrAuth):
+		return EnumAuthError
 	case errors.Is(err, ErrSizeLimit):
 		return EnumSizeLimit
 	case errors.Is(err, ErrUnsupported) || errors.Is(err, ErrExtract):
@@ -153,15 +172,15 @@ func (c *VisionClient) doRequest(ctx context.Context, client *http.Client, model
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		// 网络传输错误（连接失败/超时）——同模型重试 1 次
-		return "", &transportError{err: err}
+		// 网络层错误分类：deadline 耗尽 → ErrTimeout（不重试）；其余 → transportError
+		return "", classifyNetworkErr(err)
 	}
 	defer resp.Body.Close()
 	switch {
 	case resp.StatusCode == http.StatusOK:
 		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
 		if readErr != nil {
-			return "", &transportError{err: readErr}
+			return "", classifyNetworkErr(readErr)
 		}
 		var result struct {
 			Choices []struct {
@@ -261,6 +280,10 @@ func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, data
 	}
 	deadline := time.Now().Add(totalBudget)
 	var result DescribeResult
+	// lastFallbackEnum 记录 fallback 链里最后一次"可重试"失败的枚举。
+	// 链耗尽（所有模型都因瞬时错误/超时失败）时用它作为最终枚举，
+	// 而不是笼统的 service_unavailable——尤其超时应如实上报 timeout。
+	lastFallbackEnum := ""
 	for _, model := range models {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
@@ -278,16 +301,21 @@ func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, data
 			return DescribeResult{Enum: EnumBlocked, Model: model, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
 		case errors.Is(err, ErrAuth):
 			// 401/403：配置/鉴权错误 → 请求级熔断（Abort），不 retry 不 fallback
-			return DescribeResult{Enum: EnumServiceUnavailable, Model: model, Abort: true,
+			return DescribeResult{Enum: EnumAuthError, Model: model, Abort: true,
 				HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
 		case errors.Is(err, ErrSizeLimit):
 			return DescribeResult{Enum: EnumSizeLimit, Model: model, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
 		case errors.Is(err, ErrUnsupported):
 			return DescribeResult{Enum: EnumUnsupportedFormat, Model: model, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
 		default:
-			result.Fallbacks++ // provider 瞬时（429/5xx/空响应）或传输重试后仍失败 → 换下一模型
+			// provider 瞬时（429/5xx/空响应）、传输重试后仍失败、或超时 → 换下一模型
+			result.Fallbacks++
+			lastFallbackEnum = enumFromErr(err)
 			continue
 		}
 	}
-	return DescribeResult{Enum: EnumServiceUnavailable, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
+	if lastFallbackEnum == "" {
+		lastFallbackEnum = EnumServiceUnavailable
+	}
+	return DescribeResult{Enum: lastFallbackEnum, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
 }

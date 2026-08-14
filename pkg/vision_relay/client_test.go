@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -106,8 +108,8 @@ func TestDescribeOneErrorMatrix(t *testing.T) {
 		{"400 停止该图", http.StatusBadRequest, `{"error":{"message":"bad image"}}`, EnumUnsupportedFormat, 1},
 		{"413 不 fallback", http.StatusRequestEntityTooLarge, `{"error":{"message":"too large"}}`, EnumSizeLimit, 1},
 		{"451 审核阻断", http.StatusUnavailableForLegalReasons, `{"error":{"message":"nsfw"}}`, EnumBlocked, 1},
-		{"401 终止 fallback", http.StatusUnauthorized, `{"error":{"message":"invalid key"}}`, EnumServiceUnavailable, 1},
-		{"403 终止 fallback", http.StatusForbidden, `{"error":{"message":"forbidden"}}`, EnumServiceUnavailable, 1},
+		{"401 终止 fallback", http.StatusUnauthorized, `{"error":{"message":"invalid key"}}`, EnumAuthError, 1},
+		{"403 终止 fallback", http.StatusForbidden, `{"error":{"message":"forbidden"}}`, EnumAuthError, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -350,8 +352,8 @@ func TestDescribeOneAuthAbort(t *testing.T) {
 			if !r.Abort {
 				t.Fatal("401/403 must set Abort (request-global auth failure)")
 			}
-			if r.Enum != EnumServiceUnavailable {
-				t.Fatalf("expected service_unavailable enum, got %s", r.Enum)
+			if r.Enum != EnumAuthError {
+				t.Fatalf("expected auth_error enum, got %s", r.Enum)
 			}
 			if r.HTTPCalls != 1 || r.Fallbacks != 0 {
 				t.Fatalf("auth failure must not retry/fallback: calls=%d fallbacks=%d", r.HTTPCalls, r.Fallbacks)
@@ -436,5 +438,230 @@ func TestEngineEnhanceSensitiveCheck(t *testing.T) {
 	}
 	if stats.Success != 0 || stats.Failed != 1 {
 		t.Fatalf("expected failed=1 success=0, got success=%d failed=%d", stats.Success, stats.Failed)
+	}
+}
+
+// fakeDescriptionCache 测试用缓存：Get 命中注入描述，Set 记录写入值。
+type fakeDescriptionCache struct {
+	hits map[string]string
+	sets []string
+}
+
+func (f *fakeDescriptionCache) Get(ctx context.Context, key string) (string, bool) {
+	if f.hits == nil {
+		return "", false
+	}
+	v, ok := f.hits[key]
+	return v, ok
+}
+
+func (f *fakeDescriptionCache) Set(ctx context.Context, key, value string, ttl time.Duration) error {
+	f.sets = append(f.sets, value)
+	return nil
+}
+
+// 网络层错误分类：deadline 耗尽 → ErrTimeout（不重试）；其余 → transportError（可重试）
+func TestClassifyNetworkErr(t *testing.T) {
+	timeout := classifyNetworkErr(context.DeadlineExceeded)
+	if !errors.Is(timeout, ErrTimeout) {
+		t.Fatalf("context.DeadlineExceeded should classify to ErrTimeout, got %v", timeout)
+	}
+	var te *transportError
+	if errors.As(timeout, &te) {
+		t.Fatal("timeout must not classify to transportError (no same-model retry)")
+	}
+	conn := classifyNetworkErr(io.ErrUnexpectedEOF)
+	if !errors.As(conn, &te) {
+		t.Fatalf("generic network error should classify to transportError, got %v", conn)
+	}
+	if errors.Is(conn, ErrTimeout) {
+		t.Fatal("generic network error must not classify to ErrTimeout")
+	}
+}
+
+// 图片级错误 → 稳定枚举：超时/鉴权有独立枚举，不与 provider 瞬时错误混淆
+func TestEnumFromErr(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"timeout", ErrTimeout, EnumTimeout},
+		{"auth", ErrAuth, EnumAuthError},
+		{"size", ErrSizeLimit, EnumSizeLimit},
+		{"unsupported", ErrUnsupported, EnumUnsupportedFormat},
+		{"extract", ErrExtract, EnumUnsupportedFormat},
+		{"blocked", ErrBlocked, EnumBlocked},
+		{"image limit", ErrImageLimit, EnumImageLimit},
+		{"unknown → service_unavailable", errors.New("boom"), EnumServiceUnavailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := enumFromErr(tc.err); got != tc.want {
+				t.Fatalf("enumFromErr(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// 超时（ctx deadline 耗尽）→ 如实上报 timeout 枚举（不吞成 service_unavailable）
+func TestDescribeOneTimeout(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond) // 不响应，直到客户端 deadline 耗尽
+	}))
+	defer ts.Close()
+	client := &VisionClient{HTTPClient: ts.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	r := client.DescribeOne(ctx, "指令", testImageData(), "image/png", testConfig(ts.URL))
+	if r.Enum != EnumTimeout {
+		t.Fatalf("deadline exceeded must surface timeout enum, got %q", r.Enum)
+	}
+}
+
+// 跨请求缓存命中 → 跳过旁路调用（CacheServed 计数 + 描述直接复用）
+func TestEngineEnhanceCacheHit(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Write([]byte(`{"choices":[{"message":{"content":"不应被调用"}}]}`))
+	}))
+	defer ts.Close()
+	pngData := testImageData()
+	cfg := testConfig(ts.URL)
+	cache := &fakeDescriptionCache{hits: map[string]string{
+		descriptionCacheKey(DigestBytes(pngData), BuildInstruction(cfg)): "缓存描述",
+	}}
+	engine := &Engine{Client: &VisionClient{HTTPClient: ts.Client()}, Cache: cache, CacheTTL: time.Hour}
+	stats := &Stats{}
+	raw := `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + base64.StdEncoding.EncodeToString(pngData) + `"}}]}]}`
+	enhanced, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, cfg, stats)
+	if err != nil {
+		t.Fatalf("enhance: %v", err)
+	}
+	if stats.Success != 1 || stats.CacheServed != 1 || stats.VisionCalls != 0 {
+		t.Fatalf("cache hit: success=%d cache_served=%d vision_calls=%d", stats.Success, stats.CacheServed, stats.VisionCalls)
+	}
+	if atomic.LoadInt32(&calls) != 0 {
+		t.Fatalf("cache hit must skip vision sidecall, got %d calls", calls)
+	}
+	if !strings.Contains(string(enhanced), "缓存描述") {
+		t.Fatal("cached description should be injected")
+	}
+}
+
+// 缓存未命中 → 正常识图，成功后写缓存（Set 记录描述值）
+func TestEngineEnhanceCacheWrite(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Write([]byte(`{"choices":[{"message":{"content":"新识图描述"}}]}`))
+	}))
+	defer ts.Close()
+	cache := &fakeDescriptionCache{}
+	engine := &Engine{Client: &VisionClient{HTTPClient: ts.Client()}, Cache: cache, CacheTTL: time.Hour}
+	stats := &Stats{}
+	raw := `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + base64.StdEncoding.EncodeToString(testImageData()) + `"}}]}]}`
+	if _, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, testConfig(ts.URL), stats); err != nil {
+		t.Fatalf("enhance: %v", err)
+	}
+	if atomic.LoadInt32(&calls) != 1 {
+		t.Fatalf("cache miss must call vision sidecall once, got %d", calls)
+	}
+	if len(cache.sets) != 1 || cache.sets[0] != "新识图描述" {
+		t.Fatalf("successful description must be cached, got %v", cache.sets)
+	}
+	if stats.CacheServed != 0 {
+		t.Fatalf("cache miss must not count CacheServed, got %d", stats.CacheServed)
+	}
+}
+
+// 缓存命中但命中敏感词（词库热更新）→ 丢弃缓存走正常识图
+func TestEngineEnhanceCacheSensitiveDiscard(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Write([]byte(`{"choices":[{"message":{"content":"正常描述"}}]}`))
+	}))
+	defer ts.Close()
+	pngData := testImageData()
+	cfg := testConfig(ts.URL)
+	cache := &fakeDescriptionCache{hits: map[string]string{
+		descriptionCacheKey(DigestBytes(pngData), BuildInstruction(cfg)): "敏感缓存描述",
+	}}
+	engine := &Engine{
+		Client:         &VisionClient{HTTPClient: ts.Client()},
+		Cache:          cache,
+		CacheTTL:       time.Hour,
+		SensitiveCheck: func(desc string) bool { return strings.Contains(desc, "敏感") },
+	}
+	stats := &Stats{}
+	raw := `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + base64.StdEncoding.EncodeToString(pngData) + `"}}]}]}`
+	enhanced, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, cfg, stats)
+	if err != nil {
+		t.Fatalf("enhance: %v", err)
+	}
+	if atomic.LoadInt32(&calls) != 1 {
+		t.Fatalf("sensitive cached value must be discarded and re-described, got %d calls", calls)
+	}
+	if !strings.Contains(string(enhanced), "正常描述") {
+		t.Fatal("re-described description should be injected")
+	}
+	if stats.CacheServed != 0 {
+		t.Fatalf("discarded cache hit must not count CacheServed, got %d", stats.CacheServed)
+	}
+}
+
+// 失败原因分布：image_limit（前置）与 unsupported_format（识图）按枚举精确计数
+func TestEngineEnhanceFailedReasons(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest) // 400 → unsupported_format
+		w.Write([]byte(`{"error":{"message":"bad image"}}`))
+	}))
+	defer ts.Close()
+	// 8 张唯一图（MaxImages=6）→ 2 张 image_limit + 6 张 unsupported_format
+	var blocks []string
+	for i := 0; i < 8; i++ {
+		img := image.NewRGBA(image.Rect(0, 0, 10, 10))
+		img.Set(0, 0, color.RGBA{R: uint8(i * 30), A: 255})
+		var buf bytes.Buffer
+		_ = png.Encode(&buf, img)
+		blocks = append(blocks, `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"`+base64.StdEncoding.EncodeToString(buf.Bytes())+`"}}`)
+	}
+	raw := `{"messages":[{"role":"user","content":[` + strings.Join(blocks, ",") + `]}]}`
+	engine := &Engine{Client: &VisionClient{HTTPClient: ts.Client()}}
+	stats := &Stats{}
+	if _, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, testConfig(ts.URL), stats); err != nil {
+		t.Fatalf("enhance: %v", err)
+	}
+	if stats.Failed != 8 {
+		t.Fatalf("expected 8 failed, got %d", stats.Failed)
+	}
+	if stats.FailedReasons[EnumImageLimit] != 2 {
+		t.Fatalf("expected 2 image_limit, got %d", stats.FailedReasons[EnumImageLimit])
+	}
+	if stats.FailedReasons[EnumUnsupportedFormat] != 6 {
+		t.Fatalf("expected 6 unsupported_format, got %d", stats.FailedReasons[EnumUnsupportedFormat])
+	}
+}
+
+// 单图 401 → auth_error 计入失败原因分布（不 fallback 不 retry）
+func TestEngineEnhanceFailedReasonsAuthError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":{"message":"invalid key"}}`))
+	}))
+	defer ts.Close()
+	raw := `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + base64.StdEncoding.EncodeToString(testImageData()) + `"}}]}]}`
+	engine := &Engine{Client: &VisionClient{HTTPClient: ts.Client()}}
+	stats := &Stats{}
+	if _, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, testConfig(ts.URL), stats); err != nil {
+		t.Fatalf("enhance: %v", err)
+	}
+	if stats.Failed != 1 {
+		t.Fatalf("expected 1 failed, got %d", stats.Failed)
+	}
+	if stats.FailedReasons[EnumAuthError] != 1 {
+		t.Fatalf("expected 1 auth_error, got %d", stats.FailedReasons[EnumAuthError])
 	}
 }
