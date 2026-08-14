@@ -443,6 +443,27 @@ func TestFlushIntervalFlushesPartialBatch(t *testing.T) {
 	store.mu.Unlock()
 }
 
+// TestFlushChunksLargeBatch verifies the chunking contract: a batch larger
+// than flushChunkMaxEvents is flushed in multiple chunks, each with its own
+// WriteBatch, so one oversized batch never becomes one oversized write.
+func TestFlushChunksLargeBatch(t *testing.T) {
+	store := &scriptedStore{writeNotify: make(chan struct{}, 64)}
+	d, _ := newTestDispatcher(t, store, func(c *Config) { c.BatchSize = flushChunkMaxEvents + 8 })
+
+	total := flushChunkMaxEvents + 8
+	for i := 0; i < total; i++ {
+		require.True(t, d.TryEnqueue(sampleEventPtr(), 10))
+	}
+	waitNotify(t, store.writeNotify)
+	require.Eventually(t, func() bool { return d.writtenTotal.Load() == int64(total) }, 2*time.Second, time.Millisecond)
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	require.Len(t, store.batches, 2, "a batch larger than flushChunkMaxEvents must flush in two chunks")
+	require.Len(t, store.batches[0], flushChunkMaxEvents)
+	require.Len(t, store.batches[1], 8)
+}
+
 // TestBatchErrorOpensCircuitAndDropsBatch verifies a failed batch is dropped
 // in full, never retried, and opens the circuit with the initial cooldown.
 func TestBatchErrorOpensCircuitAndDropsBatch(t *testing.T) {

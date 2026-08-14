@@ -138,7 +138,7 @@ func newRetentionDispatcher(t *testing.T, st *retentionScriptedStore) (*Dispatch
 	t.Helper()
 	clk := newFakeClock()
 	cfg := DefaultConfig()
-	cfg.QueryTimeout = 200 * time.Millisecond
+	cfg.RetentionTimeout = 200 * time.Millisecond
 	d := NewDispatcher(cfg, st)
 	d.clock = clk
 	d.Start()

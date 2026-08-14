@@ -2,12 +2,15 @@ package relayobserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"github.com/QuantumNous/new-api/common"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // This file implements the bounded, fail-open runtime core of the observer:
@@ -169,6 +172,12 @@ type Dispatcher struct {
 	contentGaps   atomic.Int64
 	recentVolume  atomic.Uint64
 	pgLatencyMS   atomic.Int64
+
+	// contentFailureLoggedAt is the unix-nanosecond timestamp of the last
+	// content-append failure log. It rate-limits the operator-visible
+	// content-health signal so a persistent poison turn does not flood the
+	// error log: one log per contentFailureLogInterval.
+	contentFailureLoggedAt atomic.Int64
 
 	// circuitState is the atomic circuit state machine; circuitCooldown is the
 	// next cooldown value and is written only by the worker; circuitUntilNano
@@ -626,36 +635,71 @@ func (d *Dispatcher) drainDrop(batch []queuedEvent) {
 	}
 }
 
-// flush writes one batch in two phases (T2.6): the metadata write first,
+// flushChunkMaxEvents bounds one flush chunk. A batch is split into
+// chunks of at most this many events; each chunk gets its own deadline derived
+// from the remaining WriteTimeout so a large batch cannot starve its tail
+// under one shared deadline.
+const flushChunkMaxEvents = 32
+
+// flush writes one batch in bounded chunks. Each chunk gets its own
+// deadline derived from the remaining WriteTimeout. A metadata-write failure
+// drops the rest of the batch and returns an error so the caller opens the
+// circuit (unchanged). A content-append failure does NOT open the circuit:
+// the appends are isolated and the flush continues, so a deterministic
+// poison turn can never stop the metadata stream. The batch is always
+// emptied.
+func (d *Dispatcher) flush(batch *[]queuedEvent) error {
+	start := d.clock.Now()
+	// The chunk deadline is real wall-clock: context.WithTimeout needs a real
+	// duration, and the fake clock seam drives worker timers, not context
+	// cancellation. Each chunk derives its deadline from the same start so a
+	// large batch cannot exhaust the budget before its tail chunks run.
+	deadline := time.Now().Add(d.cfg.WriteTimeout)
+	for len(*batch) > 0 {
+		chunkSize := len(*batch)
+		if chunkSize > flushChunkMaxEvents {
+			chunkSize = flushChunkMaxEvents
+		}
+		chunk := (*batch)[:chunkSize]
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			d.droppedTotal.Add(int64(len(*batch)))
+			*batch = (*batch)[:0]
+			d.pgLatencyMS.Store(int64(d.clock.Now().Sub(start) / time.Millisecond))
+			return fmt.Errorf("relayobserver: flush deadline exhausted")
+		}
+		ctx, cancel := context.WithTimeout(d.stopCtxSnapshot(), remaining)
+		err := d.flushChunk(ctx, &chunk)
+		cancel()
+		if err != nil {
+			// The metadata write failed: drop the rest of the batch (never
+			// retried, never spooled) and return so the caller opens the
+			// circuit.
+			d.droppedTotal.Add(int64(len(*batch)))
+			*batch = (*batch)[:0]
+			d.pgLatencyMS.Store(int64(d.clock.Now().Sub(start) / time.Millisecond))
+			return err
+		}
+		*batch = (*batch)[chunkSize:]
+	}
+	d.pgLatencyMS.Store(int64(d.clock.Now().Sub(start) / time.Millisecond))
+	return nil
+}
+
+// flushChunk writes one chunk in two phases (T2.6): the metadata write first,
 // then the captured content appends. Content planning runs before the
 // metadata write so the content_state column carries the true normalization
-// outcome. A failed metadata write drops the whole batch (never retried,
-// never spooled) and counts it; a failed content append keeps the metadata
-// rows (already written and idempotent) and retains the appends for the next
-// pass. Either failure returns an error and the caller opens the circuit. The
-// batch is always emptied.
-func (d *Dispatcher) flush(batch *[]queuedEvent) error {
-	n := len(*batch)
-	if n == 0 {
-		return nil
-	}
-	start := d.clock.Now()
-	appends := d.planContent(*batch)
-	ctx, cancel := context.WithTimeout(d.stopCtxSnapshot(), d.cfg.WriteTimeout)
-	defer cancel()
+// outcome. A metadata-write failure returns an error (the caller opens the
+// circuit). A content-append failure is absorbed here: the appends are
+// isolated and nil is returned so the circuit stays closed.
+func (d *Dispatcher) flushChunk(ctx context.Context, chunk *[]queuedEvent) error {
+	n := len(*chunk)
+	appends := d.planContent(*chunk)
 	events := make([]Event, n)
-	for i := range *batch {
-		events[i] = *(*batch)[i].ev
+	for i := range *chunk {
+		events[i] = *(*chunk)[i].ev
 	}
-	err := d.store.WriteBatch(ctx, events)
-	*batch = (*batch)[:0]
-	if err != nil {
-		// The metadata write failed: the current content plans die with the
-		// batch — no row was written for them — while appends retained from
-		// earlier failures stay queued for the next pass (their metadata rows
-		// were already written, so they still need their content).
-		d.droppedTotal.Add(int64(n))
-		d.pgLatencyMS.Store(int64(d.clock.Now().Sub(start) / time.Millisecond))
+	if err := d.store.WriteBatch(ctx, events); err != nil {
 		return err
 	}
 	d.writtenTotal.Add(int64(n))
@@ -663,13 +707,90 @@ func (d *Dispatcher) flush(batch *[]queuedEvent) error {
 	d.pendingAppends = nil
 	if len(appends) > 0 {
 		if err := d.store.AppendTurns(ctx, appends); err != nil {
-			d.retainPendingAppends(appends)
-			d.pgLatencyMS.Store(int64(d.clock.Now().Sub(start) / time.Millisecond))
-			return err
+			d.handleContentAppendFailure(appends, err)
 		}
 	}
-	d.pgLatencyMS.Store(int64(d.clock.Now().Sub(start) / time.Millisecond))
 	return nil
+}
+
+// handleContentAppendFailure isolates failed content appends. Without
+// isolation a single deterministic poison turn (constraint violation, invalid
+// digest, encode error) would be retained and retried forever, blocking every
+// healthy turn behind it in the pending queue. Each append is retried
+// individually under a fresh budget bounded by one WriteTimeout: turns that
+// now succeed are already persisted (idempotent); turns that fail
+// deterministically are dropped and counted as content gaps; transient
+// failures (deadlock, timeout, connection loss) are retained for the next
+// pass. The metadata rows stay written either way.
+func (d *Dispatcher) handleContentAppendFailure(appends []ContentInput, firstErr error) {
+	d.logContentHealth(firstErr, len(appends))
+	deadline := time.Now().Add(d.cfg.WriteTimeout)
+	retained := make([]ContentInput, 0, len(appends))
+	for i := range appends {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			// Isolation budget exhausted: retain the rest for the next pass.
+			retained = append(retained, appends[i:]...)
+			break
+		}
+		ctx, cancel := context.WithTimeout(d.stopCtxSnapshot(), remaining)
+		err := d.store.AppendTurns(ctx, []ContentInput{appends[i]})
+		cancel()
+		if err == nil {
+			continue // single-turn retry succeeded: already persisted idempotently
+		}
+		if isDeterministicContentError(err) {
+			// Deterministic poison: drop the turn and count a content gap.
+			d.contentGaps.Add(1)
+			continue
+		}
+		// Transient or unknown failure: retain for the next pass.
+		retained = append(retained, appends[i])
+	}
+	d.retainPendingAppends(retained)
+}
+
+// isDeterministicContentError classifies a content-append failure as a
+// permanent poison. Only PostgreSQL data exceptions (22xxx), integrity
+// constraint violations (23xxx), and datatype mismatches (42804) are
+// deterministic: the same turn will fail on every retry, so it must be
+// dropped. Everything else — deadlock (40P01), serialization failure (40001),
+// query cancellation (57014), connection loss, context deadline, and unknown
+// errors — is retained for the next pass, because it may succeed later.
+func isDeterministicContentError(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	if len(pgErr.Code) < 2 {
+		return false
+	}
+	switch pgErr.Code[:2] {
+	case "22", "23": // data exception / integrity constraint violation
+		return true
+	}
+	return pgErr.Code == "42804" // datatype mismatch
+}
+
+// contentFailureLogInterval rate-limits the operator-visible content-health
+// signal.
+const contentFailureLogInterval = time.Minute
+
+// logContentHealth records a rate-limited operator-visible signal when content
+// appends fail. The observer stays fail-open and the circuit stays
+// closed, but the degradation must not be silent: without it a persistently
+// failing content store looks identical to a healthy one in the status
+// counters until someone polls ContentGapsTotal.
+func (d *Dispatcher) logContentHealth(err error, turns int) {
+	now := time.Now().UnixNano()
+	last := d.contentFailureLoggedAt.Load()
+	if now-last < int64(contentFailureLogInterval) {
+		return
+	}
+	if !d.contentFailureLoggedAt.CompareAndSwap(last, now) {
+		return
+	}
+	common.SysError(fmt.Sprintf("relayobserver: content append failed (turns=%d): %v", turns, err))
 }
 
 // retainPendingAppends keeps failed content appends for the next pass, bounded
@@ -728,13 +849,20 @@ func (d *Dispatcher) planContent(batch []queuedEvent) []ContentInput {
 		aliases := make([]Alias, 0, 1+len(idRes.Auxiliary))
 		aliases = append(aliases, idRes.Primary)
 		aliases = append(aliases, idRes.Auxiliary...)
+		var previousAliases []Alias
+		if idRes.PreviousPrimary.Digest != "" {
+			previousAliases = make([]Alias, 0, 1+len(idRes.PreviousAuxiliary))
+			previousAliases = append(previousAliases, idRes.PreviousPrimary)
+			previousAliases = append(previousAliases, idRes.PreviousAuxiliary...)
+		}
 		appends = append(appends, ContentInput{
-			NodeScope:    ev.NodeScope,
-			UserID:       ev.UserID,
-			Aliases:      aliases,
-			TurnID:       turnRowID(ev.NodeScope, ev.EventID),
-			ContentState: plan.state,
-			Items:        plan.items,
+			NodeScope:       ev.NodeScope,
+			UserID:          ev.UserID,
+			Aliases:         aliases,
+			PreviousAliases: previousAliases,
+			TurnID:          turnRowID(ev.NodeScope, ev.EventID),
+			ContentState:    plan.state,
+			Items:           plan.items,
 		})
 	}
 	return appends
@@ -951,10 +1079,12 @@ func (d *Dispatcher) failRetentionPass(err error) {
 	common.SysError(fmt.Sprintf("relayobserver: retention pass failed: %v", err))
 }
 
-// retentionSegmentCtx bounds one segment by the configuration query timeout,
-// inherited from the stop context so shutdown aborts the segment.
+// retentionSegmentCtx bounds one segment by the independent retention budget,
+// inherited from the stop context so shutdown aborts the segment. The
+// budget is deliberately separate from QueryTimeout: retention deletes at
+// scale on its own goroutine and must not share the 500ms Root-query budget.
 func (d *Dispatcher) retentionSegmentCtx() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(d.stopCtxSnapshot(), d.cfg.QueryTimeout)
+	return context.WithTimeout(d.stopCtxSnapshot(), d.cfg.RetentionTimeout)
 }
 
 // retentionTurnsSegment deletes expired turns within one segment budget: the

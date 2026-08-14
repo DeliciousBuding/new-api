@@ -906,18 +906,18 @@ func TestReconstructTurnThroughSeam(t *testing.T) {
 	full.checkpointID = full.id
 
 	ctx := context.Background()
-	got, err := reconstructTurnQ(ctx, fx, uuid.MustParse(sid), uuid.MustParse(t1), testHMACKey)
+	got, err := reconstructTurnQ(ctx, fx, uuid.MustParse(sid), uuid.MustParse(t1), testHMACKey, "")
 	require.NoError(t, err)
 	require.Len(t, got.Items, 2)
 	assert.Equal(t, "one", got.Items[0].Content[0].Text)
 	assert.Equal(t, "two", got.Items[1].Content[0].Text)
 
-	got, err = reconstructTurnQ(ctx, fx, uuid.MustParse(sid), uuid.MustParse(t2), testHMACKey)
+	got, err = reconstructTurnQ(ctx, fx, uuid.MustParse(sid), uuid.MustParse(t2), testHMACKey, "")
 	require.NoError(t, err)
 	require.Len(t, got.Items, 3)
 	assert.Equal(t, "three", got.Items[2].Content[0].Text)
 
-	_, err = reconstructTurnQ(ctx, fx, uuid.MustParse(sid), uuid.New(), testHMACKey)
+	_, err = reconstructTurnQ(ctx, fx, uuid.MustParse(sid), uuid.New(), testHMACKey, "")
 	require.Error(t, err)
 	code, ok := ContentErrorOf(err)
 	require.True(t, ok)
@@ -935,7 +935,7 @@ func TestReconstructMissingObjectAndCorruptObject(t *testing.T) {
 		turn := uuid.NewString()
 		item := contentItemWith(t, "ghost")
 		fx.addContext(turn, sid, 0, 0, []string{item.Hmac})
-		_, err := reconstructTurnQ(context.Background(), fx, uuid.MustParse(sid), uuid.MustParse(turn), testHMACKey)
+		_, err := reconstructTurnQ(context.Background(), fx, uuid.MustParse(sid), uuid.MustParse(turn), testHMACKey, "")
 		require.Error(t, err)
 		code, ok := ContentErrorOf(err)
 		require.True(t, ok)
@@ -952,7 +952,7 @@ func TestReconstructMissingObjectAndCorruptObject(t *testing.T) {
 		row := fx.objectsData[key]
 		row.payload = row.payload[:len(row.payload)-3] // truncate the frame
 		fx.objectsData[key] = row
-		_, err := reconstructTurnQ(context.Background(), fx, uuid.MustParse(sid), uuid.MustParse(turn), testHMACKey)
+		_, err := reconstructTurnQ(context.Background(), fx, uuid.MustParse(sid), uuid.MustParse(turn), testHMACKey, "")
 		require.Error(t, err)
 		_, ok := ContentErrorOf(err)
 		require.True(t, ok, "a corrupt stored object classifies")
@@ -984,7 +984,7 @@ func TestReconstructGroupOrdinalOrder(t *testing.T) {
 	require.NotNil(t, full)
 	d.checkpointID = full.id
 
-	group, err := reconstructGroupQ(context.Background(), fx, uuid.MustParse(sid), full.id, testHMACKey)
+	group, err := reconstructGroupQ(context.Background(), fx, uuid.MustParse(sid), full.id, testHMACKey, "")
 	require.NoError(t, err)
 	require.Len(t, group, 2)
 	assert.Equal(t, 0, group[0].Ordinal)
@@ -1118,7 +1118,7 @@ func TestDeleteGroupThroughSeam(t *testing.T) {
 func TestDecodeItemRejectsInvalidJSON(t *testing.T) {
 	raw, err := zstdCompress([]byte("this is not json"))
 	require.NoError(t, err)
-	_, err = decodeItem(raw, strings.Repeat("c", 64), int64(len("this is not json")), testHMACKey)
+	_, err = decodeItem(raw, strings.Repeat("c", 64), int64(len("this is not json")), testHMACKey, "")
 	require.Error(t, err)
 	code, ok := ContentErrorOf(err)
 	require.True(t, ok)
@@ -1135,7 +1135,7 @@ func TestReconstructEmptyDigestList(t *testing.T) {
 	full := fx.contexts[turn]
 	full.checkpointID = full.id
 
-	got, err := reconstructTurnQ(context.Background(), fx, uuid.MustParse(sid), uuid.MustParse(turn), testHMACKey)
+	got, err := reconstructTurnQ(context.Background(), fx, uuid.MustParse(sid), uuid.MustParse(turn), testHMACKey, "")
 	require.NoError(t, err)
 	assert.Empty(t, got.Items)
 }
@@ -1218,7 +1218,7 @@ func TestGapMarkerDigestNeverCollidesWithRealItem(t *testing.T) {
 		t2 := ContentInput{NodeScope: f.node, UserID: f.user, Aliases: []Alias{f.alias}, TurnID: uuid.New(), Items: truncated.Items}
 		require.NoError(t, appendTurnTx(context.Background(), f.tx, &t2))
 
-		got, err := reconstructTurnQ(context.Background(), f.tx, f.sessionID(), t2.TurnID, testHMACKey)
+		got, err := reconstructTurnQ(context.Background(), f.tx, f.sessionID(), t2.TurnID, testHMACKey, "")
 		require.NoError(t, err)
 		require.NotEmpty(t, got.Items)
 		reconstructedMarker := findGap(t, got.Items)
@@ -1251,7 +1251,7 @@ func TestGapMarkerDigestNeverCollidesWithRealItem(t *testing.T) {
 		t2 := ContentInput{NodeScope: f.node, UserID: f.user, Aliases: []Alias{f.alias}, TurnID: uuid.New(), Items: full.Items}
 		require.NoError(t, appendTurnTx(context.Background(), f.tx, &t2))
 
-		got, err := reconstructTurnQ(context.Background(), f.tx, f.sessionID(), t2.TurnID, testHMACKey)
+		got, err := reconstructTurnQ(context.Background(), f.tx, f.sessionID(), t2.TurnID, testHMACKey, "")
 		require.NoError(t, err)
 		require.Len(t, got.Items, 3)
 		last := got.Items[len(got.Items)-1]

@@ -790,11 +790,11 @@ LIMIT $3`, float64(winSec), start, windows+1)
 // read is bounded by the T2.3 reconstruction: one context row (a delta also
 // reads exactly one full checkpoint) plus the content objects of its digest
 // list. Content errors pass through with their classification.
-func turnContextQ(ctx context.Context, q contentQuerier, query ContextQuery) (TurnContextResult, error) {
+func turnContextQ(ctx context.Context, q contentQuerier, query ContextQuery, previousKey string) (TurnContextResult, error) {
 	if err := ctx.Err(); err != nil {
 		return TurnContextResult{}, classifiedQueryError(QueryErrTimeout, "query context expired", err)
 	}
-	rt, err := reconstructTurnQ(ctx, q, query.SessionID, query.TurnID, query.HMACKey)
+	rt, err := reconstructTurnQ(ctx, q, query.SessionID, query.TurnID, query.HMACKey, previousKey)
 	if err != nil {
 		return TurnContextResult{}, err
 	}
@@ -877,7 +877,7 @@ func (q *pgQueryStore) TurnContext(ctx context.Context, query ContextQuery) (Tur
 	var out TurnContextResult
 	err := q.withSlot(ctx, func() error {
 		var err error
-		out, err = turnContextQ(ctx, sqlDBAdapter{db: q.store.db}, query)
+		out, err = turnContextQ(ctx, sqlDBAdapter{db: q.store.db}, query, q.store.previousHMACKey)
 		return err
 	})
 	return out, err
@@ -888,7 +888,7 @@ func (q *pgQueryStore) Transcript(ctx context.Context, query TranscriptQuery) (T
 	var out TranscriptPage
 	err := q.withSlot(ctx, func() error {
 		var err error
-		out, err = transcriptQ(ctx, sqlDBAdapter{db: q.store.db}, query)
+		out, err = transcriptQ(ctx, sqlDBAdapter{db: q.store.db}, query, q.store.previousHMACKey)
 		return err
 	})
 	return out, err
@@ -912,7 +912,7 @@ type transcriptFlatRef struct {
 // compacted view is shown once instead of dropping messages. A divergence
 // (same-length or longer list whose content changed) starts at the real
 // common prefix so edited/inserted messages are not silently dropped.
-func transcriptQ(ctx context.Context, q contentQuerier, query TranscriptQuery) (TranscriptPage, error) {
+func transcriptQ(ctx context.Context, q contentQuerier, query TranscriptQuery, previousKey string) (TranscriptPage, error) {
 	if err := ctx.Err(); err != nil {
 		return TranscriptPage{}, classifiedQueryError(QueryErrTimeout, "query context expired", err)
 	}
@@ -1014,7 +1014,7 @@ func transcriptQ(ctx context.Context, q contentQuerier, query TranscriptQuery) (
 	for _, ref := range page {
 		digests = append(digests, ref.digest)
 	}
-	items, err := loadContentItemsQ(ctx, q, query.SessionID, digests, query.HMACKey)
+	items, err := loadContentItemsQ(ctx, q, query.SessionID, digests, query.HMACKey, previousKey)
 	if err != nil {
 		return TranscriptPage{}, err
 	}

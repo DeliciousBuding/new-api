@@ -79,7 +79,7 @@ func TestEncodeDecodeRoundtrip(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, logical, gotLogical, "logical byte count is the canonical JSON length")
 
-		got, err := decodeItem(payload, item.Hmac, logical, testHMACKey)
+		got, err := decodeItem(payload, item.Hmac, logical, testHMACKey, "")
 		require.NoError(t, err)
 		assert.Equal(t, item, got, "decode must return the exact stored item")
 	})
@@ -96,7 +96,7 @@ func TestEncodeDecodeRoundtrip(t *testing.T) {
 		require.NoError(t, err)
 		assert.Less(t, len(payload), int(logical), "zstd payload must compress compressible text")
 
-		got, err := decodeItem(payload, item.Hmac, logical, testHMACKey)
+		got, err := decodeItem(payload, item.Hmac, logical, testHMACKey, "")
 		require.NoError(t, err)
 		assert.Equal(t, item, got)
 	})
@@ -122,7 +122,7 @@ func TestDecodeRejectsTruncatedPayload(t *testing.T) {
 	payload, _, err := encodeItem(item)
 	require.NoError(t, err)
 
-	_, err = decodeItem(payload[:len(payload)-5], item.Hmac, logical, testHMACKey)
+	_, err = decodeItem(payload[:len(payload)-5], item.Hmac, logical, testHMACKey, "")
 	require.Error(t, err)
 	code, ok := ContentErrorOf(err)
 	require.True(t, ok, "truncated payload must return a classified ContentError")
@@ -140,7 +140,7 @@ func TestDecodeRejectsBitFlip(t *testing.T) {
 
 	flipped := append([]byte(nil), payload...)
 	flipped[len(flipped)/2] ^= 0xff
-	_, err = decodeItem(flipped, item.Hmac, logical, testHMACKey)
+	_, err = decodeItem(flipped, item.Hmac, logical, testHMACKey, "")
 	require.Error(t, err)
 	_, ok := ContentErrorOf(err)
 	require.True(t, ok, "bit-flipped payload must return a classified ContentError")
@@ -157,14 +157,14 @@ func TestDecodeRejectsLengthMismatch(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("declared too long", func(t *testing.T) {
-		_, err := decodeItem(payload, item.Hmac, logical+10, testHMACKey)
+		_, err := decodeItem(payload, item.Hmac, logical+10, testHMACKey, "")
 		require.Error(t, err)
 		code, ok := ContentErrorOf(err)
 		require.True(t, ok)
 		assert.Equal(t, ContentErrTruncated, code, "decoded bytes below the declared count classify as truncated")
 	})
 	t.Run("declared too short", func(t *testing.T) {
-		_, err := decodeItem(payload, item.Hmac, logical-10, testHMACKey)
+		_, err := decodeItem(payload, item.Hmac, logical-10, testHMACKey, "")
 		require.Error(t, err)
 		code, ok := ContentErrorOf(err)
 		require.True(t, ok)
@@ -185,7 +185,7 @@ func TestDecodeRejectsDigestMismatch(t *testing.T) {
 	other.Content = []CanonicalPart{{Type: partTypeText, Text: "tampered"}}
 	other.Hmac = digestOfItem(t, other)
 
-	_, err = decodeItem(payload, other.Hmac, logical, testHMACKey)
+	_, err = decodeItem(payload, other.Hmac, logical, testHMACKey, "")
 	require.Error(t, err)
 	code, ok := ContentErrorOf(err)
 	require.True(t, ok)
@@ -208,12 +208,12 @@ func TestDecodeVerifiesGapMarkerDigest(t *testing.T) {
 	payload, _, err := encodeItem(gap)
 	require.NoError(t, err)
 
-	got, err := decodeItem(payload, gap.Hmac, logical, testHMACKey)
+	got, err := decodeItem(payload, gap.Hmac, logical, testHMACKey, "")
 	require.NoError(t, err)
 	assert.Equal(t, gap, got)
 
 	// A placeholder digest (or a forged legacy value) must fail closed.
-	_, err = decodeItem(payload, "a1b2c3", logical, testHMACKey)
+	_, err = decodeItem(payload, "a1b2c3", logical, testHMACKey, "")
 	require.Error(t, err)
 	code, ok := ContentErrorOf(err)
 	require.True(t, ok)
@@ -230,7 +230,7 @@ func TestDecodeWithoutKeySkipsDigest(t *testing.T) {
 	payload, _, err := encodeItem(item)
 	require.NoError(t, err)
 
-	got, err := decodeItem(payload, item.Hmac, logical, "")
+	got, err := decodeItem(payload, item.Hmac, logical, "", "")
 	require.NoError(t, err)
 	assert.Equal(t, item, got)
 }
@@ -243,7 +243,7 @@ func TestDecodeRejectsOversizedDeclaredLength(t *testing.T) {
 	payload, _, err := encodeItem(item)
 	require.NoError(t, err)
 
-	_, err = decodeItem(payload, item.Hmac, maxItemDecodeBytes+1, testHMACKey)
+	_, err = decodeItem(payload, item.Hmac, maxItemDecodeBytes+1, testHMACKey, "")
 	require.Error(t, err)
 	_, ok := ContentErrorOf(err)
 	require.True(t, ok, "oversized declared length must return a classified ContentError")
@@ -259,7 +259,7 @@ func TestDecodeRejectsItemAboveSSOTHardMaximum(t *testing.T) {
 	payload, _, err := encodeItem(item)
 	require.NoError(t, err)
 
-	_, err = decodeItem(payload, item.Hmac, MaxItemBytes+1, testHMACKey)
+	_, err = decodeItem(payload, item.Hmac, MaxItemBytes+1, testHMACKey, "")
 	require.Error(t, err)
 	code, ok := ContentErrorOf(err)
 	require.True(t, ok, "a declared length above the item hard maximum must be classified")
@@ -303,9 +303,42 @@ func TestContentErrorClassification(t *testing.T) {
 // TestDecodeRejectsEmptyPayload locks the empty-payload guard: a stored
 // payload of zero bytes is rejected as a codec error.
 func TestDecodeRejectsEmptyPayload(t *testing.T) {
-	_, err := decodeItem(nil, strings.Repeat("d", 64), 10, testHMACKey)
+	_, err := decodeItem(nil, strings.Repeat("d", 64), 10, testHMACKey, "")
 	require.Error(t, err)
 	code, ok := ContentErrorOf(err)
 	require.True(t, ok)
 	assert.Equal(t, ContentErrCodec, code)
+}
+
+// TestDecodeItemPreviousKeyFallback locks the rotation decode contract: an
+// item whose digest was computed under the previous generation key still
+// decodes when the current key does not match but the previous key does, and
+// still fails closed when neither key matches.
+func TestDecodeItemPreviousKeyFallback(t *testing.T) {
+	const previousKey = "previous-generation-key"
+	item := CanonicalItem{
+		Kind:    CanonicalKindMessage,
+		Role:    "user",
+		Content: []CanonicalPart{{Type: partTypeText, Text: "written before rotation"}},
+	}
+	clear := item
+	clear.Hmac = ""
+	digestRaw, err := common.Marshal(clear)
+	require.NoError(t, err)
+	item.Hmac = hmacDigest(digestRaw, previousKey) // digest under the previous key
+
+	payload, logical, err := encodeItem(item)
+	require.NoError(t, err)
+
+	// Current key mismatches, previous key matches: decode succeeds.
+	got, err := decodeItem(payload, item.Hmac, logical, "current-generation-key", previousKey)
+	require.NoError(t, err)
+	assert.Equal(t, item, got)
+
+	// Neither key matches: decode fails closed as a digest mismatch.
+	_, err = decodeItem(payload, item.Hmac, logical, "current-generation-key", "wrong-previous-key")
+	require.Error(t, err)
+	code, ok := ContentErrorOf(err)
+	require.True(t, ok)
+	assert.Equal(t, ContentErrDigestMismatch, code)
 }

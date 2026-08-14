@@ -182,6 +182,8 @@ func TestVersionListPredicates(t *testing.T) {
 		v2       bool
 		v3       bool
 		v4       bool
+		v5       bool
+		v6       bool
 		current  bool
 	}{
 		{name: "empty", versions: nil},
@@ -190,8 +192,9 @@ func TestVersionListPredicates(t *testing.T) {
 		{name: "v1 and v2", versions: []int{1, 2}, v2: true},
 		{name: "v1 through v3", versions: []int{1, 2, 3}, v3: true},
 		{name: "v1 through v4", versions: []int{1, 2, 3, 4}, v4: true},
-		{name: "current v5", versions: []int{1, 2, 3, 4, 5}, current: true},
-		{name: "six versions", versions: []int{1, 2, 3, 4, 5, 6}},
+		{name: "v1 through v5", versions: []int{1, 2, 3, 4, 5}, v5: true},
+		{name: "v1 through v6", versions: []int{1, 2, 3, 4, 5, 6}, v6: true},
+		{name: "current v7", versions: []int{1, 2, 3, 4, 5, 6, 7}, current: true},
 		{name: "unknown version", versions: []int{99}},
 		{name: "out of order", versions: []int{2, 1}},
 		{name: "duplicate", versions: []int{1, 1}},
@@ -201,6 +204,8 @@ func TestVersionListPredicates(t *testing.T) {
 			assert.Equal(t, tt.v2, isVersionListV2(tt.versions))
 			assert.Equal(t, tt.v3, isVersionListV3(tt.versions))
 			assert.Equal(t, tt.v4, isVersionListV4(tt.versions))
+			assert.Equal(t, tt.v5, isVersionListV5(tt.versions))
+			assert.Equal(t, tt.v6, isVersionListV6(tt.versions))
 			assert.Equal(t, tt.current, isVersionListCurrent(tt.versions))
 		})
 	}
@@ -262,8 +267,8 @@ func versionRows(versions ...int) []*fakeRow {
 	return rows
 }
 
-// TestVerifySchemaBranches locks every verifySchema branch: complete v1-v4
-// prefixes and current v5 pass; foreign/empty/extra version lists are
+// TestVerifySchemaBranches locks every verifySchema branch: complete v1-v6
+// prefixes and current v7 pass; foreign/empty/extra version lists are
 // rejected, and a current schema missing its v2 column or v4 alias identity
 // index is rejected.
 func TestVerifySchemaBranches(t *testing.T) {
@@ -284,9 +289,17 @@ func TestVerifySchemaBranches(t *testing.T) {
 		fx := &fakeDbtx{versions: versionRows(1, 2, 3, 4), tables: allTables()}
 		require.NoError(t, verifySchema(ctx, fx))
 	})
-	t.Run("current v5 passes", func(t *testing.T) {
+	t.Run("complete v5 passes", func(t *testing.T) {
+		fx := &fakeDbtx{versions: versionRows(1, 2, 3, 4, 5), tables: allTables()}
+		require.NoError(t, verifySchema(ctx, fx))
+	})
+	t.Run("complete v6 passes", func(t *testing.T) {
+		fx := &fakeDbtx{versions: versionRows(1, 2, 3, 4, 5, 6), tables: allTables()}
+		require.NoError(t, verifySchema(ctx, fx))
+	})
+	t.Run("current v7 passes", func(t *testing.T) {
 		fx := &fakeDbtx{
-			versions:        versionRows(1, 2, 3, 4, 5),
+			versions:        versionRows(1, 2, 3, 4, 5, 6, 7),
 			tables:          allTables(),
 			hasV2Col:        true,
 			hasV4AliasIndex: true,
@@ -294,7 +307,7 @@ func TestVerifySchemaBranches(t *testing.T) {
 		require.NoError(t, verifySchema(ctx, fx))
 	})
 	t.Run("version mismatch rejected", func(t *testing.T) {
-		for _, versions := range [][]int{nil, {2}, {99}, {1, 2, 3, 4, 5, 6}, {2, 1}} {
+		for _, versions := range [][]int{nil, {2}, {99}, {1, 2, 3, 4, 5, 7}, {1, 2, 3, 4, 5, 6, 6}, {2, 1}} {
 			fx := &fakeDbtx{versions: versionRows(versions...), tables: allTables()}
 			err := verifySchema(ctx, fx)
 			require.Error(t, err)
@@ -310,7 +323,7 @@ func TestVerifySchemaBranches(t *testing.T) {
 	})
 	t.Run("missing v2 column rejected", func(t *testing.T) {
 		fx := &fakeDbtx{
-			versions:        versionRows(1, 2, 3, 4, 5),
+			versions:        versionRows(1, 2, 3, 4, 5, 6, 7),
 			tables:          allTables(),
 			hasV2Col:        false,
 			hasV4AliasIndex: true,
@@ -321,7 +334,7 @@ func TestVerifySchemaBranches(t *testing.T) {
 	})
 	t.Run("missing v4 alias index rejected", func(t *testing.T) {
 		fx := &fakeDbtx{
-			versions:        versionRows(1, 2, 3, 4, 5),
+			versions:        versionRows(1, 2, 3, 4, 5, 6, 7),
 			tables:          allTables(),
 			hasV2Col:        true,
 			hasV4AliasIndex: false,

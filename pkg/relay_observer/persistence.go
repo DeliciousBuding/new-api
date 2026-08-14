@@ -420,6 +420,23 @@ func resolvePrimarySessionTx(ctx context.Context, tx contentTx, in *ContentInput
 		return SessionResolution{}, err
 	}
 
+	//  a primary alias miss under the current key may be a rotation
+	// boundary — the same raw value was keyed under the previous generation.
+	// Adopt the session bound to the previous alias and re-bind the current
+	// alias so future turns resolve through the current key without fallback.
+	if len(in.PreviousAliases) > 0 {
+		adopted, err := lookupAliasSessionTx(ctx, tx, in.NodeScope, in.UserID, in.PreviousAliases[0], true)
+		if err == nil {
+			if _, err := bindAliasRowTx(ctx, tx, in.NodeScope, in.UserID, primary, adopted); err != nil {
+				return SessionResolution{}, err
+			}
+			return SessionResolution{SessionID: adopted}, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return SessionResolution{}, err
+		}
+	}
+
 	// First sight of this primary alias: create the session and bind it.
 	sid = uuid.New()
 	if _, err := tx.Exec(ctx, `INSERT INTO observer_sessions (id, node_scope, user_id, client_family, first_seen, last_seen, turn_count, gap_count) VALUES ($1, $2, $3, $4, now(), now(), 0, 0) ON CONFLICT (id) DO NOTHING`,
@@ -759,16 +776,16 @@ func bumpSessionTx(ctx context.Context, tx contentTx, in *ContentInput, sessionI
 // ReconstructTurn implements ContentPersistence. See the interface comment
 // for the full contract.
 func (s *pgStore) ReconstructTurn(ctx context.Context, sessionID, turnID uuid.UUID, hmacKey string) (ReconstructedTurn, error) {
-	return reconstructTurnQ(ctx, sqlDBAdapter{db: s.db}, sessionID, turnID, hmacKey)
+	return reconstructTurnQ(ctx, sqlDBAdapter{db: s.db}, sessionID, turnID, hmacKey, s.previousHMACKey)
 }
 
 // reconstructTurnQ rebuilds one turn through the query seam.
-func reconstructTurnQ(ctx context.Context, q contentQuerier, sessionID, turnID uuid.UUID, hmacKey string) (ReconstructedTurn, error) {
+func reconstructTurnQ(ctx context.Context, q contentQuerier, sessionID, turnID uuid.UUID, hmacKey, previousKey string) (ReconstructedTurn, error) {
 	row, err := loadContextRowQ(ctx, q, sessionID, turnID)
 	if err != nil {
 		return ReconstructedTurn{}, err
 	}
-	items, err := reconstructItemsQ(ctx, q, sessionID, row, hmacKey)
+	items, err := reconstructItemsQ(ctx, q, sessionID, row, hmacKey, previousKey)
 	if err != nil {
 		return ReconstructedTurn{}, err
 	}
@@ -794,7 +811,7 @@ func loadContextRowQ(ctx context.Context, q contentQuerier, sessionID uuid.UUID,
 // depth at most one: a full reads its own digest list; a delta reads exactly
 // one full checkpoint (checked to be a full, never a chained delta) plus its
 // suffix row.
-func reconstructItemsQ(ctx context.Context, q contentQuerier, sessionID uuid.UUID, row contextRow, hmacKey string) ([]CanonicalItem, error) {
+func reconstructItemsQ(ctx context.Context, q contentQuerier, sessionID uuid.UUID, row contextRow, hmacKey, previousKey string) ([]CanonicalItem, error) {
 	digests, err := reconstructDigests(row, func(id int64) (contextRow, error) {
 		fullRow, err := loadContextRowByIDQ(ctx, q, sessionID, id)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -805,7 +822,7 @@ func reconstructItemsQ(ctx context.Context, q contentQuerier, sessionID uuid.UUI
 	if err != nil {
 		return nil, err
 	}
-	return loadContentItemsQ(ctx, q, sessionID, digests, hmacKey)
+	return loadContentItemsQ(ctx, q, sessionID, digests, hmacKey, previousKey)
 }
 
 // reconstructDigests decides the digest list of one context row with decode
@@ -857,7 +874,7 @@ func loadContextRowByIDQ(ctx context.Context, q contentQuerier, sessionID uuid.U
 // decodes each with the fail-closed validation of codec.go. A digest with no
 // stored object is a classified missing-content error; a corrupt, truncated,
 // or digest-mismatched object is rejected with its classification.
-func loadContentItemsQ(ctx context.Context, q contentQuerier, sessionID uuid.UUID, digests []string, hmacKey string) ([]CanonicalItem, error) {
+func loadContentItemsQ(ctx context.Context, q contentQuerier, sessionID uuid.UUID, digests []string, hmacKey, previousKey string) ([]CanonicalItem, error) {
 	if len(digests) == 0 {
 		return nil, nil
 	}
@@ -896,7 +913,7 @@ func loadContentItemsQ(ctx context.Context, q contentQuerier, sessionID uuid.UUI
 		if !ok {
 			return nil, classifiedError(ContentErrMissingContent, "digest %s has no content object in session %s", d, sessionID)
 		}
-		item, err := decodeItem(row.payload, d, row.logicalBytes, hmacKey)
+		item, err := decodeItem(row.payload, d, row.logicalBytes, hmacKey, previousKey)
 		if err != nil {
 			return nil, err
 		}
@@ -908,12 +925,12 @@ func loadContentItemsQ(ctx context.Context, q contentQuerier, sessionID uuid.UUI
 // ReconstructGroup implements ContentPersistence: every context of one group
 // in ordinal order, each with the same one-hop decode depth.
 func (s *pgStore) ReconstructGroup(ctx context.Context, sessionID uuid.UUID, checkpointID int64, hmacKey string) ([]ReconstructedTurn, error) {
-	return reconstructGroupQ(ctx, sqlDBAdapter{db: s.db}, sessionID, checkpointID, hmacKey)
+	return reconstructGroupQ(ctx, sqlDBAdapter{db: s.db}, sessionID, checkpointID, hmacKey, s.previousHMACKey)
 }
 
 // reconstructGroupQ rebuilds every context of one group through the query
 // seam, in ordinal order.
-func reconstructGroupQ(ctx context.Context, q contentQuerier, sessionID uuid.UUID, checkpointID int64, hmacKey string) ([]ReconstructedTurn, error) {
+func reconstructGroupQ(ctx context.Context, q contentQuerier, sessionID uuid.UUID, checkpointID int64, hmacKey, previousKey string) ([]ReconstructedTurn, error) {
 	rows, err := q.Query(ctx, `SELECT id, turn_id::text, checkpoint_id, group_ordinal, common_prefix_count, item_count, item_digests, logical_bytes FROM observer_contexts WHERE session_id = $1 AND checkpoint_id = $2 ORDER BY group_ordinal`,
 		sessionID.String(), checkpointID)
 	if err != nil {
@@ -935,7 +952,7 @@ func reconstructGroupQ(ctx context.Context, q contentQuerier, sessionID uuid.UUI
 		if err != nil {
 			return nil, classifiedErrorWrap(ContentErrCorrupt, "invalid turn id in context row", err)
 		}
-		items, err := reconstructItemsQ(ctx, q, sessionID, row, hmacKey)
+		items, err := reconstructItemsQ(ctx, q, sessionID, row, hmacKey, previousKey)
 		if err != nil {
 			return nil, err
 		}

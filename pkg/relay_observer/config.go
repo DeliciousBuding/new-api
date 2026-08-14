@@ -68,11 +68,14 @@ type Config struct {
 	MaxCaptureBytesPerTurn int64
 
 	// BatchSize and FlushInterval bound the worker write batch; WriteTimeout
-	// bounds a single batch write; QueryTimeout bounds Root database queries.
-	BatchSize     int
-	FlushInterval time.Duration
-	WriteTimeout  time.Duration
-	QueryTimeout  time.Duration
+	// bounds a single batch write; QueryTimeout bounds Root database queries;
+	// RetentionTimeout bounds one retention segment (independent of
+	// QueryTimeout, since retention deletes at scale on its own goroutine).
+	BatchSize        int
+	FlushInterval    time.Duration
+	WriteTimeout     time.Duration
+	QueryTimeout     time.Duration
+	RetentionTimeout time.Duration
 
 	RetentionTurnDays    int
 	RetentionContentDays int
@@ -133,12 +136,14 @@ const (
 	DefaultBatchSize = 32
 	MaxBatchSize     = 128
 
-	DefaultFlushInterval = time.Second
-	MaxFlushInterval     = 5 * time.Second
-	DefaultWriteTimeout  = 2 * time.Second
-	MaxWriteTimeout      = 5 * time.Second
-	DefaultQueryTimeout  = 500 * time.Millisecond
-	MaxQueryTimeout      = 2 * time.Second
+	DefaultFlushInterval    = time.Second
+	MaxFlushInterval        = 5 * time.Second
+	DefaultWriteTimeout     = 2 * time.Second
+	MaxWriteTimeout         = 5 * time.Second
+	DefaultQueryTimeout     = 500 * time.Millisecond
+	MaxQueryTimeout         = 2 * time.Second
+	DefaultRetentionTimeout = 30 * time.Second
+	MaxRetentionTimeout     = 5 * time.Minute
 	// MaxHMACKeyVersion matches observer_session_aliases.key_version
 	// (SMALLINT). Config must never admit a value PostgreSQL cannot store.
 	MaxHMACKeyVersion = math.MaxInt16
@@ -164,6 +169,7 @@ func DefaultConfig() Config {
 		FlushInterval:          DefaultFlushInterval,
 		WriteTimeout:           DefaultWriteTimeout,
 		QueryTimeout:           DefaultQueryTimeout,
+		RetentionTimeout:       DefaultRetentionTimeout,
 		RetentionTurnDays:      DefaultRetentionTurnDays,
 		RetentionContentDays:   DefaultRetentionContentDays,
 	}
@@ -223,6 +229,9 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.QueryTimeout, err = envDurationMS("RELAY_OBSERVER_QUERY_TIMEOUT_MS", cfg.QueryTimeout, time.Millisecond, MaxQueryTimeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.RetentionTimeout, err = envDurationMS("RELAY_OBSERVER_RETENTION_TIMEOUT_MS", cfg.RetentionTimeout, time.Millisecond, MaxRetentionTimeout); err != nil {
 		return Config{}, err
 	}
 	if cfg.RetentionTurnDays, err = envInt("RELAY_OBSERVER_RETENTION_TURN_DAYS", cfg.RetentionTurnDays, 1, MaxRetentionDays); err != nil {

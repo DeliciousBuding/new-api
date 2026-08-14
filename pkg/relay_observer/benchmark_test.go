@@ -79,7 +79,7 @@ func BenchmarkCodecEncodeDecode(b *testing.B) {
 	})
 	b.Run("decode", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			got, err := decodeItem(payload, item.Hmac, logical, testHMACKey)
+			got, err := decodeItem(payload, item.Hmac, logical, testHMACKey, "")
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -106,7 +106,7 @@ func BenchmarkDecodeItem(b *testing.B) {
 		b.Fatal(err)
 	}
 	for i := 0; i < b.N; i++ {
-		if _, err := decodeItem(payload, item.Hmac, logical, testHMACKey); err != nil {
+		if _, err := decodeItem(payload, item.Hmac, logical, testHMACKey, ""); err != nil {
 			b.Fatal(err)
 		}
 	}

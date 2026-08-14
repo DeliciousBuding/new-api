@@ -48,9 +48,17 @@ type storeOpener func(ctx context.Context, cfg Config) (Store, error)
 
 // defaultStoreOpener adapts the frozen adapter signature to the seam. It does
 // not duplicate adapter logic: all validation, pool, and schema work stays in
-// OpenPGStore.
+// OpenPGStore. It also wires the previous-generation content HMAC key into the
+// adapter so reconstruction can decode items written before a rotation.
 func defaultStoreOpener(ctx context.Context, cfg Config) (Store, error) {
-	return OpenPGStore(ctx, cfg.SQLDSN, cfg.SchemaMode)
+	store, err := OpenPGStore(ctx, cfg.SQLDSN, cfg.SchemaMode)
+	if err != nil {
+		return nil, err
+	}
+	if ps, ok := store.(*pgStore); ok {
+		ps.SetPreviousHMACKey(cfg.PreviousHMACKey)
+	}
+	return store, nil
 }
 
 // Runtime composes Config, Store, and Dispatcher into the single observer

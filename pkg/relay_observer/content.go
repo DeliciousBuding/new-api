@@ -115,6 +115,11 @@ type ContentInput struct {
 	// Aliases are the resolved session aliases, primary first. A turn with no
 	// aliases has no session and produces no content or context rows.
 	Aliases []Alias
+	// PreviousAliases are the same raw values re-keyed under the previous
+	// generation (parallel to Aliases, primary first). A rotation window uses
+	// them to adopt a session bound under the old key instead of orphaning it
+	//. Empty when no previous key is configured.
+	PreviousAliases []Alias
 	// TurnID is the owning turn row; the idempotency key of a context.
 	TurnID uuid.UUID
 	// ContentState is the turn's normalized content state (full / gap /

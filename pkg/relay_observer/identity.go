@@ -115,10 +115,17 @@ type IdentityInput struct {
 // construction (the source chain has a fixed length), so conflicting sources
 // never unbounded-merge. ScopeUnknown with an empty Primary means no session
 // identity was resolvable.
+//
+// PreviousPrimary / PreviousAuxiliary hold the same raw values re-keyed under
+// the previous generation (empty when no previous key is configured). A
+// rotation window uses them to adopt a session bound under the old key
+// instead of orphaning it.
 type IdentityResult struct {
-	Scope     SessionScope
-	Primary   Alias
-	Auxiliary []Alias
+	Scope             SessionScope
+	Primary           Alias
+	Auxiliary         []Alias
+	PreviousPrimary   Alias
+	PreviousAuxiliary []Alias
 }
 
 // Budget constants for the identity extraction paths. A header or extracted
@@ -172,9 +179,11 @@ func DetectSessionScope(h http.Header) SessionScope {
 // ResolveIdentity resolves the session aliases of one request: it detects
 // the scope, extracts the bounded candidate values in priority order, hashes
 // them with the current key, and returns the primary alias plus the bounded
-// auxiliary set. Malformed or missing sources are skipped deterministically;
-// only an unconfigured HMAC key is an error. Raw identifiers never appear in
-// the result.
+// auxiliary set. When a previous key is configured it also re-keys every
+// candidate under the previous generation: a rotation window uses those
+// to adopt a session bound under the old key. Malformed or missing sources
+// are skipped deterministically; only an unconfigured HMAC key is an error.
+// Raw identifiers never appear in the result.
 func ResolveIdentity(in IdentityInput, km KeyMaterial) (IdentityResult, error) {
 	if km.CurrentKey == "" {
 		return IdentityResult{}, errHMACKeyNotConfigured
@@ -183,23 +192,50 @@ func ResolveIdentity(in IdentityInput, km KeyMaterial) (IdentityResult, error) {
 	candidates := collectCandidates(in, scope)
 
 	seen := make(map[string]bool, len(candidates))
+	prevSeen := make(map[string]bool, len(candidates))
 	res := IdentityResult{Scope: scope}
 	for _, c := range candidates {
 		a, err := GenerateAlias(c.value, c.source, scope, km)
 		if err != nil {
 			continue // bounded value failed: skip the source, fail-open
 		}
-		if seen[a.Digest] {
-			continue // duplicate value across sources: one alias only
+		if !seen[a.Digest] {
+			seen[a.Digest] = true
+			if res.Primary.Digest == "" {
+				res.Primary = a
+			} else {
+				res.Auxiliary = append(res.Auxiliary, a)
+			}
 		}
-		seen[a.Digest] = true
-		if res.Primary.Digest == "" {
-			res.Primary = a
-			continue
+		//  re-key the same raw value under the previous generation so a
+		// rotation window can adopt a session bound under the old key.
+		if km.PreviousKey != "" {
+			pa, err := generateAliasWith(c.value, c.source, scope, km.PreviousKey, km.PreviousVersion)
+			if err == nil && !prevSeen[pa.Digest] {
+				prevSeen[pa.Digest] = true
+				if res.PreviousPrimary.Digest == "" {
+					res.PreviousPrimary = pa
+				} else {
+					res.PreviousAuxiliary = append(res.PreviousAuxiliary, pa)
+				}
+			}
 		}
-		res.Auxiliary = append(res.Auxiliary, a)
 	}
 	return res, nil
+}
+
+// generateAliasWith creates a versioned HMAC alias of one raw value with an
+// explicit key/version. GenerateAlias and the previous-generation adoption
+// path both use it; the raw value is never retained.
+func generateAliasWith(value string, source AliasSource, scope SessionScope, key string, version int) (Alias, error) {
+	if key == "" {
+		return Alias{}, errHMACKeyNotConfigured
+	}
+	if value == "" || len(value) > MaxAliasValueBytes {
+		return Alias{}, fmt.Errorf("relayobserver: identity: value out of bounds (%d bytes)", len(value))
+	}
+	digest := hmacSHA256Hex(key, value)
+	return Alias{Version: version, Digest: digest, Scope: scope, Source: source}, nil
 }
 
 // GenerateAlias creates a versioned HMAC alias of one raw value with the
@@ -207,14 +243,7 @@ func ResolveIdentity(in IdentityInput, km KeyMaterial) (IdentityResult, error) {
 // credential alias of SSOT's "versioned credential HMAC" user dimension. The
 // raw value is not retained anywhere.
 func GenerateAlias(value string, source AliasSource, scope SessionScope, km KeyMaterial) (Alias, error) {
-	if km.CurrentKey == "" {
-		return Alias{}, errHMACKeyNotConfigured
-	}
-	if value == "" || len(value) > MaxAliasValueBytes {
-		return Alias{}, fmt.Errorf("relayobserver: identity: value out of bounds (%d bytes)", len(value))
-	}
-	digest := hmacSHA256Hex(km.CurrentKey, value)
-	return Alias{Version: km.CurrentVersion, Digest: digest, Scope: scope, Source: source}, nil
+	return generateAliasWith(value, source, scope, km.CurrentKey, km.CurrentVersion)
 }
 
 // VerifyAlias checks a raw value against an existing alias, selecting the key

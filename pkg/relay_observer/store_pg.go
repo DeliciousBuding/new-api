@@ -43,9 +43,11 @@ const (
 	observerSchemaV3 = 3
 	observerSchemaV4 = 4
 	observerSchemaV5 = 5
+	observerSchemaV6 = 6
+	observerSchemaV7 = 7
 	// observerSchemaCurrent is the newest schema version; keep it in sync
-	// when a migration file is appended.
-	observerSchemaCurrent = observerSchemaV5
+	// when an index migration is appended.
+	observerSchemaCurrent = observerSchemaV7
 
 	// observerSchemaLockKey is the fixed advisory-lock key serializing
 	// concurrent bootstrap attempts against the same database.
@@ -92,14 +94,27 @@ type observerIndexMigration struct {
 	version    int    // schema version row recorded once the index exists
 }
 
-// observerIndexMigrations is the ordered index-migration list. v5 adds the
-// transcript access-path index (session_id, id) that the transcript endpoint
-// filters and orders by; before v5 that read degraded to a full-table scan.
+// observerIndexMigrations is the ordered index-migration list. Each entry is
+// applied asynchronously via CREATE INDEX CONCURRENTLY and records its version
+// row only after the index actually exists. v5 adds the transcript access-
+// path index (session_id, id); v6 adds the turn_id lookup index used by the
+// append idempotency probe and the turn-context read; v7 adds the
+// content_state index used by the overview gap count.
 var observerIndexMigrations = []observerIndexMigration{
 	{
 		name:       "idx_observer_contexts_session_id_id",
 		createStmt: "CREATE INDEX CONCURRENTLY idx_observer_contexts_session_id_id ON observer_contexts (session_id, id)",
 		version:    observerSchemaV5,
+	},
+	{
+		name:       "idx_observer_contexts_turn_id",
+		createStmt: "CREATE INDEX CONCURRENTLY idx_observer_contexts_turn_id ON observer_contexts (turn_id)",
+		version:    observerSchemaV6,
+	},
+	{
+		name:       "idx_observer_turns_content_state",
+		createStmt: "CREATE INDEX CONCURRENTLY idx_observer_turns_content_state ON observer_turns (content_state)",
+		version:    observerSchemaV7,
 	},
 }
 
@@ -157,6 +172,18 @@ type pgStore struct {
 	poolCfg   pgPoolConfig
 	closeOnce sync.Once
 	closeErr  error
+
+	// previousHMACKey is the previous-generation content HMAC key, used by
+	// content reconstruction to decode items written before a rotation.
+	// It is a secret and stays inside the adapter; set once at open time.
+	previousHMACKey string
+}
+
+// SetPreviousHMACKey stores the previous-generation content HMAC key for the
+// reconstruction decode fallback. The runtime wires it from the init
+// configuration after the store opens; an empty key means no fallback.
+func (s *pgStore) SetPreviousHMACKey(key string) {
+	s.previousHMACKey = key
 }
 
 var _ Store = (*pgStore)(nil)
@@ -256,8 +283,8 @@ func (a dbtxAdapter) ExecContext(ctx context.Context, query string, args ...any)
 }
 
 // verifySchema performs the bounded startup schema check: the version table
-// must hold a complete known prefix ([1], [1,2], [1,2,3], [1,2,3,4]) awaiting
-// bootstrap, or [1,2,3,4,5] (current), and every required observer table must
+// must hold a complete known prefix ([1], [1,2], ..., [1..6]) awaiting
+// bootstrap, or [1..7] (current), and every required observer table must
 // exist. On the current version it also checks the v2 column and v4 alias
 // identity index so a schema whose version row lies about its structure is
 // rejected. It never runs DDL, scans data tables, or executes VACUUM.
@@ -267,8 +294,8 @@ func verifySchema(ctx context.Context, db dbtx) error {
 		return fmt.Errorf("relayobserver: schema verify: %w", err)
 	}
 	current := isVersionListCurrent(versions)
-	if !current && !isVersionListV1(versions) && !isVersionListV2(versions) && !isVersionListV3(versions) && !isVersionListV4(versions) {
-		return fmt.Errorf("relayobserver: schema verify: version mismatch: have %v, want a complete prefix of [1, 2, 3, 4, 5]", versions)
+	if !current && !isVersionListV1(versions) && !isVersionListV2(versions) && !isVersionListV3(versions) && !isVersionListV4(versions) && !isVersionListV5(versions) && !isVersionListV6(versions) {
+		return fmt.Errorf("relayobserver: schema verify: version mismatch: have %v, want a complete prefix of [1, 2, 3, 4, 5, 6, 7]", versions)
 	}
 	missing, err := missingObserverTables(ctx, db)
 	if err != nil {
@@ -345,10 +372,22 @@ func isVersionListV4(versions []int) bool {
 	return len(versions) == 4 && versions[0] == observerSchemaV1 && versions[1] == observerSchemaV2 && versions[2] == observerSchemaV3 && versions[3] == observerSchemaV4
 }
 
-// isVersionListCurrent reports whether versions is exactly the current state
-// [1, 2, 3, 4, 5].
-func isVersionListCurrent(versions []int) bool {
+// isVersionListV5 reports whether versions is exactly the v5 state
+// [1, 2, 3, 4, 5], which still awaits the v6/v7 index upgrades.
+func isVersionListV5(versions []int) bool {
 	return len(versions) == 5 && versions[0] == observerSchemaV1 && versions[1] == observerSchemaV2 && versions[2] == observerSchemaV3 && versions[3] == observerSchemaV4 && versions[4] == observerSchemaV5
+}
+
+// isVersionListV6 reports whether versions is exactly the v6 state
+// [1, 2, 3, 4, 5, 6], which still awaits the v7 index upgrade.
+func isVersionListV6(versions []int) bool {
+	return len(versions) == 6 && versions[0] == observerSchemaV1 && versions[1] == observerSchemaV2 && versions[2] == observerSchemaV3 && versions[3] == observerSchemaV4 && versions[4] == observerSchemaV5 && versions[5] == observerSchemaV6
+}
+
+// isVersionListCurrent reports whether versions is exactly the current state
+// [1, 2, 3, 4, 5, 6, 7].
+func isVersionListCurrent(versions []int) bool {
+	return len(versions) == 7 && versions[0] == observerSchemaV1 && versions[1] == observerSchemaV2 && versions[2] == observerSchemaV3 && versions[3] == observerSchemaV4 && versions[4] == observerSchemaV5 && versions[5] == observerSchemaV6 && versions[6] == observerSchemaV7
 }
 
 // observerV2ColumnExists reports whether the v2 created_at column exists on

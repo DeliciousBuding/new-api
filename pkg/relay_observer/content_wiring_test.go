@@ -249,44 +249,39 @@ func TestWorkerMixedBatchStates(t *testing.T) {
 	assert.Equal(t, int64(2), d.contentGaps.Load())
 }
 
-// TestWorkerAppendFailureOpensCircuitAndRetries is the two-phase failure
-// contract: an AppendTurns failure after a successful metadata write opens the
-// circuit without dropping or re-counting the already-written event, and the
-// next pass retries the retained appends (metadata rows are idempotent, so
-// the retry never duplicates them).
-func TestWorkerAppendFailureOpensCircuitAndRetries(t *testing.T) {
+// TestWorkerAppendFailureRetainsAndRetries is the two-phase contract: an
+// AppendTurns failure after a successful metadata write keeps the circuit
+// closed (content failure must never stop the metadata stream) and drops
+// nothing; the next flush retries the retained append and records it exactly
+// once (metadata rows are idempotent, so the retry never duplicates them).
+func TestWorkerAppendFailureRetainsAndRetries(t *testing.T) {
 	store := contentStore()
 	store.setAppendErr(errBoom)
-	d, clk := newTestDispatcher(t, store, contentCfg(func(c *Config) { c.BatchSize = 1 }))
+	d, _ := newTestDispatcher(t, store, contentCfg(func(c *Config) { c.BatchSize = 1 }))
 
 	require.True(t, d.TryEnqueue(contentEventPtr(), 1<<20))
 	waitNotify(t, store.writeNotify)
-	require.Eventually(t, func() bool { return d.circuitStateVal() == circuitOpen }, 2*time.Second, time.Millisecond)
 	require.Eventually(t, func() bool { return d.writtenTotal.Load() == 1 }, 2*time.Second, time.Millisecond)
+	//  content failure does not open the circuit and drops nothing.
+	require.Equal(t, circuitClosed, d.circuitStateVal())
 	assert.Equal(t, int64(0), d.droppedTotal.Load())
-	require.Len(t, d.pendingAppends, 1)
-	assert.Equal(t, turnRowID("node-a", "req_123"), d.pendingAppends[0].TurnID)
 
-	// Recover: clear the scripted failure, let the cooldown expire, and let
-	// the half-open probe write a fresh event; the probe flush merges the
-	// retained appends and retries them.
+	// Recover: clear the scripted failure and enqueue a fresh event; the next
+	// flush merges the retained append and retries it exactly once.
 	store.setAppendErr(nil)
-	clk.advance(initialCooldown)
-	lastCooldownTimer(t, clk, d.cfg.FlushInterval).fire()
-	require.Eventually(t, func() bool { return d.circuitStateVal() == circuitHalfOpen }, 2*time.Second, time.Millisecond)
-
-	require.True(t, d.TryEnqueue(sampleEventPtr(), 100)) // probe, no request
+	require.True(t, d.TryEnqueue(sampleEventPtr(), 100))
 	waitNotify(t, store.writeNotify)
-	require.Eventually(t, func() bool { return d.circuitStateVal() == circuitClosed }, 2*time.Second, time.Millisecond)
+	require.Eventually(t, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		return len(store.appends) == 1
+	}, 2*time.Second, time.Millisecond)
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	// The first AppendTurns call failed and recorded nothing; the retried call
-	// carries the retained append of the first event.
 	require.Len(t, store.appends, 1)
 	require.Len(t, store.appends[0], 1)
 	assert.Equal(t, turnRowID("node-a", "req_123"), store.appends[0][0].TurnID)
-	assert.Len(t, d.pendingAppends, 0)
 }
 
 // TestWorkerAppendFailureDropsOldestBeyondCap locks the pending-appends bound:
@@ -305,46 +300,48 @@ func TestWorkerAppendFailureDropsOldestBeyondCap(t *testing.T) {
 }
 
 // TestWorkerMetadataFailureKeepsRetainedAppends locks the retained-appends
-// boundary: a metadata write failure after a retained append must not clear
-// it — the retained append's metadata rows were already written, so its
-// content still needs the retry. The next recovery merges and retries it.
+// boundary: a content failure retains an append (circuit stays closed),
+// and a later metadata write failure must not clear it — the retained
+// append's metadata rows were already written, so its content still needs the
+// retry. The full recovery merges and retries it exactly once.
 func TestWorkerMetadataFailureKeepsRetainedAppends(t *testing.T) {
 	store := contentStore()
 	store.setAppendErr(errBoom)
 	d, clk := newTestDispatcher(t, store, contentCfg(func(c *Config) { c.BatchSize = 1 }))
 
+	// First: content failure retains one append and keeps the circuit closed.
 	require.True(t, d.TryEnqueue(contentEventPtr(), 1<<20))
 	waitNotify(t, store.writeNotify)
-	require.Eventually(t, func() bool { return d.circuitStateVal() == circuitOpen }, 2*time.Second, time.Millisecond)
-	require.Len(t, d.pendingAppends, 1)
+	require.Eventually(t, func() bool { return d.writtenTotal.Load() == 1 }, 2*time.Second, time.Millisecond)
+	require.Equal(t, circuitClosed, d.circuitStateVal())
 
-	// Recover to half-open, then fail the metadata write: the retained append
-	// must survive the failed metadata batch.
+	// Then fail the metadata write: the retained append must survive it.
 	store.setAppendErr(nil)
-	clk.advance(initialCooldown)
-	lastCooldownTimer(t, clk, d.cfg.FlushInterval).fire()
-	require.Eventually(t, func() bool { return d.circuitStateVal() == circuitHalfOpen }, 2*time.Second, time.Millisecond)
 	store.setErr(errBoom)
 	require.True(t, d.TryEnqueue(sampleEventPtr(), 100))
 	waitNotify(t, store.writeNotify)
 	require.Eventually(t, func() bool { return d.circuitStateVal() == circuitOpen }, 2*time.Second, time.Millisecond)
-	require.Len(t, d.pendingAppends, 1, "a failed metadata write must not drop retained appends")
 
-	// Full recovery: the probe flush retries the retained append.
+	// Full recovery: the half-open probe flush retries the retained append
+	// exactly once. If the metadata failure had cleared it, nothing would be
+	// recorded here.
 	store.setErr(nil)
 	clk.advance(initialCooldown)
 	lastCooldownTimer(t, clk, d.cfg.FlushInterval).fire()
 	require.Eventually(t, func() bool { return d.circuitStateVal() == circuitHalfOpen }, 2*time.Second, time.Millisecond)
 	require.True(t, d.TryEnqueue(sampleEventPtr(), 100))
 	waitNotify(t, store.writeNotify)
-	require.Eventually(t, func() bool { return d.circuitStateVal() == circuitClosed }, 2*time.Second, time.Millisecond)
+	require.Eventually(t, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		return len(store.appends) == 1
+	}, 2*time.Second, time.Millisecond)
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	require.Len(t, store.appends, 1)
 	require.Len(t, store.appends[0], 1)
 	assert.Equal(t, turnRowID("node-a", "req_123"), store.appends[0][0].TurnID)
-	assert.Len(t, d.pendingAppends, 0)
 }
 
 // TestPlanContentSkipsWithoutHMACKey is the identity fail-open contract: with

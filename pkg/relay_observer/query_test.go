@@ -859,7 +859,7 @@ func TestTurnContextBounded(t *testing.T) {
 	f.contexts[0].digests = hmacs
 	f.contexts[0].itemCount = len(hmacs)
 
-	out, err := turnContextQ(context.Background(), f, ContextQuery{SessionID: sid, TurnID: turn})
+	out, err := turnContextQ(context.Background(), f, ContextQuery{SessionID: sid, TurnID: turn}, "")
 	require.NoError(t, err)
 	assert.Equal(t, turn, out.TurnID)
 	assert.Equal(t, 0, out.Ordinal)
@@ -881,7 +881,7 @@ func TestTurnContextMissingContext(t *testing.T) {
 	f := newFakeQueryDB()
 	sid := uuid.MustParse("00000000-0000-0000-0000-0000000000aa")
 	turn := uuid.MustParse("00000000-0000-0000-0000-0000000000bb")
-	_, err := turnContextQ(context.Background(), f, ContextQuery{SessionID: sid, TurnID: turn})
+	_, err := turnContextQ(context.Background(), f, ContextQuery{SessionID: sid, TurnID: turn}, "")
 	require.Error(t, err)
 	code, ok := ContentErrorOf(err)
 	require.True(t, ok, "a missing context must surface the classified content error")
@@ -921,7 +921,7 @@ func TestTranscriptPagination(t *testing.T) {
 	sid := uuid.MustParse("00000000-0000-0000-0000-0000000000aa")
 	transcriptFixture(t, f, sid)
 
-	latest, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 3})
+	latest, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 3}, "")
 	require.NoError(t, err)
 	require.Len(t, latest.Items, 3)
 	assert.Equal(t, int64(2), latest.PrevCursor)
@@ -934,7 +934,7 @@ func TestTranscriptPagination(t *testing.T) {
 	assert.Equal(t, int64(2), latest.Items[2].TurnSeq)
 	assert.Equal(t, int64(0), latest.Items[2].Seq)
 
-	older, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirOlder, Cursor: 2, PageSize: 3})
+	older, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirOlder, Cursor: 2, PageSize: 3}, "")
 	require.NoError(t, err)
 	require.Len(t, older.Items, 2)
 	assert.Equal(t, int64(0), older.PrevCursor)
@@ -945,7 +945,7 @@ func TestTranscriptPagination(t *testing.T) {
 	assert.Equal(t, int64(1), older.Items[1].Seq)
 
 	// An out-of-range older page degrades to the trailing page.
-	edge, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirOlder, Cursor: 100, PageSize: 3})
+	edge, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirOlder, Cursor: 100, PageSize: 3}, "")
 	require.NoError(t, err)
 	require.Len(t, edge.Items, 3)
 	assert.Equal(t, int64(2), edge.PrevCursor)
@@ -955,7 +955,7 @@ func TestTranscriptPagination(t *testing.T) {
 func TestTranscriptEmptySession(t *testing.T) {
 	f := newFakeQueryDB()
 	sid := uuid.MustParse("00000000-0000-0000-0000-0000000000aa")
-	page, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 10})
+	page, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 10}, "")
 	require.NoError(t, err)
 	assert.Empty(t, page.Items)
 	assert.False(t, page.HasOlder)
@@ -982,7 +982,7 @@ func TestTranscriptCompactionRestartsWindow(t *testing.T) {
 		{id: 1, sessionID: s, turnID: "00000000-0000-0000-0000-000000000001", checkpointID: 1, ordinal: 0, prefix: 0, itemCount: 3, digests: []string{a, b, c}},
 		{id: 2, sessionID: s, turnID: "00000000-0000-0000-0000-000000000002", checkpointID: 2, ordinal: 0, prefix: 0, itemCount: 2, digests: []string{a2, b2}},
 	}
-	page, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 10})
+	page, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 10}, "")
 	require.NoError(t, err)
 	require.Len(t, page.Items, 5)
 	assert.Equal(t, a, page.Items[0].Hmac)
@@ -998,7 +998,7 @@ func TestTranscriptMissingObjectClassified(t *testing.T) {
 	f.contexts = []fakeContextRow{
 		{id: 1, sessionID: s, turnID: "00000000-0000-0000-0000-000000000001", checkpointID: 1, ordinal: 0, prefix: 0, itemCount: 1, digests: []string{fmt.Sprintf("%064x", 99)}},
 	}
-	_, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 10})
+	_, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 10}, "")
 	require.Error(t, err)
 	code, ok := ContentErrorOf(err)
 	require.True(t, ok)
@@ -1014,7 +1014,7 @@ func TestTranscriptReadsContextOnce(t *testing.T) {
 	sid := uuid.MustParse("00000000-0000-0000-0000-0000000000aa")
 	transcriptFixture(t, f, sid)
 
-	_, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 3})
+	_, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 3}, "")
 	require.NoError(t, err)
 
 	f.mu.Lock()
@@ -1051,7 +1051,7 @@ func TestTranscriptDivergenceShowsEditedMessages(t *testing.T) {
 		{id: 1, sessionID: s, turnID: "00000000-0000-0000-0000-000000000001", checkpointID: 1, ordinal: 0, prefix: 0, itemCount: 2, digests: []string{a, b}},
 		{id: 2, sessionID: s, turnID: "00000000-0000-0000-0000-000000000002", checkpointID: 2, ordinal: 0, prefix: 0, itemCount: 2, digests: []string{a, c2}},
 	}
-	page, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 10})
+	page, err := transcriptQ(context.Background(), f, TranscriptQuery{SessionID: sid, Direction: TranscriptDirLatest, PageSize: 10}, "")
 	require.NoError(t, err)
 	require.Len(t, page.Items, 3)
 	assert.Equal(t, a, page.Items[0].Hmac)

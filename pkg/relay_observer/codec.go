@@ -185,12 +185,14 @@ func encodeItem(item CanonicalItem) (payload []byte, logical int64, err error) {
 // declared logical byte count and the stored digest come from the content
 // row; the HMAC key re-verifies the item's content-layer digest, including
 // gap markers (they are written with a self-checksum digest like every other
-// item, so they verify the same way). The legacy v1 pre-self-checksum
-// exemption is deliberately dropped: a forged gap digest now fails closed,
-// which is the correct behavior for tampered truncation evidence. Without
-// the key, only the structural checks (frame, length, JSON) apply. Every
-// failure is classified.
-func decodeItem(payload []byte, wantDigest string, wantLogical int64, key string) (CanonicalItem, error) {
+// item, so they verify the same way). When the current key does not match,
+// the previous generation key is tried once: a rotation window must
+// still reconstruct content written under the old key. The legacy v1
+// pre-self-checksum exemption is deliberately dropped: a forged gap digest
+// now fails closed, which is the correct behavior for tampered truncation
+// evidence. Without the key, only the structural checks (frame, length,
+// JSON) apply. Every failure is classified.
+func decodeItem(payload []byte, wantDigest string, wantLogical int64, key, previousKey string) (CanonicalItem, error) {
 	if wantLogical > maxItemDecodeBytes {
 		return CanonicalItem{}, classifiedError(ContentErrCorrupt, "declared logical bytes %d exceed decode cap %d", wantLogical, maxItemDecodeBytes)
 	}
@@ -225,7 +227,11 @@ func decodeItem(payload []byte, wantDigest string, wantLogical int64, key string
 		}
 		computed := hmacDigest(payload, key)
 		if computed != wantDigest {
-			return CanonicalItem{}, classifiedError(ContentErrDigestMismatch, "stored digest %s does not match decoded item", wantDigest)
+			//  the current key does not match — try the previous generation
+			// once so a rotation window still reconstructs old content.
+			if previousKey == "" || hmacDigest(payload, previousKey) != wantDigest {
+				return CanonicalItem{}, classifiedError(ContentErrDigestMismatch, "stored digest %s does not match decoded item", wantDigest)
+			}
 		}
 	}
 	return item, nil
