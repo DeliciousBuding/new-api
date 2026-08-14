@@ -29,6 +29,9 @@ type ssrfProtectedRoundTripper struct {
 	dialContext   func(ctx context.Context, network, address string) (net.Conn, error)
 	getProtection func() (*common.SSRFProtection, bool, error)
 	proxy         func(*http.Request) (*url.URL, error)
+	// validateURL 覆盖 URL 层校验（nil = ValidateSSRFProtectedFetchURL）。
+	// 专用客户端用它强制 ApplyIPFilterForDomain，不 AND 全局 operator 开关。
+	validateURL func(urlStr string) error
 
 	mutex      sync.Mutex
 	transports map[string]*http.Transport
@@ -101,7 +104,11 @@ func (t *ssrfProtectedRoundTripper) RoundTrip(req *http.Request) (*http.Response
 	if req == nil || req.URL == nil {
 		return nil, fmt.Errorf("invalid request")
 	}
-	if err := ValidateSSRFProtectedFetchURL(req.URL.String()); err != nil {
+	validate := t.validateURL
+	if validate == nil {
+		validate = ValidateSSRFProtectedFetchURL
+	}
+	if err := validate(req.URL.String()); err != nil {
 		return nil, err
 	}
 
@@ -236,4 +243,95 @@ func networkAllowsIP(network string, ip net.IP) bool {
 	default:
 		return true
 	}
+}
+
+// validateVisionRelayFetchURL 校验 vision relay 抓取的用户图片 URL：与全局 SSRF
+// 校验同源，但强制 ApplyIPFilterForDomain=true，不 AND 全局 operator 开关
+// （validateURLWithCurrentFetchSetting 里是 applyDomainIPFilter && setting.ApplyIPFilterForDomain）。
+// 用户提供的图片 URL 必须对域名做 IP 过滤，防止 DNS rebinding（B6）。
+func validateVisionRelayFetchURL(urlStr string) error {
+	fetchSetting := system_setting.GetFetchSetting()
+	return common.ValidateURLWithFetchSetting(urlStr, fetchSetting.EnableSSRFProtection, fetchSetting.AllowPrivateIp, fetchSetting.DomainFilterMode, fetchSetting.IpFilterMode, fetchSetting.DomainList, fetchSetting.IpList, fetchSetting.AllowedPorts, true)
+}
+
+// checkVisionRelayFetchRedirect 重定向时同样强制 ApplyIPFilterForDomain=true。
+func checkVisionRelayFetchRedirect(req *http.Request, via []*http.Request) error {
+	urlStr := req.URL.String()
+	if err := validateVisionRelayFetchURL(urlStr); err != nil {
+		return fmt.Errorf("redirect to %s blocked: %v", urlStr, err)
+	}
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	return nil
+}
+
+// visionRelayFetchProtection 构建 dialer 层保护：与 currentFetchProtection 同源，
+// 但强制 ApplyIPFilterForDomain=true（direct 路径最终 dial 前必须解析并校验 IP）。
+func visionRelayFetchProtection() (*common.SSRFProtection, bool, error) {
+	fetchSetting := system_setting.GetFetchSetting()
+	if !fetchSetting.EnableSSRFProtection {
+		return nil, false, nil
+	}
+	protection, err := common.NewSSRFProtectionFromFetchSetting(
+		fetchSetting.AllowPrivateIp,
+		fetchSetting.DomainFilterMode,
+		fetchSetting.IpFilterMode,
+		fetchSetting.DomainList,
+		fetchSetting.IpList,
+		fetchSetting.AllowedPorts,
+		true,
+	)
+	if err != nil {
+		return nil, true, err
+	}
+	return protection, true, nil
+}
+
+// newVisionRelayProtectedFetchClient 构建 vision relay 专用 SSRF 保护客户端：
+// 三层（URL/dialer/redirect）都强制 ApplyIPFilterForDomain=true；代理策略由
+// disableProxy 控制（B5：proxy-only 出口部署时禁用环境代理，默认走环境代理）。
+func newVisionRelayProtectedFetchClient(disableProxy bool) *http.Client {
+	proxyFunc := http.ProxyFromEnvironment
+	if disableProxy {
+		// 传非 nil 函数返回 nil：禁用代理（nil proxyFunc 会被构造函数替换回
+		// http.ProxyFromEnvironment，无法表达"明确禁用"）。
+		proxyFunc = func(*http.Request) (*url.URL, error) { return nil, nil }
+	}
+
+	// 复用通用构造函数以继承 resolver/dialContext 默认值；getProtection 强制
+	// ApplyIPFilterForDomain=true。随后覆盖 URL 层校验与 redirect 校验为强制版本。
+	client := newProtectedFetchHTTPClientWithProxy(nil, nil, visionRelayFetchProtection, proxyFunc)
+	if rt, ok := client.Transport.(*ssrfProtectedRoundTripper); ok {
+		rt.validateURL = validateVisionRelayFetchURL
+	}
+	client.CheckRedirect = checkVisionRelayFetchRedirect
+	return client
+}
+
+var (
+	visionRelayFetchClientNoProxy *http.Client
+	visionRelayFetchClientProxy   *http.Client
+	visionRelayFetchClientOnce    sync.Once
+)
+
+func initVisionRelayFetchClients() {
+	visionRelayFetchClientNoProxy = newVisionRelayProtectedFetchClient(true)
+	visionRelayFetchClientProxy = newVisionRelayProtectedFetchClient(false)
+}
+
+// GetVisionRelayFetchClient 返回 vision relay 专用的 SSRF 保护客户端。
+// 与 GetSSRFProtectedHTTPClientForUserInput 相同，永不 fallback 到 general
+// client（用户输入必须受保护）；额外强制三层 ApplyIPFilterForDomain=true。
+// disableProxy 控制代理策略（B5，默认 false=走环境代理）。返回 nil 表示保护
+// 不可用（全局 EnableSSRFProtection 关闭），调用方必须 fail closed。
+func GetVisionRelayFetchClient(disableProxy bool) *http.Client {
+	if fetchSetting := system_setting.GetFetchSetting(); fetchSetting != nil && !fetchSetting.EnableSSRFProtection {
+		return nil
+	}
+	visionRelayFetchClientOnce.Do(initVisionRelayFetchClients)
+	if disableProxy {
+		return visionRelayFetchClientNoProxy
+	}
+	return visionRelayFetchClientProxy
 }

@@ -28,13 +28,16 @@ const relayRequestHeader = "X-NewAPI-Vision-Relay"
 // 纯核心包不感知 SSRF 客户端/下载策略（v0.2.1 边界）。
 // SSRF 保护客户端不可用时**返回错误**（该图 service_unavailable 占位），
 // 绝不 fallback 到无保护的 http.DefaultClient（v0.2.2 安全修复）。
-type visionRelayFetcher struct{}
+// disableProxy 控制抓取用户图片 URL 时的代理策略（B5）。
+type visionRelayFetcher struct {
+	disableProxy bool
+}
 
-func (visionRelayFetcher) Fetch(ctx context.Context, url string, maxBytes int64) ([]byte, string, error) {
+func (f visionRelayFetcher) Fetch(ctx context.Context, url string, maxBytes int64) ([]byte, string, error) {
 	// 用户提供的图片 URL 永远走受保护客户端，不随全局 EnableSSRFProtection
 	// 开关降级为 general client（general client 无拨号校验）。全局开关关闭时
-	// GetSSRFProtectedHTTPClientForUserInput 返回 nil → 拒绝抓取，fail closed。
-	client := GetSSRFProtectedHTTPClientForUserInput()
+	// GetVisionRelayFetchClient 返回 nil → 拒绝抓取，fail closed。
+	client := GetVisionRelayFetchClient(f.disableProxy)
 	if client == nil {
 		return nil, "", fmt.Errorf("%w: protected HTTP client unavailable", vision_relay.ErrDownload)
 	}
@@ -116,7 +119,7 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 		Client: &vision_relay.VisionClient{
 			HTTPClient: GetHttpClient(), // 显式注入（继承 NewAPI 连接池/TLS 配置）
 		},
-		Fetcher: visionRelayFetcher{},
+		Fetcher: visionRelayFetcher{disableProxy: cfg.DisableProxyFetch},
 		// 审核 P1-3（A6）：识图描述注入前过原生敏感词检查（命中 → blocked 占位）
 		SensitiveCheck: func(desc string) bool {
 			ok, _ := CheckSensitiveText(desc)

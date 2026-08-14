@@ -208,6 +208,9 @@ func TestValidateVisionRelayWrite(t *testing.T) {
 		{"vision_relay.timeout_sec", "30"},
 		{"vision_relay.base_url", "http://127.0.0.1:3000"},
 		{"vision_relay.api_key", "sk-anything"}, // 自由格式键不校验
+		{"vision_relay.disable_proxy_fetch", "true"},
+		{"vision_relay.disable_proxy_fetch", "false"},
+		{"vision_relay.disable_proxy_fetch", ""},
 	}
 	for _, tc := range valid {
 		if err := ValidateVisionRelayWrite(tc.key, tc.value); err != nil {
@@ -224,6 +227,7 @@ func TestValidateVisionRelayWrite(t *testing.T) {
 		{"vision_relay.timeout_sec", "abc"},
 		{"vision_relay.base_url", "ftp://example.com"},
 		{"vision_relay.base_url", "://bad"},
+		{"vision_relay.disable_proxy_fetch", "yes"},
 	}
 	for _, tc := range invalid {
 		if err := ValidateVisionRelayWrite(tc.key, tc.value); err == nil {
@@ -305,5 +309,43 @@ func TestGetVisionRelaySnapshotDisabledToleratesMalformed(t *testing.T) {
 	}
 	if snap.Enabled {
 		t.Fatal("must stay disabled")
+	}
+}
+
+// B5：disable_proxy_fetch 字段解析（默认 false，显式 true 生效）。
+func TestGetVisionRelaySnapshotParsesDisableProxyFetch(t *testing.T) {
+	base := map[string]string{
+		"vision_relay.enabled":             "true",
+		"vision_relay.target_models":       `["deepseek*"]`,
+		"vision_relay.models":              `["gemma-4-31b"]`,
+		"vision_relay.base_url":            "https://vision.example.com",
+		"vision_relay.api_key":             "sk-test",
+		"vision_relay.sidecall_secret":     "test-sidecall-secret-123",
+		"vision_relay.timeout_sec":         "15",
+		"vision_relay.disable_proxy_fetch": "true",
+	}
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap = base
+	common.OptionMapRWMutex.Unlock()
+
+	snap, err := GetVisionRelaySnapshot()
+	if err != nil {
+		t.Fatalf("snapshot with disable_proxy_fetch must parse, got: %v", err)
+	}
+	if !snap.DisableProxyFetch {
+		t.Fatal("disable_proxy_fetch=true must be reflected in snapshot")
+	}
+
+	// 缺省时默认 false
+	delete(base, "vision_relay.disable_proxy_fetch")
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap = base
+	common.OptionMapRWMutex.Unlock()
+	snap2, err := GetVisionRelaySnapshot()
+	if err != nil {
+		t.Fatalf("snapshot without disable_proxy_fetch must parse, got: %v", err)
+	}
+	if snap2.DisableProxyFetch {
+		t.Fatal("disable_proxy_fetch must default to false")
 	}
 }
