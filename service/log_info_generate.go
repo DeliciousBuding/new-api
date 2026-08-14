@@ -73,13 +73,14 @@ func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other
 //   - codex_cli / codex_desktop / codex_app / codex_vscode / codex_browser（Originator 前缀 + X-Codex-* 头 + UA 兜底）
 //   - claude_cli / claude_desktop / claude_plugin / claude_app（X-App 值 + claude-cli UA 细分）
 //   - claude_sdk / openai_sdk / mistral_sdk / cohere_sdk / ai_sdk（Stainless 生态官方 SDK UA）
-//   - gemini_cli / gemini_sdk（Gemini-CLI UA / google-genai、genai-py、Vertex SDK UA）
+//   - gemini_cli / gemini_code_assist / gemini_sdk（Gemini-CLI UA / CloudCodeVSCode / google-genai、genai-py、Vertex SDK UA）
 //   - litellm（UA + x-litellm-* 头）
 //   - 品牌客户端（IDE/chat/agent/平台）：cherry_studio、trae、qoder、cursor、windsurf、
 //     cline、roo_code、continue、zed、copilot、gemini_cli、perplexity、poe、openrouter、
 //     groq、grok、ollama、kimi、qwen、doubao、zhipu、deepseek、chatgpt、minis、opencode、
 //     hermes_agent、workbuddy、openclaw、rikkahub、sub2api（UA 特异性词，见函数内矩阵）
-//   - LLM 框架与自动化：langchain、llama_index、mcp_sdk、automation（n8n/zapier/make.com）
+//   - LLM 框架与自动化：openai_agents、semantic_kernel、langchain、llama_index、mcp_sdk、
+//     automation（n8n/zapier/make.com）
 //   - 通用工具：gohttp、cliproxyapi、http_client（curl/requests/httpx/urllib/okhttp/axios 等）
 //   - chat（兜底）
 //
@@ -241,6 +242,10 @@ func DetectClientProfile(c *gin.Context) string {
 	case strings.Contains(ua, "cohere-python"), strings.Contains(ua, "cohere-typescript"), strings.Contains(ua, "cohere-node"):
 		// Cohere 官方 SDK（empirical caller-labels）
 		return "cohere_sdk"
+	case strings.Contains(ua, "cloudcodevscode"), strings.Contains(ua, "aidev_client"):
+		// Google Gemini Code Assist VS Code 集成（google-gemini/gemini-cli
+		// PR #23256 统一 VS Code UA "CloudCodeVSCode/ (...; aidev_client; ...)"）
+		return "gemini_code_assist"
 	case strings.Contains(ua, "gemini-cli"), strings.Contains(ua, "gemini cli"):
 		return "gemini_cli"
 	case strings.Contains(ua, "google-genai-sdk"), strings.Contains(ua, "genai-py"),
@@ -276,18 +281,27 @@ func DetectClientProfile(c *gin.Context) string {
 		return "doubao"
 	case strings.Contains(ua, "chatglm"), strings.Contains(ua, "zhipu"):
 		return "zhipu"
+	case strings.Contains(ua, "deepseek-harness"):
+		// DeepSeek 官方 agent harness（deepseek-ai/deepseek-harness，UA 形如
+		// deepseek-harness/<ver>，nginx 流量实证）。须置于 deepseek 分支之前，
+		// 因 "deepseek-harness" 含子串 "deepseek"。
+		return "deepseek_harness"
 	case strings.Contains(ua, "deepseek"):
 		return "deepseek"
 	case strings.Contains(ua, "chatgpt"):
 		return "chatgpt"
-	// xAI Grok（Grok app/CLI 与 Groq 公司为不同实体；Grok-User/Grok/ 为
-	// empirical caller-label patterns）
-	case strings.Contains(ua, "grok-user"), strings.Contains(ua, "grok/"):
-		return "grok"
 	case strings.Contains(ua, "minis/"):
 		// Minis/<version> 安卓客户端（nginx 流量实证）
 		return "minis"
 	// LLM 框架（empirical caller-labels：langchain 系列嵌入 UA 不带锚定）
+	case strings.Contains(ua, "agents/python"), strings.Contains(ua, "openai-agents"):
+		// OpenAI Agents SDK（openai/openai-agents-python 源码 _USER_AGENT =
+		// "Agents/Python <ver>"）
+		return "openai_agents"
+	case strings.Contains(ua, "semantic kernel"), strings.Contains(ua, "semantic-kernel"):
+		// Microsoft Semantic Kernel（microsoft/semantic-kernel PR #3074 加 UA
+		// "Semantic Kernel"）
+		return "semantic_kernel"
 	case strings.Contains(ua, "langchain"):
 		return "langchain"
 	case strings.Contains(ua, "llama_index"), strings.Contains(ua, "llama-index"):

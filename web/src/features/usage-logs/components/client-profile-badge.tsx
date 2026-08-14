@@ -32,8 +32,10 @@ export const BRAND_ICONS: Partial<Record<ClientProfile, string>> = {
   roo_code: 'RooCode.Color',
   copilot: 'Copilot.Color',
   gemini_cli: 'GeminiCLI.Color',
+  gemini_code_assist: 'Gemini.Color',
   gemini_sdk: 'Gemini.Color',
   qoder: 'Qoder.Color',
+  openai_agents: 'OpenAI.Color',
   langchain: 'LangChain.Color',
   llama_index: 'LlamaIndex.Color',
   mistral_sdk: 'Mistral.Color',
@@ -51,6 +53,7 @@ export const BRAND_ICONS: Partial<Record<ClientProfile, string>> = {
   qwen: 'Qwen.Color',
   doubao: 'Doubao.Color',
   zhipu: 'Zhipu.Color',
+  deepseek_harness: 'DeepSeek.Color',
   deepseek: 'DeepSeek.Color',
   chatgpt: 'ChatGPT.Color',
 }

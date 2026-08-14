@@ -333,6 +333,20 @@ func TestDetectClientProfile(t *testing.T) {
 			want: "langchain",
 		},
 		{
+			name: "openai agents sdk ua",
+			headers: map[string]string{
+				"User-Agent": "Agents/Python 0.1.5",
+			},
+			want: "openai_agents",
+		},
+		{
+			name: "semantic kernel ua",
+			headers: map[string]string{
+				"User-Agent": "Semantic Kernel",
+			},
+			want: "semantic_kernel",
+		},
+		{
 			name: "langchain py ua",
 			headers: map[string]string{
 				"User-Agent": "langchain-py/0.3.14",
@@ -605,6 +619,11 @@ func TestDetectClientProfile(t *testing.T) {
 			want:    "gemini_cli",
 		},
 		{
+			name:    "gemini code assist ua",
+			headers: map[string]string{"User-Agent": "CloudCodeVSCode/1.0 (aidev_client; os_type=linux; host_path=VSCode/1.90)"},
+			want:    "gemini_code_assist",
+		},
+		{
 			name:    "perplexity ua",
 			headers: map[string]string{"User-Agent": "Perplexity-User/1.0"},
 			want:    "perplexity",
@@ -648,6 +667,11 @@ func TestDetectClientProfile(t *testing.T) {
 			name:    "zhipu ua",
 			headers: map[string]string{"User-Agent": "ChatGLM/1.0 (Android)"},
 			want:    "zhipu",
+		},
+		{
+			name:    "deepseek harness ua",
+			headers: map[string]string{"User-Agent": "deepseek-harness/0.1.0-rc.5"},
+			want:    "deepseek_harness",
 		},
 		{
 			name:    "deepseek app ua",
