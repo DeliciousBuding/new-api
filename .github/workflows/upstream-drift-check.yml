@@ -1,10 +1,15 @@
 name: Upstream drift check
 
-# Independent safety net for main-mirror drift. `upstream-sync.yml` reports its
-# own failures via `if: failure()`, but a startup_failure (e.g. a workflow whose
-# YAML or a pinned action is rejected before any step runs) never reaches that
-# step and opens no issue. This workflow does not depend on the sync workflow's
-# health: it re-checks the mirror itself on a schedule and reports any drift.
+# Independent safety net for main-mirror drift. `upstream-sync.yml` force-pushes
+# `main` to match upstream on a daily schedule, but it can only self-report a
+# failure that reaches its `if: failure()` step — a startup_failure (workflow YAML
+# or a pinned action rejected before any step runs) never reaches it. This
+# workflow re-checks the mirror itself and reports any real drift.
+#
+# It distinguishes real drift from normal lag: upstream advances between the
+# daily sync runs, so `main` is normally a few commits behind. An issue is only
+# opened when the latest upstream-sync run did NOT succeed, and is auto-closed
+# once the mirror is back in sync.
 
 on:
   schedule:
@@ -15,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   issues: write
 
 jobs:
@@ -39,31 +45,52 @@ jobs:
 
           UPSTREAM_HEAD=$(git rev-parse refs/remotes/official/main)
           CURRENT_MAIN=$(git rev-parse refs/remotes/origin/main 2>/dev/null || echo "")
+          TITLE="upstream-sync failed — main mirror drift"
 
-          echo "Upstream main: $UPSTREAM_HEAD"
-          echo "Current main:  $CURRENT_MAIN"
-
+          # In sync → close any stale drift issue left open by a previous failure.
           if [ "$CURRENT_MAIN" = "$UPSTREAM_HEAD" ]; then
             echo '::notice::main is in sync with upstream.'
+            for n in $(gh issue list --repo "${{ github.repository }}" \
+              --search "in:title \"$TITLE\"" --state open --limit 10 \
+              --json number -q '.[].number' 2>/dev/null || true); do
+              gh issue close "$n" --repo "${{ github.repository }}" \
+                --comment "Mirror is back in sync with upstream. Closing."
+            done
             exit 0
           fi
 
           BEHIND=$(git rev-list --count "refs/remotes/origin/main..refs/remotes/official/main" 2>/dev/null || echo "?")
-          echo "::warning::main is ${BEHIND} commit(s) behind upstream — mirror drifted."
+          # Newest upstream-sync run conclusion; `// "unknown"` guards an empty list.
+          SYNC_CONCLUSION=$(gh run list --repo "${{ github.repository }}" \
+            --workflow=upstream-sync.yml --limit 1 \
+            --json conclusion -q '.[0].conclusion // "unknown"' 2>/dev/null || echo "unknown")
 
-          TITLE="upstream-sync failed — main mirror drift"
+          echo "::notice::main is ${BEHIND} commit(s) behind upstream; latest sync run: ${SYNC_CONCLUSION}"
+
+          # Real drift = the sync workflow itself is failing. A healthy sync leaves
+          # a small, normal lag because upstream advances between the daily runs;
+          # that is not drift and must not keep reopening the issue.
+          if [ "$SYNC_CONCLUSION" = "success" ]; then
+            echo '::notice::sync workflow is healthy — the lag is normal, not drift.'
+            exit 0
+          fi
+
+          echo "::warning::sync workflow is ${SYNC_CONCLUSION} — reporting drift (${BEHIND} behind)."
+
           BODY="The daily mirror check found \`main\` drifting from QuantumNous/new-api.
 
           - upstream main: \`${UPSTREAM_HEAD}\`
           - current main: \`${CURRENT_MAIN}\`
           - behind by: ${BEHIND} commit(s)
+          - latest upstream-sync run: \`${SYNC_CONCLUSION}\`
           - run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-          \`main\` should be a current mirror of upstream. If the scheduled
-          \`upstream-sync.yml\` is failing (check its runs), fix the workflow,
+          \`main\` should be a current mirror of upstream. Fix \`upstream-sync.yml\`,
           then re-run it manually to close the drift."
+
           EXISTING=$(gh issue list --repo "${{ github.repository }}" \
-            --search "in:title \"$TITLE\"" --state open --limit 1 --json number -q '.[0].number' 2>/dev/null || true)
+            --search "in:title \"$TITLE\"" --state open --limit 1 \
+            --json number -q '.[0].number' 2>/dev/null || true)
           if [ -n "$EXISTING" ]; then
             gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body "$BODY"
           else
