@@ -132,6 +132,15 @@ func TestBuildInstruction(t *testing.T) {
 	// 自定义 Prompt 覆盖结构化
 	custom := BuildInstruction(Config{Structured: true, Prompt: "自定义指令"})
 	assert.Equal(t, "自定义指令", custom)
+	// StructuredPrompt 覆盖结构化默认指令（仍在结构化路径内）
+	structuredCustom := BuildInstruction(Config{Structured: true, StructuredPrompt: "自定义结构化指令"})
+	assert.Equal(t, "自定义结构化指令", structuredCustom)
+	// Prompt 优先级高于 StructuredPrompt
+	both := BuildInstruction(Config{Structured: true, StructuredPrompt: "自定义结构化指令", Prompt: "自定义散文指令"})
+	assert.Equal(t, "自定义散文指令", both)
+	// Structured=false 时 StructuredPrompt 不生效（走散文默认）
+	prose := BuildInstruction(Config{Structured: false, StructuredPrompt: "忽略我"})
+	assert.Equal(t, defaultInstruction, prose)
 }
 
 // 结构化指令包含反注入与反编造硬性规则
