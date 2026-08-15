@@ -111,13 +111,19 @@ func CompressForVision(data []byte, mediaType string) ([]byte, string, error) {
 	if cfg.Width > MaxDimension || cfg.Height > MaxDimension {
 		return nil, "", ErrSizeLimit
 	}
-	// ② 小图直接原样（压缩目标与 Claude Code 客户端一致：2000px / 1.5MB；
-	//    小 PNG 保留无损）
+	// ② 小图直接原样（仅 png/jpeg——最广泛兼容的格式；webp/gif 等小众格式
+	//    即使小图也转 JPEG，避免上游视觉端点报 unsupported image format，
+	//    实测 Cerebras 渠道不支持 image/webp）
 	const targetPx = 2000
 	const targetEnc = 1500 * 1024
-	if int64(cfg.Width) <= targetPx && int64(cfg.Height) <= targetPx &&
-		int64(len(data)) <= targetEnc && !(mediaType == "image/png" && int64(len(data)) > 300*1024) {
-		return data, mediaType, nil
+	passthroughMime := strings.ToLower(mediaType)
+	if idx := strings.IndexByte(passthroughMime, ';'); idx >= 0 {
+		passthroughMime = strings.TrimSpace(passthroughMime[:idx])
+	}
+	if (passthroughMime == "image/png" || passthroughMime == "image/jpeg") &&
+		int64(cfg.Width) <= targetPx && int64(cfg.Height) <= targetPx &&
+		int64(len(data)) <= targetEnc && !(passthroughMime == "image/png" && int64(len(data)) > 300*1024) {
+		return data, passthroughMime, nil
 	}
 	// ③ 完整解码 + 降采样 + JPEG（质量阶梯 85→30，目标 ≤1.5MB）
 	img, _, err := image.Decode(bytes.NewReader(data))
