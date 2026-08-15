@@ -206,6 +206,7 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 			model := ""
 			calls := 0
 			fallbacks := 0
+			attempts := []Attempt(nil)
 			if err != nil {
 				enum = enumFromErr(err)
 			}
@@ -218,6 +219,7 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 					globalCallGate.release(callGateCh)
 					desc, enum, model = r.Desc, r.Enum, r.Model
 					calls, fallbacks = r.HTTPCalls, r.Fallbacks
+					attempts = r.Attempts
 					if r.Abort {
 						abort.Store(true) // 请求级熔断：后续任务不再发起 sidecall
 					}
@@ -229,6 +231,7 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 			mu.Lock()
 			stats.VisionCalls += calls // P2-6：实际 HTTP 次数（含 retry/fallback）
 			stats.FallbackCount += fallbacks
+			stats.Attempts = append(stats.Attempts, attempts...) // v0.3：逐模型尝试明细
 			shouldCache := false
 			if enum == "" && desc != "" {
 				if e.SensitiveCheck != nil && e.SensitiveCheck(desc) {

@@ -104,10 +104,14 @@ func wrapResult(index, total int, desc string) string {
 	return fmt.Sprintf(ResultPrefix, index, total) + "\n" + desc + "\n" + ResultSuffix
 }
 
-// BuildInstruction 识图指令（配置自定义或默认保真基线）
+// BuildInstruction 识图指令（配置自定义 > 结构化默认 > 散文默认）。
+// 自定义 Prompt 永远优先且不触发结构化解析/渲染（输出格式未知）。
 func BuildInstruction(cfg Config) string {
 	if p := strings.TrimSpace(cfg.Prompt); p != "" {
 		return p
+	}
+	if cfg.Structured {
+		return structuredInstruction
 	}
 	return defaultInstruction
 }
@@ -272,18 +276,23 @@ func contentString(content any) string {
 // DescribeResult 单图识图结果（结构化，审核 P0-2 §3 / P2-6：保留请求级熔断
 // 标记与真实 HTTP/fallback 计数，不提前压成字符串枚举）
 type DescribeResult struct {
-	Desc      string // 纯描述（成功）
+	Desc      string // 纯描述（成功；结构化模式下为渲染后的分节 Markdown）
 	Enum      string // 失败枚举（空=成功）
 	Model     string // 使用模型
 	Abort     bool   // 请求级熔断：401/403（鉴权/配置错误）→ 整次 Enhance 停止后续 sidecall
 	HTTPCalls int    // 实际 HTTP 请求次数（含 transport retry 与 fallback）
 	Fallbacks int    // 真实模型切换次数（换到下一个模型算一次）
+	Attempts  []Attempt
 }
 
 // DescribeOne 单图旁路识图（调用方已在 decode gate 内完成压缩、call gate 内
 // 调用本函数——v0.2.2 闸门拆分）。fallback 链最多 MaxFallbackModels 个模型，
 // 总预算继承 ctx deadline（v0.2.2：请求级全局 deadline，非每图独立）。
 // Abort=true 表示鉴权/配置错误——调用方必须停止本请求其余 sidecall（P0-2 §3）。
+//
+// 结构化模式（cfg.Structured 且 Prompt 为空）下，成功文本经 parseTranscript
+// 解析并 Render 成 Markdown 分节后返回（v0.3）；每个模型尝试都记入 Attempts
+// 供上层聚合观测（v0.3，参考 modlens meta.attempts）。
 func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, data []byte, mediaType string, cfg Config) DescribeResult {
 	models := make([]string, 0, len(cfg.Models))
 	for _, item := range cfg.Models {
@@ -297,6 +306,9 @@ func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, data
 	if len(models) == 0 {
 		return DescribeResult{Enum: EnumServiceUnavailable}
 	}
+	// structuredActive：结构化解析/渲染只在「默认结构化指令」产出时发生。
+	// 自定义 Prompt 的返回格式未知，不做解析。
+	structuredActive := cfg.Structured && strings.TrimSpace(cfg.Prompt) == ""
 	// 总预算：优先 ctx deadline（请求级全局），无 deadline 时退回 cfg.TimeoutSec
 	var totalBudget time.Duration
 	if deadline, ok := ctx.Deadline(); ok {
@@ -313,30 +325,45 @@ func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, data
 	for _, model := range models {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			// 客户端取消/断连：后续模型无意义，停止链并如实上报。
-			return DescribeResult{Enum: EnumServiceUnavailable, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
+			return result.withEnum(EnumServiceUnavailable)
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return DescribeResult{Enum: EnumTimeout, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
+			return result.withEnum(EnumTimeout)
 		}
+		attemptStart := time.Now()
 		text, calls, err := c.Call(ctx, model, instruction, data, mediaType,
 			cfg.BaseURL, cfg.APIKey, cfg.SidecallSecret, remaining, DefaultMaxTokens)
 		result.HTTPCalls += calls
+		result.Attempts = append(result.Attempts, Attempt{
+			Model:     model,
+			ElapsedMs: time.Since(attemptStart).Milliseconds(),
+		})
 		if err == nil {
 			result.Desc, result.Model = text, model
+			if structuredActive {
+				// 结构化渲染：原始输出 → 分节 → Markdown。parseTranscript 容错
+				// 永不失败，散文输出优雅降级为整段 summary，不丢信息。
+				result.Desc = parseTranscript(text).Render()
+			}
 			return result
 		}
+		// 失败：把枚举写回最后一次尝试，便于逐模型观测失败原因。
+		result.Attempts[len(result.Attempts)-1].Enum = enumFromErr(err)
 		switch {
 		case errors.Is(err, ErrBlocked):
-			return DescribeResult{Enum: enumFromErr(err), Model: model, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
+			result.Enum, result.Model = enumFromErr(err), model
+			return result
 		case errors.Is(err, ErrAuth):
 			// 401/403：配置/鉴权错误 → 请求级熔断（Abort），不 retry 不 fallback
-			return DescribeResult{Enum: enumFromErr(err), Model: model, Abort: true,
-				HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
+			result.Enum, result.Model, result.Abort = enumFromErr(err), model, true
+			return result
 		case errors.Is(err, ErrSizeLimit):
-			return DescribeResult{Enum: enumFromErr(err), Model: model, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
+			result.Enum, result.Model = enumFromErr(err), model
+			return result
 		case errors.Is(err, ErrUnsupported):
-			return DescribeResult{Enum: enumFromErr(err), Model: model, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
+			result.Enum, result.Model = enumFromErr(err), model
+			return result
 		default:
 			// provider 瞬时（429/5xx/空响应）、传输重试后仍失败、或超时 → 换下一模型
 			result.Fallbacks++
@@ -347,5 +374,12 @@ func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, data
 	if lastFallbackEnum == "" {
 		lastFallbackEnum = EnumServiceUnavailable
 	}
-	return DescribeResult{Enum: lastFallbackEnum, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
+	result.Enum = lastFallbackEnum
+	return result
+}
+
+// withEnum 返回携带当前累计计数与 attempts 的失败结果（取消/超时提前返回用）。
+func (r DescribeResult) withEnum(enum string) DescribeResult {
+	r.Enum = enum
+	return r
 }

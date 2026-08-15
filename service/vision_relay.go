@@ -180,6 +180,7 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 		APIKey:         cfg.APIKey,
 		Prompt:         cfg.Prompt,
 		TimeoutSec:     cfg.TimeoutSec,
+		Structured:     cfg.Structured,
 		SidecallSecret: cfg.SidecallSecret, // 审查 P1-2：出站旁路请求必须携带认证 marker（自回环递归防护）
 	}
 	var stats vision_relay.Stats
@@ -224,10 +225,10 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 
 	// 12. 结构化统计日志（A12）
 	logger.LogInfo(c, fmt.Sprintf(
-		"vision: target_model=%s images_total=%d images_success=%d images_failed=%d unique=%d cache_hits=%d cache_served=%d vision_calls=%d fallback_count=%d elapsed_ms=%d models_used=%s description_bytes=%d failed_reasons=%s",
+		"vision: target_model=%s images_total=%d images_success=%d images_failed=%d unique=%d cache_hits=%d cache_served=%d vision_calls=%d fallback_count=%d elapsed_ms=%d models_used=%s description_bytes=%d failed_reasons=%s attempts=%s",
 		relayInfo.OriginModelName, stats.Total, stats.Success, stats.Failed, stats.UniqueImages,
 		stats.CacheHits, stats.CacheServed, stats.VisionCalls, stats.FallbackCount, stats.ElapsedMs,
-		stats.ModelsUsed, stats.DescriptionBytes, visionRelayFailedReasons(&stats)))
+		stats.ModelsUsed, stats.DescriptionBytes, visionRelayFailedReasons(&stats), visionRelayAttempts(&stats)))
 	// 12b. 上游识别链劣化（5xx/超时/解析失败 → 图片级占位，请求本身未 5xx）——
 	//      系统级 SysLog，运营无需翻请求日志即可感知（audit-2026-08 #47）
 	if stats.Failed > 0 {
@@ -257,6 +258,20 @@ func visionRelayFailedReasons(stats *vision_relay.Stats) string {
 		return ""
 	}
 	b, err := common.Marshal(stats.FailedReasons)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// visionRelayAttempts 序列化逐模型尝试明细为 JSON 数组（日志用，v0.3）。
+// 空明细返回空串。含模型名/枚举/耗时——模型名与稳定枚举不涉敏感信息，
+// 与 FailedReasons 同理可进日志（绝不含 key/secret/URL）。
+func visionRelayAttempts(stats *vision_relay.Stats) string {
+	if stats == nil || len(stats.Attempts) == 0 {
+		return ""
+	}
+	b, err := common.Marshal(stats.Attempts)
 	if err != nil {
 		return ""
 	}
