@@ -7,7 +7,6 @@ package vision_relay
 
 import (
 	"context"
-	"time"
 )
 
 // Config 一次请求使用的不可变配置快照（来自 setting/model_setting 的注册表）。
@@ -75,9 +74,11 @@ type ImageFetcher interface {
 // 命中返回的 desc 必须是此前成功识图且通过敏感词检查的稳定描述——引擎据此
 // 跳过该 digest 的旁路调用。缓存是纯优化：Get 失败视为未命中继续识图，
 // Set 失败静默忽略，两者都不得影响主流程正确性。
+// 过期策略（TTL）属于适配器策略：Set 只提交 key/value，TTL 由适配器自行决定，
+// 纯核心不感知。
 type DescriptionCache interface {
 	Get(ctx context.Context, key string) (string, bool)
-	Set(ctx context.Context, key, value string, ttl time.Duration) error
+	Set(ctx context.Context, key, value string) error
 }
 
 // Stats 结构化统计（v0.2.2 拆分：按图片块与唯一图片分别计数）

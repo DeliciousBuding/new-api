@@ -457,7 +457,7 @@ func (f *fakeDescriptionCache) Get(ctx context.Context, key string) (string, boo
 	return v, ok
 }
 
-func (f *fakeDescriptionCache) Set(ctx context.Context, key, value string, ttl time.Duration) error {
+func (f *fakeDescriptionCache) Set(ctx context.Context, key, value string) error {
 	f.sets = append(f.sets, value)
 	return nil
 }
@@ -619,7 +619,7 @@ func TestEngineEnhanceCacheHit(t *testing.T) {
 	cache := &fakeDescriptionCache{hits: map[string]string{
 		descriptionCacheKey(DigestBytes(pngData), BuildInstruction(cfg)): "缓存描述",
 	}}
-	engine := &Engine{Client: &VisionClient{HTTPClient: ts.Client()}, Cache: cache, CacheTTL: time.Hour}
+	engine := &Engine{Client: &VisionClient{HTTPClient: ts.Client()}, Cache: cache}
 	stats := &Stats{}
 	raw := `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + base64.StdEncoding.EncodeToString(pngData) + `"}}]}]}`
 	enhanced, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, cfg, stats)
@@ -646,7 +646,7 @@ func TestEngineEnhanceCacheWrite(t *testing.T) {
 	}))
 	defer ts.Close()
 	cache := &fakeDescriptionCache{}
-	engine := &Engine{Client: &VisionClient{HTTPClient: ts.Client()}, Cache: cache, CacheTTL: time.Hour}
+	engine := &Engine{Client: &VisionClient{HTTPClient: ts.Client()}, Cache: cache}
 	stats := &Stats{}
 	raw := `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + base64.StdEncoding.EncodeToString(testImageData()) + `"}}]}]}`
 	if _, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, testConfig(ts.URL), stats); err != nil {
@@ -679,7 +679,6 @@ func TestEngineEnhanceCacheSensitiveDiscard(t *testing.T) {
 	engine := &Engine{
 		Client:         &VisionClient{HTTPClient: ts.Client()},
 		Cache:          cache,
-		CacheTTL:       time.Hour,
 		SensitiveCheck: func(desc string) bool { return strings.Contains(desc, "敏感") },
 	}
 	stats := &Stats{}
