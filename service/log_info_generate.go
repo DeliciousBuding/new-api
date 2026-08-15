@@ -146,7 +146,13 @@ func DetectClientProfile(c *gin.Context) string {
 			}
 		case strings.Contains(lv, "desktop"):
 			return "claude_desktop"
-		case strings.Contains(lv, "vscode") || strings.Contains(lv, "jetbrains") || strings.Contains(lv, "intellij") || strings.Contains(lv, "cursor"):
+		case strings.Contains(lv, "vscode"):
+			// X-App=vscode 与 X-App=cli + UA claude-vscode 是同一个 VS Code
+			// 扩展的不同信号形态，统一归 claude_vscode，避免同一客户端因
+			// 头路径不同被标成两个档位（claude_plugin 保留给 JetBrains/
+			// IntelliJ/Cursor 等插件形态）。
+			return "claude_vscode"
+		case strings.Contains(lv, "jetbrains") || strings.Contains(lv, "intellij") || strings.Contains(lv, "cursor"):
 			return "claude_plugin"
 		default:
 			return "claude_app"

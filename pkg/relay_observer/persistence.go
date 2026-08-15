@@ -411,18 +411,21 @@ func claimTurnForSessionTx(ctx context.Context, tx contentTx, turnID, sessionID 
 // an identity of all five fields, so equal raw values across profiles stay
 // separate sessions. Schema v4 enforces that same identity in PostgreSQL.
 // sessionFamily is the display client_family for a session row: the
-// fine-grained ClientProfile when present, else the SessionScope used for
-// grouping. Display granularity must not change grouping — the alias digest
-// stays on Scope, so the CLI / VS Code / third-party-desktop variants of the
-// same Claude Code session still resolve to one observer session.
+// fine-grained ClientProfile when present, else the primary alias's SessionScope
+// used for grouping. Display granularity must not change grouping — the alias
+// digest stays on Scope, so the CLI / VS Code / third-party-desktop variants of
+// the same Claude Code session still resolve to one observer session.
+//
+// The value is first-seen sticky: it is written on session creation and on the
+// counter upsert, but the ON CONFLICT bump path does not overwrite it, so it
+// reflects the profile of the session's first observed turn rather than the
+// latest. Per-turn fine-grained profiles stay available on observer_turns.
+// Aliases is always non-empty here (appendTurnTx returns early on empty).
 func sessionFamily(in *ContentInput) string {
 	if in.ClientProfile != "" {
 		return in.ClientProfile
 	}
-	if len(in.Aliases) > 0 {
-		return string(in.Aliases[0].Scope)
-	}
-	return ""
+	return string(in.Aliases[0].Scope)
 }
 
 func resolvePrimarySessionTx(ctx context.Context, tx contentTx, in *ContentInput) (SessionResolution, error) {

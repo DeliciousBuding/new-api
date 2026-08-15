@@ -79,11 +79,11 @@ func TestDetectClientProfile(t *testing.T) {
 			want: "claude_desktop",
 		},
 		{
-			name: "claude vscode plugin x-app",
+			name: "claude vscode x-app",
 			headers: map[string]string{
 				"X-App": "vscode",
 			},
-			want: "claude_plugin",
+			want: "claude_vscode",
 		},
 		{
 			name: "claude cli x-app with vscode ua variant",
