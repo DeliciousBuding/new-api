@@ -74,10 +74,12 @@ type ImageFetcher interface {
 // DescriptionCache 跨请求识图描述缓存（纯核心接口；NewAPI 适配注入 Redis 实现）。
 // 命中返回的 desc 必须是此前成功识图且通过敏感词检查的稳定描述——引擎据此
 // 跳过该 digest 的旁路调用。缓存是纯优化：Get 失败视为未命中继续识图，
-// Set 失败静默忽略，两者都不得影响主流程正确性。
+// Set/Delete 失败静默忽略，三者都不得影响主流程正确性。Delete 为
+// best-effort（缓存值被敏感词热更新判定为污染时清除 key），失败不影响主流程。
 type DescriptionCache interface {
 	Get(ctx context.Context, key string) (string, bool)
 	Set(ctx context.Context, key, value string, ttl time.Duration) error
+	Delete(ctx context.Context, key string) error
 }
 
 // Stats 结构化统计（v0.2.2 拆分：按图片块与唯一图片分别计数）

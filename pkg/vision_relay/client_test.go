@@ -443,10 +443,11 @@ func TestEngineEnhanceSensitiveCheck(t *testing.T) {
 	}
 }
 
-// fakeDescriptionCache 测试用缓存：Get 命中注入描述，Set 记录写入值。
+// fakeDescriptionCache 测试用缓存：Get 命中注入描述，Set/Delete 记录调用。
 type fakeDescriptionCache struct {
-	hits map[string]string
-	sets []string
+	hits    map[string]string
+	sets    []string
+	deletes []string
 }
 
 func (f *fakeDescriptionCache) Get(ctx context.Context, key string) (string, bool) {
@@ -459,6 +460,11 @@ func (f *fakeDescriptionCache) Get(ctx context.Context, key string) (string, boo
 
 func (f *fakeDescriptionCache) Set(ctx context.Context, key, value string, ttl time.Duration) error {
 	f.sets = append(f.sets, value)
+	return nil
+}
+
+func (f *fakeDescriptionCache) Delete(ctx context.Context, key string) error {
+	f.deletes = append(f.deletes, key)
 	return nil
 }
 
@@ -693,6 +699,54 @@ func TestEngineEnhanceCacheSensitiveDiscard(t *testing.T) {
 	}
 	if !strings.Contains(string(enhanced), "正常描述") {
 		t.Fatal("re-described description should be injected")
+	}
+	if stats.CacheServed != 0 {
+		t.Fatalf("discarded cache hit must not count CacheServed, got %d", stats.CacheServed)
+	}
+}
+
+// 缓存命中但命中敏感词（词库热更新）→ 删除污染 key 并走正常识图：
+// 污染的缓存值不得注入，key 必须被 Delete 清除，视觉端点被调用一次。
+func TestEngineEnhanceCacheSensitiveEvicts(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Write([]byte(`{"choices":[{"message":{"content":"重新识图描述"}}]}`))
+	}))
+	defer ts.Close()
+	pngData := testImageData()
+	cfg := testConfig(ts.URL)
+	cacheKey := descriptionCacheKey(DigestBytes(pngData), BuildInstruction(cfg))
+	cache := &fakeDescriptionCache{hits: map[string]string{
+		cacheKey: "敏感缓存描述",
+	}}
+	engine := &Engine{
+		Client:         &VisionClient{HTTPClient: ts.Client()},
+		Cache:          cache,
+		CacheTTL:       time.Hour,
+		SensitiveCheck: func(desc string) bool { return strings.Contains(desc, "敏感") },
+	}
+	stats := &Stats{}
+	raw := `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + base64.StdEncoding.EncodeToString(pngData) + `"}}]}]}`
+	enhanced, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, cfg, stats)
+	if err != nil {
+		t.Fatalf("enhance: %v", err)
+	}
+	// (a) 污染的缓存值不得注入，注入的是重新识图得到的描述
+	out := string(enhanced)
+	if strings.Contains(out, "敏感缓存描述") {
+		t.Error("poisoned cached value must not be injected")
+	}
+	if !strings.Contains(out, "重新识图描述") {
+		t.Error("freshly re-described value should be injected")
+	}
+	// (b) 污染的 key 必须被删除（后续请求不再命中污染值）
+	if len(cache.deletes) != 1 || cache.deletes[0] != cacheKey {
+		t.Fatalf("poisoned cache key must be deleted once, got %v", cache.deletes)
+	}
+	// (c) 丢弃缓存后必须重新识图：视觉端点被调用一次
+	if atomic.LoadInt32(&calls) != 1 {
+		t.Fatalf("vision endpoint should be hit once after eviction, got %d", calls)
 	}
 	if stats.CacheServed != 0 {
 		t.Fatalf("discarded cache hit must not count CacheServed, got %d", stats.CacheServed)

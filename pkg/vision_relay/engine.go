@@ -186,6 +186,10 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 						mu.Unlock()
 						return
 					}
+					// 缓存值命中敏感词（词库热更新）：该 key 已被污染，删除
+					// 防止后续请求对同一 digest 永远重复「命中→丢弃→重新识图」。
+					// Delete 为 best-effort，失败静默忽略（缓存是纯优化）。
+					_ = e.Cache.Delete(ctx, cacheKey)
 				}
 			}
 			// ① decode gate（2）：完整解码/降采样/JPEG 编码——内存峰值闸门
