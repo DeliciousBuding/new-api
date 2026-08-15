@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/stretchr/testify/require"
 )
 
 func TestVisionRelayValidate(t *testing.T) {
@@ -164,6 +165,52 @@ func TestGetVisionRelaySnapshotStrict(t *testing.T) {
 			}
 		})
 	}
+}
+
+// 凭据不回显：base_url 校验错误绝不回显原始值（可能含 userinfo 凭据，
+// 该错误会经 visionRelayFail 记入后端日志——凭据绝不进日志）。
+func TestGetVisionRelaySnapshotBaseURLNoEcho(t *testing.T) {
+	base := map[string]string{
+		"vision_relay.enabled":       "true",
+		"vision_relay.target_models": `["deepseek*"]`,
+		"vision_relay.models":        `["gemma-4-31b"]`,
+		"vision_relay.base_url":      "https://vision.example.com",
+		"vision_relay.api_key":       "sk-test",
+	}
+	cases := []struct {
+		name  string
+		value string
+		leak  string
+	}{
+		{"错误 scheme 含 userinfo", "ftp://alice:p4ssw0rd@example.com", "p4ssw0rd"},
+		{"非法 URL 含凭据形态", "://user:secret@bad", "secret"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			common.OptionMapRWMutex.Lock()
+			common.OptionMap = make(map[string]string, len(base)+1)
+			for k, v := range base {
+				common.OptionMap[k] = v
+			}
+			common.OptionMap["vision_relay.base_url"] = tc.value
+			common.OptionMapRWMutex.Unlock()
+			_, err := GetVisionRelaySnapshot()
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), tc.leak)
+		})
+	}
+}
+
+// ValidateEndpoint 同样不得回显 base_url（错误经 visionRelayFail 进后端日志）。
+func TestValidateEndpointBaseURLNoEcho(t *testing.T) {
+	v := &VisionRelaySettings{
+		Enabled:    true,
+		TimeoutSec: 30,
+		BaseURL:    "ftp://alice:p4ssw0rd@example.com",
+	}
+	err := v.ValidateEndpoint()
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "p4ssw0rd")
 }
 
 // enabled 键自身 malformed → 降级为 disabled（v0.2.3：残留坏配置不打全局 5xx；
