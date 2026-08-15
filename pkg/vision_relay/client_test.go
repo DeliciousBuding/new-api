@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -471,20 +472,16 @@ func (f *fakeDescriptionCache) Delete(ctx context.Context, key string) error {
 // 网络层错误分类：deadline 耗尽 → ErrTimeout（不重试）；其余 → transportError（可重试）
 func TestClassifyNetworkErr(t *testing.T) {
 	timeout := classifyNetworkErr(context.DeadlineExceeded)
-	if !errors.Is(timeout, ErrTimeout) {
-		t.Fatalf("context.DeadlineExceeded should classify to ErrTimeout, got %v", timeout)
-	}
+	require.True(t, errors.Is(timeout, ErrTimeout),
+		"context.DeadlineExceeded should classify to ErrTimeout, got %v", timeout)
 	var te *transportError
-	if errors.As(timeout, &te) {
-		t.Fatal("timeout must not classify to transportError (no same-model retry)")
-	}
+	require.False(t, errors.As(timeout, &te),
+		"timeout must not classify to transportError (no same-model retry)")
 	conn := classifyNetworkErr(io.ErrUnexpectedEOF)
-	if !errors.As(conn, &te) {
-		t.Fatalf("generic network error should classify to transportError, got %v", conn)
-	}
-	if errors.Is(conn, ErrTimeout) {
-		t.Fatal("generic network error must not classify to ErrTimeout")
-	}
+	require.True(t, errors.As(conn, &te),
+		"generic network error should classify to transportError, got %v", conn)
+	require.False(t, errors.Is(conn, ErrTimeout),
+		"generic network error must not classify to ErrTimeout")
 }
 
 // 取消 → 原样返回（不归为可重试 transportError、不包成 ErrTimeout）：客户端
@@ -515,9 +512,7 @@ func TestEnumFromErr(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := enumFromErr(tc.err); got != tc.want {
-				t.Fatalf("enumFromErr(%v) = %q, want %q", tc.err, got, tc.want)
-			}
+			require.Equal(t, tc.want, enumFromErr(tc.err))
 		})
 	}
 }
@@ -551,9 +546,7 @@ func TestDescribeOneTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	r := client.DescribeOne(ctx, "指令", testImageData(), "image/png", testConfig(ts.URL))
-	if r.Enum != EnumTimeout {
-		t.Fatalf("deadline exceeded must surface timeout enum, got %q", r.Enum)
-	}
+	require.Equal(t, EnumTimeout, r.Enum, "deadline exceeded must surface timeout enum")
 }
 
 // 已取消的 ctx → DescribeOne 立即停止链，不发任何 sidecall（0 次 HTTP、0 fallback）
@@ -629,18 +622,12 @@ func TestEngineEnhanceCacheHit(t *testing.T) {
 	stats := &Stats{}
 	raw := `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + base64.StdEncoding.EncodeToString(pngData) + `"}}]}]}`
 	enhanced, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, cfg, stats)
-	if err != nil {
-		t.Fatalf("enhance: %v", err)
-	}
-	if stats.Success != 1 || stats.CacheServed != 1 || stats.VisionCalls != 0 {
-		t.Fatalf("cache hit: success=%d cache_served=%d vision_calls=%d", stats.Success, stats.CacheServed, stats.VisionCalls)
-	}
-	if atomic.LoadInt32(&calls) != 0 {
-		t.Fatalf("cache hit must skip vision sidecall, got %d calls", calls)
-	}
-	if !strings.Contains(string(enhanced), "缓存描述") {
-		t.Fatal("cached description should be injected")
-	}
+	require.NoError(t, err, "enhance")
+	require.Equal(t, 1, stats.Success)
+	require.Equal(t, 1, stats.CacheServed)
+	require.Zero(t, stats.VisionCalls)
+	require.Zero(t, atomic.LoadInt32(&calls), "cache hit must skip vision sidecall")
+	require.Contains(t, string(enhanced), "缓存描述", "cached description should be injected")
 }
 
 // 缓存未命中 → 正常识图，成功后写缓存（Set 记录描述值）
@@ -655,18 +642,11 @@ func TestEngineEnhanceCacheWrite(t *testing.T) {
 	engine := &Engine{Client: &VisionClient{HTTPClient: ts.Client()}, Cache: cache}
 	stats := &Stats{}
 	raw := `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + base64.StdEncoding.EncodeToString(testImageData()) + `"}}]}]}`
-	if _, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, testConfig(ts.URL), stats); err != nil {
-		t.Fatalf("enhance: %v", err)
-	}
-	if atomic.LoadInt32(&calls) != 1 {
-		t.Fatalf("cache miss must call vision sidecall once, got %d", calls)
-	}
-	if len(cache.sets) != 1 || cache.sets[0] != "新识图描述" {
-		t.Fatalf("successful description must be cached, got %v", cache.sets)
-	}
-	if stats.CacheServed != 0 {
-		t.Fatalf("cache miss must not count CacheServed, got %d", stats.CacheServed)
-	}
+	_, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, testConfig(ts.URL), stats)
+	require.NoError(t, err, "enhance")
+	require.Equal(t, int32(1), atomic.LoadInt32(&calls), "cache miss must call vision sidecall once")
+	require.Equal(t, []string{"新识图描述"}, cache.sets, "successful description must be cached")
+	require.Zero(t, stats.CacheServed, "cache miss must not count CacheServed")
 }
 
 // 缓存命中但命中敏感词（词库热更新）→ 丢弃缓存走正常识图
@@ -690,18 +670,11 @@ func TestEngineEnhanceCacheSensitiveDiscard(t *testing.T) {
 	stats := &Stats{}
 	raw := `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + base64.StdEncoding.EncodeToString(pngData) + `"}}]}]}`
 	enhanced, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, cfg, stats)
-	if err != nil {
-		t.Fatalf("enhance: %v", err)
-	}
-	if atomic.LoadInt32(&calls) != 1 {
-		t.Fatalf("sensitive cached value must be discarded and re-described, got %d calls", calls)
-	}
-	if !strings.Contains(string(enhanced), "正常描述") {
-		t.Fatal("re-described description should be injected")
-	}
-	if stats.CacheServed != 0 {
-		t.Fatalf("discarded cache hit must not count CacheServed, got %d", stats.CacheServed)
-	}
+	require.NoError(t, err, "enhance")
+	require.Equal(t, int32(1), atomic.LoadInt32(&calls),
+		"sensitive cached value must be discarded and re-described")
+	require.Contains(t, string(enhanced), "正常描述", "re-described description should be injected")
+	require.Zero(t, stats.CacheServed, "discarded cache hit must not count CacheServed")
 }
 
 // 缓存命中但命中敏感词（词库热更新）→ 删除污染 key 并走正常识图：
@@ -727,28 +700,17 @@ func TestEngineEnhanceCacheSensitiveEvicts(t *testing.T) {
 	stats := &Stats{}
 	raw := `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + base64.StdEncoding.EncodeToString(pngData) + `"}}]}]}`
 	enhanced, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, cfg, stats)
-	if err != nil {
-		t.Fatalf("enhance: %v", err)
-	}
+	require.NoError(t, err, "enhance")
 	// (a) 污染的缓存值不得注入，注入的是重新识图得到的描述
 	out := string(enhanced)
-	if strings.Contains(out, "敏感缓存描述") {
-		t.Error("poisoned cached value must not be injected")
-	}
-	if !strings.Contains(out, "重新识图描述") {
-		t.Error("freshly re-described value should be injected")
-	}
+	assert.NotContains(t, out, "敏感缓存描述", "poisoned cached value must not be injected")
+	assert.Contains(t, out, "重新识图描述", "freshly re-described value should be injected")
 	// (b) 污染的 key 必须被删除（后续请求不再命中污染值）
-	if len(cache.deletes) != 1 || cache.deletes[0] != cacheKey {
-		t.Fatalf("poisoned cache key must be deleted once, got %v", cache.deletes)
-	}
+	require.Equal(t, []string{cacheKey}, cache.deletes, "poisoned cache key must be deleted once")
 	// (c) 丢弃缓存后必须重新识图：视觉端点被调用一次
-	if atomic.LoadInt32(&calls) != 1 {
-		t.Fatalf("vision endpoint should be hit once after eviction, got %d", calls)
-	}
-	if stats.CacheServed != 0 {
-		t.Fatalf("discarded cache hit must not count CacheServed, got %d", stats.CacheServed)
-	}
+	require.Equal(t, int32(1), atomic.LoadInt32(&calls),
+		"vision endpoint should be hit once after eviction")
+	require.Zero(t, stats.CacheServed, "discarded cache hit must not count CacheServed")
 }
 
 // 失败原因分布：image_limit（前置）与 unsupported_format（识图）按枚举精确计数
@@ -770,18 +732,11 @@ func TestEngineEnhanceFailedReasons(t *testing.T) {
 	raw := `{"messages":[{"role":"user","content":[` + strings.Join(blocks, ",") + `]}]}`
 	engine := &Engine{Client: &VisionClient{HTTPClient: ts.Client()}}
 	stats := &Stats{}
-	if _, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, testConfig(ts.URL), stats); err != nil {
-		t.Fatalf("enhance: %v", err)
-	}
-	if stats.Failed != 8 {
-		t.Fatalf("expected 8 failed, got %d", stats.Failed)
-	}
-	if stats.FailedReasons[EnumImageLimit] != 2 {
-		t.Fatalf("expected 2 image_limit, got %d", stats.FailedReasons[EnumImageLimit])
-	}
-	if stats.FailedReasons[EnumUnsupportedFormat] != 6 {
-		t.Fatalf("expected 6 unsupported_format, got %d", stats.FailedReasons[EnumUnsupportedFormat])
-	}
+	_, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, testConfig(ts.URL), stats)
+	require.NoError(t, err, "enhance")
+	require.Equal(t, 8, stats.Failed)
+	require.Equal(t, 2, stats.FailedReasons[EnumImageLimit])
+	require.Equal(t, 6, stats.FailedReasons[EnumUnsupportedFormat])
 }
 
 // 单图 401 → auth_error 计入失败原因分布（不 fallback 不 retry）
@@ -794,13 +749,8 @@ func TestEngineEnhanceFailedReasonsAuthError(t *testing.T) {
 	raw := `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + base64.StdEncoding.EncodeToString(testImageData()) + `"}}]}]}`
 	engine := &Engine{Client: &VisionClient{HTTPClient: ts.Client()}}
 	stats := &Stats{}
-	if _, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, testConfig(ts.URL), stats); err != nil {
-		t.Fatalf("enhance: %v", err)
-	}
-	if stats.Failed != 1 {
-		t.Fatalf("expected 1 failed, got %d", stats.Failed)
-	}
-	if stats.FailedReasons[EnumAuthError] != 1 {
-		t.Fatalf("expected 1 auth_error, got %d", stats.FailedReasons[EnumAuthError])
-	}
+	_, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, testConfig(ts.URL), stats)
+	require.NoError(t, err, "enhance")
+	require.Equal(t, 1, stats.Failed)
+	require.Equal(t, 1, stats.FailedReasons[EnumAuthError])
 }
