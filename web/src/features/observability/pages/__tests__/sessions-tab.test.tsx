@@ -1,8 +1,3 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { createInstance } from 'i18next'
-import { act } from 'react'
-import { createRoot } from 'react-dom/client'
-import { I18nextProvider, initReactI18next } from 'react-i18next'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -31,6 +26,12 @@ For commercial licensing, please contact support@quantumnous.com
  * real query path. All session ids are fabricated UUIDs.
  */
 import { afterAll, afterEach, describe, expect, test, vi } from 'vitest'
+
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { createInstance } from 'i18next'
+import { act } from 'react'
+import { createRoot } from 'react-dom/client'
+import { I18nextProvider, initReactI18next } from 'react-i18next'
 
 import { api } from '../../../../lib/http-client'
 import { SessionsTab } from '../sessions-tab'
@@ -139,6 +140,11 @@ afterAll(() => {
 })
 
 afterEach(() => {
+  for (const root of activeRoots.splice(0)) {
+    act(() => {
+      root.unmount()
+    })
+  }
   calls.length = 0
   handler = () => ({ success: true, message: '', data: {} })
   document.body.innerHTML = ''
@@ -148,6 +154,13 @@ const reactTestGlobals = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean
 }
 reactTestGlobals.IS_REACT_ACT_ENVIRONMENT = true
+
+// createRoot trees are not covered by RTL's automatic cleanup (this file
+// renders through react-dom/client directly), so roots are tracked and
+// unmounted after each test. Unmounting stops motion-driven skeleton
+// animations; without it the frame loop survives into teardown and fires a
+// post-teardown requestAnimationFrame against a torn-down environment.
+const activeRoots: ReturnType<typeof createRoot>[] = []
 
 function renderTab(props?: {
   selectedSessionId?: string | null
@@ -159,6 +172,7 @@ function renderTab(props?: {
   const host = document.createElement('div')
   document.body.appendChild(host)
   const root = createRoot(host)
+  activeRoots.push(root)
   act(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
