@@ -16,15 +16,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { describe, expect, test } from 'vitest'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-import { tokenDanceIdentity } from '../identity-branding'
+import { defineConfig } from 'vitest/config'
 
-describe('TokenDance identity branding', () => {
-  test('uses the product name for built-in OIDC login surfaces', () => {
-    expect(tokenDanceIdentity.name).toBe('TokenDance ID')
-    expect(tokenDanceIdentity.continueLabelKey).toBe(
-      'Continue with TokenDance ID'
-    )
-  })
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+export default defineConfig({
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+    },
+  },
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./src/test-setup.ts'],
+    clearMocks: true,
+    restoreMocks: true,
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+  },
 })

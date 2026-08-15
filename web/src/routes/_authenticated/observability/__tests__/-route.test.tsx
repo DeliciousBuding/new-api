@@ -16,40 +16,37 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import assert from 'node:assert/strict'
-import { after, describe, test } from 'node:test'
+import { afterAll, describe, expect, test } from 'vitest'
 
-const { Route } = await import('../route')
-const { useAuthStore } = await import('@/stores/auth-store')
-const { ROLE } = await import('@/lib/roles')
+import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
+
+import { Route } from '../route'
 
 // The guard itself is what we test; a missing beforeLoad must fail the test,
 // not silently pass.
 const beforeLoad = Route.options.beforeLoad
-assert.ok(beforeLoad, 'route must define beforeLoad')
+expect(beforeLoad, 'route must define beforeLoad').toBeTruthy()
+if (!beforeLoad) throw new Error('route must define beforeLoad')
 
 function expectRedirectTo403(fn: () => void) {
-  let thrown: unknown
-  try {
-    fn()
-  } catch (err) {
-    thrown = err
-  }
-  assert.ok(thrown, 'beforeLoad must throw')
   // TanStack Router's redirect() returns a Response-shaped object carrying
   // the target in options.to (this version's public shape).
-  const options = (thrown as { options?: { to?: string } }).options
-  assert.equal(options?.to, '/403')
+  expect(fn).toThrowError(
+    expect.objectContaining({
+      options: expect.objectContaining({ to: '/403' }),
+    })
+  )
 }
 
-after(() => {
+afterAll(() => {
   useAuthStore.getState().auth.setUser(null)
 })
 
 describe('observability route guard', () => {
   test('route carries the page title as static route metadata', () => {
     const staticData = Route.options.staticData as { title?: string }
-    assert.equal(staticData.title, 'Observability')
+    expect(staticData.title).toBe('Observability')
   })
 
   test('anonymous user is redirected to /403', () => {
@@ -58,12 +55,16 @@ describe('observability route guard', () => {
   })
 
   test('regular user is redirected to /403', () => {
-    useAuthStore.getState().auth.setUser({ id: 1, username: 'user', role: ROLE.USER })
+    useAuthStore
+      .getState()
+      .auth.setUser({ id: 1, username: 'user', role: ROLE.USER })
     expectRedirectTo403(() => beforeLoad({} as never))
   })
 
   test('admin is redirected to /403', () => {
-    useAuthStore.getState().auth.setUser({ id: 2, username: 'admin', role: ROLE.ADMIN })
+    useAuthStore
+      .getState()
+      .auth.setUser({ id: 2, username: 'admin', role: ROLE.ADMIN })
     expectRedirectTo403(() => beforeLoad({} as never))
   })
 
@@ -73,6 +74,6 @@ describe('observability route guard', () => {
       username: 'root',
       role: ROLE.SUPER_ADMIN,
     })
-    assert.doesNotThrow(() => beforeLoad({} as never))
+    expect(() => beforeLoad({} as never)).not.toThrow()
   })
 })

@@ -16,62 +16,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import assert from 'node:assert/strict'
-import { after, describe, test } from 'node:test'
+import { fireEvent, render } from '@testing-library/react'
+import i18next from 'i18next'
+import { beforeAll, describe, expect, test } from 'vitest'
 
-import { Window } from 'happy-dom'
+import { CursorPagination } from '../cursor-pagination'
 
-const domWindow = new Window()
-const domGlobals = [
-  'window',
-  'document',
-  'navigator',
-  'HTMLElement',
-  'SVGElement',
-  'Node',
-  'Element',
-  'Event',
-  'CustomEvent',
-  'MutationObserver',
-  'requestAnimationFrame',
-  'cancelAnimationFrame',
-  'getComputedStyle',
-  'matchMedia',
-  'customElements',
-] as const
-
-for (const key of domGlobals) {
-  Object.defineProperty(globalThis, key, {
-    configurable: true,
-    value: domWindow[key],
+beforeAll(() => {
+  i18next.addResourceBundle('en', 'translation', {
+    Previous: 'Previous',
+    Next: 'Next',
+    'Page {{current}}': 'Page {{current}}',
   })
-}
-
-const { act } = await import('react')
-const { createRoot } = await import('react-dom/client')
-const { createInstance } = await import('i18next')
-const { I18nextProvider, initReactI18next } = await import('react-i18next')
-
-const i18n = createInstance()
-await i18n.use(initReactI18next).init({
-  lng: 'en',
-  resources: {
-    en: {
-      translation: {
-        Previous: 'Previous',
-        Next: 'Next',
-        'Page {{current}}': 'Page {{current}}',
-      },
-    },
-  },
 })
-
-const { CursorPagination } = await import('../cursor-pagination')
-
-const reactTestGlobals = globalThis as typeof globalThis & {
-  IS_REACT_ACT_ENVIRONMENT?: boolean
-}
-reactTestGlobals.IS_REACT_ACT_ENVIRONMENT = true
 
 function renderBar(props: {
   pageIndex: number
@@ -81,68 +38,54 @@ function renderBar(props: {
   onBack: () => void
   onNext: () => void
 }) {
-  const host = document.createElement('div')
-  document.body.appendChild(host)
-  const root = createRoot(host)
-  act(() => {
-    root.render(
-      <I18nextProvider i18n={i18n}>
-        <CursorPagination {...props} />
-      </I18nextProvider>
-    )
-  })
-  return { host, root }
+  return render(<CursorPagination {...props} />)
 }
 
-function textOf(host: HTMLElement): string {
-  return host.textContent ?? ''
+function textOf(container: HTMLElement): string {
+  return container.textContent ?? ''
 }
-
-after(() => {
-  document.body.innerHTML = ''
-})
 
 describe('CursorPagination (keyset footer bar)', () => {
   test('renders page index, previous and next buttons', () => {
-    const { host } = renderBar({
+    const { container } = renderBar({
       pageIndex: 3,
       canGoBack: true,
       hasMore: true,
       onBack: () => {},
       onNext: () => {},
     })
-    assert.match(textOf(host), /Page 3/)
-    assert.ok(host.querySelector('button[disabled]') === null)
+    expect(textOf(container)).toMatch(/Page 3/)
+    expect(container.querySelector('button[disabled]')).toBeNull()
   })
 
   test('previous is disabled on the first page', () => {
-    const { host } = renderBar({
+    const { container } = renderBar({
       pageIndex: 1,
       canGoBack: false,
       hasMore: true,
       onBack: () => {},
       onNext: () => {},
     })
-    const [previous, next] = host.querySelectorAll('button')
-    assert.ok(previous.disabled, 'previous must be disabled without a back page')
-    assert.ok(!next.disabled, 'next stays enabled while has_more is true')
+    const [previous, next] = container.querySelectorAll('button')
+    expect(previous.disabled).toBeTruthy()
+    expect(next.disabled).toBeFalsy()
   })
 
   test('next is disabled when the backend reports no more pages', () => {
-    const { host } = renderBar({
+    const { container } = renderBar({
       pageIndex: 1,
       canGoBack: false,
       hasMore: false,
       onBack: () => {},
       onNext: () => {},
     })
-    const [previous, next] = host.querySelectorAll('button')
-    assert.ok(previous.disabled)
-    assert.ok(next.disabled, 'next must be disabled when has_more is false')
+    const [previous, next] = container.querySelectorAll('button')
+    expect(previous.disabled).toBeTruthy()
+    expect(next.disabled).toBeTruthy()
   })
 
   test('both buttons are disabled while the list is loading', () => {
-    const { host } = renderBar({
+    const { container } = renderBar({
       pageIndex: 2,
       canGoBack: true,
       hasMore: true,
@@ -150,16 +93,15 @@ describe('CursorPagination (keyset footer bar)', () => {
       onBack: () => {},
       onNext: () => {},
     })
-    const buttons = host.querySelectorAll('button')
-    for (const button of buttons) {
-      assert.ok(button.disabled, 'buttons must be disabled while loading')
+    for (const button of container.querySelectorAll('button')) {
+      expect(button.disabled).toBeTruthy()
     }
   })
 
   test('clicking next/previous fires the navigation callbacks', () => {
     let nextClicks = 0
     let backClicks = 0
-    const { host } = renderBar({
+    const { container } = renderBar({
       pageIndex: 2,
       canGoBack: true,
       hasMore: true,
@@ -170,18 +112,10 @@ describe('CursorPagination (keyset footer bar)', () => {
         nextClicks++
       },
     })
-    const [previous, next] = host.querySelectorAll('button')
-    act(() => {
-      next.dispatchEvent(
-        new domWindow.Event('click', { bubbles: true }) as unknown as Event
-      )
-    })
-    act(() => {
-      previous.dispatchEvent(
-        new domWindow.Event('click', { bubbles: true }) as unknown as Event
-      )
-    })
-    assert.equal(nextClicks, 1)
-    assert.equal(backClicks, 1)
+    const [previous, next] = container.querySelectorAll('button')
+    fireEvent.click(next)
+    fireEvent.click(previous)
+    expect(nextClicks).toBe(1)
+    expect(backClicks).toBe(1)
   })
 })

@@ -13,63 +13,22 @@ GNU Affero General Public License for more details.
 
 You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
 */
-import assert from 'node:assert/strict'
-import { after, describe, test } from 'node:test'
+import { render } from '@testing-library/react'
+import i18next from 'i18next'
+import { beforeAll, describe, expect, test } from 'vitest'
 
-import { Window } from 'happy-dom'
+import { IpGeoBadge } from '../ip-geo-badge'
 
-const domWindow = new Window()
-const domGlobals = [
-  'window',
-  'document',
-  'navigator',
-  'HTMLElement',
-  'SVGElement',
-  'Node',
-  'Element',
-  'Event',
-  'CustomEvent',
-  'MutationObserver',
-  'requestAnimationFrame',
-  'cancelAnimationFrame',
-  'getComputedStyle',
-  'matchMedia',
-  'customElements',
-] as const
-
-for (const key of domGlobals) {
-  Object.defineProperty(globalThis, key, {
-    configurable: true,
-    value: domWindow[key],
+beforeAll(() => {
+  i18next.addResourceBundle('en', 'translation', {
+    'Country:': 'Country:',
+    'City:': 'City:',
+    'ASN:': 'ASN:',
   })
-}
-
-const { act } = await import('react')
-const { createRoot } = await import('react-dom/client')
-const { createInstance } = await import('i18next')
-const { I18nextProvider, initReactI18next } = await import('react-i18next')
-
-const i18n = createInstance()
-await i18n.use(initReactI18next).init({
-  lng: 'en',
-  resources: {
-    en: {
-      translation: {
-        'Country:': 'Country:',
-        'City:': 'City:',
-        'ASN:': 'ASN:',
-      },
-    },
-  },
 })
-
-const { IpGeoBadge } = await import('../ip-geo-badge')
-
-const reactTestGlobals = globalThis as typeof globalThis & {
-  IS_REACT_ACT_ENVIRONMENT?: boolean
-}
-reactTestGlobals.IS_REACT_ACT_ENVIRONMENT = true
 
 function renderBadge(props: {
   ip: string
@@ -81,65 +40,38 @@ function renderBadge(props: {
     asn_org?: string
   }
 }) {
-  const host = document.createElement('div')
-  document.body.appendChild(host)
-  const root = createRoot(host)
-  act(() => {
-    root.render(
-      <I18nextProvider i18n={i18n}>
-        <IpGeoBadge {...props} />
-      </I18nextProvider>
-    )
-  })
-  return { host, root }
+  return render(<IpGeoBadge {...props} />)
 }
-
-after(() => {
-  document.body.innerHTML = ''
-})
 
 describe('IpGeoBadge', () => {
   test('shows the raw IP address (no masking for admins)', () => {
-    const { host, root } = renderBadge({ ip: '1.2.3.4' })
-    assert.ok(
-      host.textContent?.includes('1.2.3.4'),
-      'IP must be visible in plain text'
-    )
-    root.unmount()
+    const { container } = renderBadge({ ip: '1.2.3.4' })
+    expect(container.textContent).toContain('1.2.3.4')
   })
 
   test('renders a country flag when country_code is present', () => {
-    const { host, root } = renderBadge({
+    const { container } = renderBadge({
       ip: '1.2.3.4',
       geo: { country_code: 'CN', country: 'China' },
     })
-    assert.ok(
-      host.querySelector('.fi-cn'),
-      'flag class fi-cn should be rendered for CN'
-    )
-    root.unmount()
+    expect(container.querySelector('.fi-cn')).not.toBeNull()
   })
 
   test('falls back to a globe icon without country_code', () => {
-    const { host, root } = renderBadge({ ip: '1.2.3.4' })
-    assert.ok(host.querySelector('svg'), 'globe fallback icon should render')
-    root.unmount()
+    const { container } = renderBadge({ ip: '1.2.3.4' })
+    expect(container.querySelector('svg')).not.toBeNull()
   })
 
   test('ignores malformed country codes', () => {
-    const { host, root } = renderBadge({
+    const { container } = renderBadge({
       ip: '1.2.3.4',
       geo: { country_code: 'cn', country: 'China' },
     })
-    assert.ok(
-      !host.querySelector('[class*="fi-"]'),
-      'lowercase code must not map to a flag'
-    )
-    root.unmount()
+    expect(container.querySelector('[class*="fi-"]')).toBeNull()
   })
 
   test('exposes locality details via popover trigger when geo is resolved', () => {
-    const { host, root } = renderBadge({
+    const { container } = renderBadge({
       ip: '1.2.3.4',
       geo: {
         country_code: 'CN',
@@ -149,16 +81,11 @@ describe('IpGeoBadge', () => {
         asn_org: 'Chinanet',
       },
     })
-    assert.ok(
-      host.querySelector('button'),
-      'resolved geo should wrap the chip in a popover trigger'
-    )
-    root.unmount()
+    expect(container.querySelector('button')).not.toBeNull()
   })
 
   test('stays a plain chip without geo details', () => {
-    const { host, root } = renderBadge({ ip: '1.2.3.4' })
-    assert.ok(!host.querySelector('button'), 'no geo means no popover trigger')
-    root.unmount()
+    const { container } = renderBadge({ ip: '1.2.3.4' })
+    expect(container.querySelector('button')).toBeNull()
   })
 })

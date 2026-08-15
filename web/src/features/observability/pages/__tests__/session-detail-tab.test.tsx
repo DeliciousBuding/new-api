@@ -1,3 +1,8 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { createInstance } from 'i18next'
+import { act } from 'react'
+import { createRoot } from 'react-dom/client'
+import { I18nextProvider, initReactI18next } from 'react-i18next'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -27,48 +32,34 @@ For commercial licensing, please contact support@quantumnous.com
  * instance) and api.test.ts (stubbing the shared http-client `api.get`
  * singleton instead of mocking modules).
  */
-import assert from 'node:assert/strict'
-import { after, afterEach, beforeEach, describe, test } from 'node:test'
-
-import { Window } from 'happy-dom'
-
-const domWindow = new Window()
-const domGlobals = [
-  'window',
-  'document',
-  'navigator',
-  'HTMLElement',
-  'SVGElement',
-  'Node',
-  'Element',
-  'Event',
-  'CustomEvent',
-  'MutationObserver',
-  'requestAnimationFrame',
-  'cancelAnimationFrame',
-  'getComputedStyle',
-  'matchMedia',
-  'customElements',
-] as const
-
-for (const key of domGlobals) {
-  Object.defineProperty(globalThis, key, {
-    configurable: true,
-    value: domWindow[key],
-  })
-}
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+  vi,
+} from 'vitest'
 
 // Shared axios instance first (same module the feature api.ts binds to),
 // then swap api.get for a URL-dispatching stub restored at suite teardown.
-const { api } = await import('@/lib/http-client')
-const { QueryClient, QueryClientProvider } =
-  await import('@tanstack/react-query')
-const { createInstance } = await import('i18next')
-const { I18nextProvider, initReactI18next } = await import('react-i18next')
-const { act } = await import('react')
-const { createRoot } = await import('react-dom/client')
+import { api } from '@/lib/http-client'
 
-const { SessionDetailTab } = await import('../session-detail-tab')
+import { SessionDetailTab } from '../session-detail-tab'
+
+// The timeline renders client profile badges through the fork's lobe-icon
+// loader. @lobehub/icons uses ESM directory imports that Vite's resolver
+// cannot follow; stub the loader — these tests cover timeline structure and
+// labels, not upstream SVG internals.
+// Vitest hoists vi.mock, so the stub applies to the imports above.
+vi.mock('@/lib/lobe-icon', async () => {
+  const React = await import('react')
+  return {
+    getLobeIcon: () =>
+      React.createElement('svg', { 'data-mock-lobe-icon': 'true' }),
+  }
+})
 
 const reactTestGlobals = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean
@@ -146,7 +137,7 @@ const stubGet = (async (url: unknown) => {
 }) as typeof api.get
 api.get = stubGet
 
-after(() => {
+afterAll(() => {
   // Chain-safe restore: only unwrap when this file's stub is still the one
   // installed (bun runs test files concurrently and every file swaps the
   // shared http-client singleton).
@@ -395,11 +386,10 @@ function clickButton(host: HTMLElement, label: string): void {
   const button = [...host.querySelectorAll('button')].find((b) =>
     b.textContent?.includes(label)
   )
-  assert.ok(button, `button "${label}" not found`)
+  expect(button, `button "${label}" not found`).toBeTruthy()
+  if (!button) throw new Error(`button "${label}" not found`)
   act(() => {
-    button.dispatchEvent(
-      new domWindow.Event('click', { bubbles: true }) as unknown as Event
-    )
+    button.dispatchEvent(new Event('click', { bubbles: true }))
   })
 }
 
@@ -417,7 +407,7 @@ beforeEach(() => {
   )
 })
 
-after(() => {
+afterAll(() => {
   document.body.innerHTML = ''
 })
 
@@ -428,15 +418,14 @@ after(() => {
 describe('SessionDetailTab — default empty state', () => {
   test('renders the selection hint and fires no requests at all', async () => {
     const { host } = renderTab(null)
-    assert.match(
-      textOf(host),
+    expect(textOf(host)).toMatch(
       /Select a session from the list to view its agent timeline\./
     )
     // Give any (mis-)configured query a chance to fire before asserting.
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
     })
-    assert.deepEqual(calls, [], 'no requests may fire without a sessionId')
+    expect(calls, 'no requests may fire without a sessionId').toEqual([])
   })
 })
 
@@ -446,33 +435,54 @@ describe('SessionDetailTab — agent timeline transcript', () => {
     await waitFor(host, () => textOf(host).includes('List the files'))
 
     const text = textOf(host)
-    assert.ok(text.includes('bob'), 'username from the session summary')
-    assert.ok(text.includes('session-'), 'short session id in the card')
-    assert.ok(text.includes('Let me inspect the tree.'), 'assistant text')
-    assert.ok(text.includes('Done.'), 'final assistant message')
-    assert.ok(text.includes('Codex CLI'), 'client profile label')
-    assert.ok(text.includes('42s'), 'duration formatted from first/last seen')
-    assert.ok(
+    expect(
+      text.includes('bob'),
+      'username from the session summary'
+    ).toBeTruthy()
+    expect(
+      text.includes('session-'),
+      'short session id in the card'
+    ).toBeTruthy()
+    expect(
+      text.includes('Let me inspect the tree.'),
+      'assistant text'
+    ).toBeTruthy()
+    expect(text.includes('Done.'), 'final assistant message').toBeTruthy()
+    expect(text.includes('Codex CLI'), 'client profile label').toBeTruthy()
+    expect(
+      text.includes('42s'),
+      'duration formatted from first/last seen'
+    ).toBeTruthy()
+    expect(
       text.includes('Completed'),
       'status badge without a trailing user turn or gap'
-    )
-    assert.ok(text.includes('4') && text.includes('turns'), 'turn count')
+    ).toBeTruthy()
+    expect(
+      text.includes('4') && text.includes('turns'),
+      'turn count'
+    ).toBeTruthy()
   })
 
   test('collapses consecutive tool calls into one tree node', async () => {
     const { host } = renderTab('session-abc-1234')
     await waitFor(host, () => textOf(host).includes('List the files'))
 
-    assert.ok(
+    expect(
       textOf(host).includes('Tool Call × 2'),
       'two consecutive calls render as a single collapsible node'
-    )
+    ).toBeTruthy()
 
     clickButton(host, 'Tool Call')
     await waitFor(host, () => textOf(host).includes('run_command('))
     const text = textOf(host)
-    assert.ok(text.includes('run_command('), 'leaf signature rendered')
-    assert.ok(text.includes('grep('), 'second leaf signature rendered')
+    expect(
+      text.includes('run_command('),
+      'leaf signature rendered'
+    ).toBeTruthy()
+    expect(
+      text.includes('grep('),
+      'second leaf signature rendered'
+    ).toBeTruthy()
   })
 
   test('attaches tool results to the preceding assistant turn', async () => {
@@ -484,16 +494,16 @@ describe('SessionDetailTab — agent timeline transcript', () => {
     // The role=tool message is a separate transcript item; it must be joined
     // onto the assistant's calls (positionally) and surface inside the leaf
     // node when expanded — not as a standalone bubble.
-    assert.ok(
+    expect(
       textOf(host).includes('run_command('),
       'leaf signature rendered'
-    )
+    ).toBeTruthy()
     clickButton(host, 'run_command(')
     await waitFor(host, () => textOf(host).includes('"files": 12'))
-    assert.ok(
+    expect(
       textOf(host).includes('"files": 12'),
       'attached result output rendered inside the tool leaf'
-    )
+    ).toBeTruthy()
   })
 
   test('loads earlier pages by prepending with the prev cursor', async () => {
@@ -507,17 +517,15 @@ describe('SessionDetailTab — agent timeline transcript', () => {
     clickButton(host, 'Load earlier')
     await waitFor(host, () => textOf(host).includes('An older prompt'))
 
-    assert.ok(
-      calls.some((u) =>
-        u.includes('direction=older&cursor=123')
-      ),
+    expect(
+      calls.some((u) => u.includes('direction=older&cursor=123')),
       'older request carries the previous page cursor'
-    )
+    ).toBeTruthy()
     const listText = textOf(host)
-    assert.ok(
+    expect(
       listText.indexOf('An older prompt') < listText.indexOf('List the files'),
       'older page prepends before the newest content'
-    )
+    ).toBeTruthy()
   })
 
   test('shows the gap marker for truncated captures', async () => {
@@ -528,10 +536,10 @@ describe('SessionDetailTab — agent timeline transcript', () => {
     const { host } = renderTab('session-abc-1234')
     await waitFor(host, () => textOf(host).includes('Truncated'))
 
-    assert.ok(
+    expect(
       textOf(host).includes('3') && textOf(host).includes('items'),
       'gap marker reports the omitted item count'
-    )
+    ).toBeTruthy()
   })
 
   test('shows the empty state when the transcript has no items', async () => {
@@ -554,8 +562,11 @@ describe('SessionDetailTab — agent timeline transcript', () => {
     await waitFor(host, () => textOf(host).includes('The store timed out'))
 
     const text = textOf(host)
-    assert.ok(text.includes('Degraded'), 'alert title rendered')
-    assert.ok(!text.includes('List the files'), 'no transcript on degraded')
+    expect(text.includes('Degraded'), 'alert title rendered').toBeTruthy()
+    expect(
+      text.includes('List the files'),
+      'no transcript on degraded'
+    ).toBeFalsy()
   })
 
   test('shows an error state when the transcript request fails', async () => {
@@ -577,10 +588,10 @@ describe('SessionDetailTab — session switching', () => {
     const { host, root } = renderTab('session-abc-1234')
     await waitFor(host, () => textOf(host).includes('List the files'))
 
-    handlers.set(
-      '/api/relay-observer/sessions/session-xyz-5678',
-      () => ({ ...SESSION_PAYLOAD, data: { ...SESSION_PAYLOAD.data, session_id: 'session-xyz-5678' } })
-    )
+    handlers.set('/api/relay-observer/sessions/session-xyz-5678', () => ({
+      ...SESSION_PAYLOAD,
+      data: { ...SESSION_PAYLOAD.data, session_id: 'session-xyz-5678' },
+    }))
     handlers.set(
       '/api/relay-observer/sessions/session-xyz-5678/transcript',
       () => ({
@@ -624,8 +635,14 @@ describe('SessionDetailTab — session switching', () => {
 
     await waitFor(host, () => textOf(host).includes('Another session prompt'))
     const text = textOf(host)
-    assert.ok(!text.includes('List the files'), 'previous session cleared')
-    assert.ok(!text.includes('Tool Call × 2'), 'tool state not carried over')
+    expect(
+      text.includes('List the files'),
+      'previous session cleared'
+    ).toBeFalsy()
+    expect(
+      text.includes('Tool Call × 2'),
+      'tool state not carried over'
+    ).toBeFalsy()
   })
 
   test('drops an in-flight loadOlder page when the session switches', async () => {
@@ -643,10 +660,10 @@ describe('SessionDetailTab — session switching', () => {
 
     clickButton(host, 'Load earlier')
     // Switch sessions while the older-page request is still in flight.
-    handlers.set(
-      '/api/relay-observer/sessions/session-xyz-5678',
-      () => ({ ...SESSION_PAYLOAD, data: { ...SESSION_PAYLOAD.data, session_id: 'session-xyz-5678' } })
-    )
+    handlers.set('/api/relay-observer/sessions/session-xyz-5678', () => ({
+      ...SESSION_PAYLOAD,
+      data: { ...SESSION_PAYLOAD.data, session_id: 'session-xyz-5678' },
+    }))
     handlers.set(
       '/api/relay-observer/sessions/session-xyz-5678/transcript',
       () => ({
@@ -693,13 +710,13 @@ describe('SessionDetailTab — session switching', () => {
       release(OLDER_PAGE)
     })
     const text = textOf(host)
-    assert.ok(
-      !text.includes('An older prompt'),
+    expect(
+      text.includes('An older prompt'),
       'the previous session older page must not splice into the new timeline'
-    )
-    assert.ok(
-      !text.includes('List the files'),
+    ).toBeFalsy()
+    expect(
+      text.includes('List the files'),
       'previous session content must stay cleared'
-    )
+    ).toBeFalsy()
   })
 })
