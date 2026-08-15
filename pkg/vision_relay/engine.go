@@ -80,7 +80,7 @@ func (e *Engine) Enhance(ctx context.Context, raw []byte, format Format, cfg Con
 		if i >= MaxImages {
 			img := &PatchedImage{Patch: patches[i], Err: ErrImageLimit}
 			images = append(images, img)
-			recordFailure([]*PatchedImage{img}, stats, EnumImageLimit)
+			recordFailure(stats, EnumImageLimit, img)
 			continue
 		}
 		gateCh, err := globalDecodeGate.acquire(ctx)
@@ -88,14 +88,14 @@ func (e *Engine) Enhance(ctx context.Context, raw []byte, format Format, cfg Con
 			// 闸等待失败（ctx 取消/超时）→ 占位；deadline 耗尽须如实记 timeout
 			img := &PatchedImage{Patch: patches[i], Err: err}
 			images = append(images, img)
-			recordFailure([]*PatchedImage{img}, stats, gateErrEnum(err))
+			recordFailure(stats, gateErrEnum(err), img)
 			continue
 		}
 		img := PrepareImage(ctx, patches[i], e.Fetcher, MaxDecodedBytes)
 		globalDecodeGate.release(gateCh)
 		images = append(images, img)
 		if img.Err != nil {
-			recordFailure([]*PatchedImage{img}, stats, enumFromErr(img.Err))
+			recordFailure(stats, enumFromErr(img.Err), img)
 		}
 	}
 
@@ -152,7 +152,7 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 		if ctx.Err() != nil || abort.Load() {
 			// P2-6：ctx 取消/熔断未调度的图计入 Failed（mu 保护——goroutine 并发写）
 			mu.Lock()
-			recordFailure(group, stats, EnumServiceUnavailable)
+			recordFailure(stats, EnumServiceUnavailable, group...)
 			mu.Unlock()
 			continue
 		}
@@ -163,7 +163,7 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 			defer func() { <-sem }()
 			mu.Lock()
 			if abort.Load() {
-				recordFailure(g, stats, EnumServiceUnavailable) // 在途队列中已被熔断
+				recordFailure(stats, EnumServiceUnavailable, g...) // 在途队列中已被熔断
 				mu.Unlock()
 				return
 			}
@@ -193,7 +193,7 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 			if err != nil {
 				// 审查 P2-2：ctx 取消/闸获取失败 → 与调度前置检查对称，补记 Failed
 				mu.Lock()
-				recordFailure(g, stats, gateErrEnum(err))
+				recordFailure(stats, gateErrEnum(err), g...)
 				mu.Unlock()
 				return
 			}
@@ -231,7 +231,7 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 			if enum == "" && desc != "" {
 				if e.SensitiveCheck != nil && e.SensitiveCheck(desc) {
 					// 审核 P1-3（A6）：敏感词命中 → 该图 blocked 稳定占位，不注入原文
-					recordFailure(g, stats, EnumBlocked)
+					recordFailure(stats, EnumBlocked, g...)
 					mu.Unlock()
 					return
 				}
@@ -244,7 +244,7 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 			} else {
 				// 失败：显式回写占位枚举，保留精确失败原因（timeout/auth_error/
 				// blocked/size_limit 等），不再笼统 service_unavailable
-				recordFailure(g, stats, enum)
+				recordFailure(stats, enum, g...)
 			}
 			mu.Unlock()
 			// ③ 跨请求缓存：成功后写入（纯优化，失败静默忽略）。移到锁外，
@@ -259,21 +259,22 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 	return results
 }
 
-// recordFailure 统一登记一组图片块的失败：回写显式占位枚举 + 累计 Failed +
-// 失败原因分布。必须在持有 stats 写锁时调用（describeGrouped 内 mu 保护）。
-// enum 为空时兜底 service_unavailable。
-func recordFailure(group []*PatchedImage, stats *Stats, enum string) {
+// recordFailure 统一登记失败图片块：回写显式占位枚举 + 累计 Failed + 失败
+// 原因分布。图片块以变参传入（单图与整组共用同一入口）。必须在持有 stats
+// 写锁时调用（describeGrouped 内 mu 保护）。enum 为空时兜底
+// service_unavailable。
+func recordFailure(stats *Stats, enum string, imgs ...*PatchedImage) {
 	if enum == "" {
 		enum = EnumServiceUnavailable
 	}
-	for _, im := range group {
+	for _, im := range imgs {
 		im.Enum = enum
 	}
-	stats.Failed += len(group)
+	stats.Failed += len(imgs)
 	if stats.FailedReasons == nil {
 		stats.FailedReasons = make(map[string]int)
 	}
-	stats.FailedReasons[enum] += len(group)
+	stats.FailedReasons[enum] += len(imgs)
 }
 
 // gateErrEnum 闸获取失败（ctx 取消/超时）的占位枚举：deadline 耗尽 → timeout
