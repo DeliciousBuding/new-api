@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Explicit tag to use (e.g. v1.0.0-td-20260811.2). Leave empty to auto-increment from today.'
+        description: 'Explicit tag to use (e.g. v2026.08.15.2). Leave empty to auto-increment from today.'
         required: false
         type: string
       dry_run:
@@ -60,16 +60,16 @@ jobs:
           if [ -n "${{ inputs.tag }}" ]; then
             TAG="${{ inputs.tag }}"
           else
-            TODAY=$(date +%Y%m%d)
-            PREFIX="v1.0.0-td-${TODAY}"
+            TODAY=$(date +%Y.%m.%d)
+            PREFIX="v${TODAY}"
             LAST=$(git tag -l "${PREFIX}.*" | sed -E 's/^.*\.([0-9]+)$/\1/' | sort -n | tail -1)
             if [ -z "$LAST" ]; then SEQ=1; else SEQ=$((LAST + 1)); fi
             TAG="${PREFIX}.${SEQ}"
           fi
-          case "$TAG" in
-            v*-td-*) ;;
-            *) echo "::error::Tag '$TAG' is not a TokenDance release"; exit 1 ;;
-          esac
+          if [[ ! "$TAG" =~ ^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]]; then
+            echo "::error::Tag '$TAG' is not a TokenDance CalVer release (expected vYYYY.MM.DD.N)"
+            exit 1
+          fi
           if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
             echo "::error::Tag '$TAG' already exists. Use a new tag."
             exit 1
@@ -109,8 +109,10 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ steps.version.outputs.tag }}"
-          # 上一个 td tag（按创建时间倒序，排除刚打的本 tag）。首个发布时为空。
-          PREV=$(git tag -l "v*-td-*" --sort=-creatordate | grep -vx "$TAG" | head -1 || true)
+          # 上一个发布 tag（按创建时间倒序，排除刚打的本 tag）。排除上游
+          # v1.0.0-rc.*；旧格式 v1.0.0-td-* 与新 CalVer vYYYY.MM.DD.N 都保留，
+          # 因此切换到 CalVer 的第一版仍能相对旧 td 末版算出完整变更。
+          PREV=$(git tag -l "v*" --sort=-creatordate | grep -v -- '-rc' | grep -vx "$TAG" | head -1 || true)
           NOTES_FILE="release-notes.md"
           {
             echo "## Changes"

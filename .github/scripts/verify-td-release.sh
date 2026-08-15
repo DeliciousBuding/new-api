@@ -4,7 +4,7 @@ set -euo pipefail
 tag="${1:-}"
 manifest="${2:-tokendance-release-source.json}"
 
-if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-td-[0-9]{8}\.[0-9]+$ ]]; then
+if [[ ! "$tag" =~ ^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]]; then
   echo "::error::Invalid TokenDance release tag: $tag"
   exit 1
 fi

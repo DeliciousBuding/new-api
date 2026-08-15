@@ -24,11 +24,11 @@ PR body 使用 `.github/PULL_REQUEST_TEMPLATE.md`；如提交者是 AI 协助，
 # 预演：只看下一个 tag 是什么，不推送
 gh workflow run release-tag.yml -f dry_run=true
 
-# 正式发布：自动计算 v1.0.0-td-YYYYMMDD.N 并推送 tag + dispatch docker-build.yml
+# 正式发布：自动计算 vYYYY.MM.DD.N 并推送 tag + 创建 GitHub Release + dispatch docker-build.yml
 gh workflow run release-tag.yml
 
 # 也可显式指定 tag
-gh workflow run release-tag.yml -f tag=v1.0.0-td-20260811.2
+gh workflow run release-tag.yml -f tag=v2026.08.15.2
 ```
 
 `release-tag.yml` 会：
@@ -57,7 +57,7 @@ gh api users/DeliciousBuding/packages/container/new-api/versions \
 
 ```bash
 git checkout dev && git pull
-git tag v1.0.0-td-$(date +%Y%m%d).1 && git push origin <tag>
+git tag v$(date +%Y.%m.%d).1 && git push origin <tag>
 # 再在 GitHub Actions 手动运行 docker-build.yml，输入 tag
 ```
 
