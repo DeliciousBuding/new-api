@@ -27,6 +27,7 @@ type VisionRelaySettings struct {
 	APIKey            string   `json:"api_key"`             // 视觉端点鉴权
 	Prompt            string   `json:"prompt"`              // 识图指令模板（空=默认保真基线）
 	TimeoutSec        int      `json:"timeout_sec"`         // 每请求识图总预算（秒）
+	Structured        bool     `json:"structured"`          // 结构化转写（v0.3）：SUMMARY/TRANSCRIPTION/LAYOUT/UNCERTAINTY 四小节证据结构；仅 Prompt 为空时生效
 	SidecallSecret    string   `json:"sidecall_secret"`     // 递归保护共享 secret（认证 marker HMAC 密钥，审核 P0-2；空=不携带/不信任任何递归头）
 	DisableProxyFetch bool     `json:"disable_proxy_fetch"` // 抓取用户图片 URL 时禁用环境代理（proxy-only 出口部署；默认 off=走环境代理）
 }
@@ -73,6 +74,7 @@ func GetVisionRelaySnapshot() (VisionRelaySnapshot, error) {
 	apiKey := common.OptionMap["vision_relay.api_key"]
 	prompt := common.OptionMap["vision_relay.prompt"]
 	timeoutRaw := common.OptionMap["vision_relay.timeout_sec"]
+	structuredRaw := common.OptionMap["vision_relay.structured"]
 	sidecallToken := common.OptionMap["vision_relay.sidecall_secret"]
 	disableProxyRaw := common.OptionMap["vision_relay.disable_proxy_fetch"]
 	common.OptionMapRWMutex.RUnlock()
@@ -92,7 +94,7 @@ func GetVisionRelaySnapshot() (VisionRelaySnapshot, error) {
 	if !snap.Enabled {
 		return snap, nil
 	}
-	if err := parseVisionRelayFields(&snap, targetsRaw, modelsRaw, baseURL, apiKey, prompt, timeoutRaw, sidecallToken, disableProxyRaw); err != nil {
+	if err := parseVisionRelayFields(&snap, targetsRaw, modelsRaw, baseURL, apiKey, prompt, timeoutRaw, structuredRaw, sidecallToken, disableProxyRaw); err != nil {
 		return VisionRelaySnapshot{}, err
 	}
 	return snap, nil
@@ -101,7 +103,7 @@ func GetVisionRelaySnapshot() (VisionRelaySnapshot, error) {
 // parseVisionRelayFields 解析除 enabled 外的全部字段。GetVisionRelaySnapshot 在
 // enabled=true 时调用；ValidateVisionRelayWrite 启用守卫也调用——守卫需要已存
 // 字段的真实值做完整性校验，不受 disabled early-return 影响。
-func parseVisionRelayFields(snap *VisionRelaySnapshot, targetsRaw, modelsRaw, baseURL, apiKey, prompt, timeoutRaw, sidecallToken, disableProxyRaw string) error {
+func parseVisionRelayFields(snap *VisionRelaySnapshot, targetsRaw, modelsRaw, baseURL, apiKey, prompt, timeoutRaw, structuredRaw, sidecallToken, disableProxyRaw string) error {
 	if targetsRaw != "" {
 		// 先解到全新 slice 再赋值（深拷贝）：避免 Unmarshal 对长度 ≤ 当前容量的
 		// JSON 数组原地解码进 defaultVisionRelaySettings 共享 backing array，
@@ -132,6 +134,13 @@ func parseVisionRelayFields(snap *VisionRelaySnapshot, targetsRaw, modelsRaw, ba
 	snap.APIKey = strings.TrimSpace(apiKey)
 	snap.Prompt = strings.TrimSpace(prompt)
 	snap.SidecallSecret = strings.TrimSpace(sidecallToken)
+	if structuredRaw != "" {
+		v, err := strconv.ParseBool(structuredRaw)
+		if err != nil {
+			return fmt.Errorf("vision_relay.structured: %w", err)
+		}
+		snap.Structured = v
+	}
 	if disableProxyRaw != "" {
 		v, err := strconv.ParseBool(disableProxyRaw)
 		if err != nil {
@@ -291,12 +300,13 @@ func ValidateVisionRelayWrite(key, value string) error {
 		apiKey := common.OptionMap["vision_relay.api_key"]
 		prompt := common.OptionMap["vision_relay.prompt"]
 		timeoutRaw := common.OptionMap["vision_relay.timeout_sec"]
+		structuredRaw := common.OptionMap["vision_relay.structured"]
 		sidecallToken := common.OptionMap["vision_relay.sidecall_secret"]
 		disableProxyRaw := common.OptionMap["vision_relay.disable_proxy_fetch"]
 		common.OptionMapRWMutex.RUnlock()
 		snap := defaultVisionRelaySettings
 		snap.Enabled = true
-		if err := parseVisionRelayFields(&snap, targetsRaw, modelsRaw, baseURL, apiKey, prompt, timeoutRaw, sidecallToken, disableProxyRaw); err != nil {
+		if err := parseVisionRelayFields(&snap, targetsRaw, modelsRaw, baseURL, apiKey, prompt, timeoutRaw, structuredRaw, sidecallToken, disableProxyRaw); err != nil {
 			return err
 		}
 		if err := snap.ValidateEndpoint(); err != nil {
@@ -332,12 +342,12 @@ func ValidateVisionRelayWrite(key, value string) error {
 			return fmt.Errorf("vision_relay.timeout_sec: must be a positive integer, got %q", value)
 		}
 		return nil
-	case "vision_relay.disable_proxy_fetch":
+	case "vision_relay.disable_proxy_fetch", "vision_relay.structured":
 		if strings.TrimSpace(value) == "" {
 			return nil
 		}
 		if _, err := strconv.ParseBool(value); err != nil {
-			return fmt.Errorf("vision_relay.disable_proxy_fetch: %w", err)
+			return fmt.Errorf("%s: %w", key, err)
 		}
 		return nil
 	case "vision_relay.base_url":

@@ -326,6 +326,7 @@ export function ModelMutateDrawer({
       'grok.violation_deduction_enabled': false,
       'grok.violation_deduction_amount': 0,
       'vision_relay.enabled': false,
+      'vision_relay.structured': false,
       'vision_relay.target_models': '[]',
       'vision_relay.models': '',
       'vision_relay.base_url': '',

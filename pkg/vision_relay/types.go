@@ -18,6 +18,11 @@ type Config struct {
 	APIKey       string
 	Prompt       string
 	TimeoutSec   int
+	// Structured 启用结构化转写（v0.3，参考 modlens 输出契约）：识图指令改为
+	// SUMMARY/TRANSCRIPTION/LAYOUT/UNCERTAINTY 四小节证据结构，返回文本经
+	// 解析后以 Markdown 分节注入下游。仅在 Prompt 为空（使用默认指令）时生效；
+	// 自定义 Prompt 优先，且不触发解析/渲染。
+	Structured bool
 	// SidecallSecret 递归保护共享 secret（认证 marker HMAC 密钥，审核 P0-2）。
 	// 空 = 不携带 marker、不信任任何递归头（外部伪造不可 bypass）。
 	SidecallSecret string
@@ -104,4 +109,17 @@ type Stats struct {
 	// CacheServed 跨请求缓存直接命中的唯一图数（跳过旁路调用）。独立于
 	// 请求内去重的 CacheHits（Total - UniqueImages），用于观测缓存效果。
 	CacheServed int
+	// Attempts 每次模型尝试的明细（v0.3，参考 modlens meta.attempts）：
+	// 按实际调用顺序记录每个模型的成败与耗时，用于排查「为什么 fallback、
+	// 链上试了谁、各自耗时多少」——计数字段（VisionCalls/FallbackCount）只给
+	// 总量，看不到逐模型明细。仅成功发起 HTTP 的尝试计入。
+	Attempts []Attempt
+}
+
+// Attempt 一次旁路模型尝试（v0.3）。Enum 为空表示成功；非空为失败枚举。
+// Fallback 顺序由 Attempts 切片顺序隐式表达（首元素=首选模型）。
+type Attempt struct {
+	Model     string `json:"model"`
+	Enum      string `json:"enum,omitempty"`
+	ElapsedMs int64  `json:"elapsed_ms"`
 }

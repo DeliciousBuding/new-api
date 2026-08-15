@@ -105,6 +105,7 @@ function changeTextareaValue(textarea: HTMLTextAreaElement, value: string) {
 function defaultValues() {
   return {
     enabled: false,
+    structured: false,
     target_models: '[]',
     models: '["gemma-4-31b"]',
     base_url: 'http://127.0.0.1:3000',

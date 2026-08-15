@@ -65,6 +65,7 @@ const arrayOfStrings = (message: string) =>
 
 const schema = z.object({
   enabled: z.boolean(),
+  structured: z.boolean(),
   target_models: arrayOfStrings('Must be a JSON array of model glob patterns'),
   models: arrayOfStrings('Must be a JSON array of model names'),
   base_url: z.string(),
@@ -83,6 +84,7 @@ type VisionRelaySettingsFormInput = z.input<typeof schema>
 
 type FlatVisionRelaySettings = {
   'vision_relay.enabled': boolean
+  'vision_relay.structured': boolean
   'vision_relay.target_models': string
   'vision_relay.models': string
   'vision_relay.base_url': string
@@ -103,6 +105,7 @@ export function VisionRelaySettingsCard({
   const updateOption = useUpdateOption()
   const normalizedDefaultsRef = useRef<FlatVisionRelaySettings>({
     'vision_relay.enabled': Boolean(defaultValues.enabled),
+    'vision_relay.structured': Boolean(defaultValues.structured),
     'vision_relay.target_models': normalizeJsonString(
       defaultValues.target_models ?? ''
     ),
@@ -118,6 +121,7 @@ export function VisionRelaySettingsCard({
     values: VisionRelaySettingsFormInput
   ): VisionRelaySettingsFormInput => ({
     enabled: Boolean(values.enabled),
+    structured: Boolean(values.structured),
     target_models: formatJsonForTextarea(values.target_models ?? ''),
     models: formatJsonForTextarea(values.models ?? ''),
     base_url: values.base_url ?? '',
@@ -139,6 +143,7 @@ export function VisionRelaySettingsCard({
   useEffect(() => {
     normalizedDefaultsRef.current = {
       'vision_relay.enabled': Boolean(defaultValues.enabled),
+      'vision_relay.structured': Boolean(defaultValues.structured),
       'vision_relay.target_models': normalizeJsonString(
         defaultValues.target_models ?? ''
       ),
@@ -155,6 +160,7 @@ export function VisionRelaySettingsCard({
   const onSubmit = async (values: VisionRelaySettingsFormValues) => {
     const normalized: FlatVisionRelaySettings = {
       'vision_relay.enabled': values.enabled,
+      'vision_relay.structured': values.structured,
       'vision_relay.target_models': normalizeJsonString(
         values.target_models ?? ''
       ),
@@ -189,6 +195,7 @@ export function VisionRelaySettingsCard({
     form.reset(
       buildFormDefaults({
         enabled: normalized['vision_relay.enabled'],
+        structured: normalized['vision_relay.structured'],
         target_models: normalized['vision_relay.target_models'],
         models: normalized['vision_relay.models'],
         base_url: normalized['vision_relay.base_url'],
@@ -221,6 +228,29 @@ export function VisionRelaySettingsCard({
                     <FormDescription>
                       {t(
                         'Intercept image blocks in requests to pure-text models, describe them via a vision model, and forward the description as text.'
+                      )}
+                    </FormDescription>
+                  </SettingsSwitchContent>
+                  <FormControl>
+                    <Switch
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  </FormControl>
+                </SettingsSwitchItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name='structured'
+              render={({ field }) => (
+                <SettingsSwitchItem>
+                  <SettingsSwitchContent>
+                    <FormLabel>{t('Structured Transcription')}</FormLabel>
+                    <FormDescription>
+                      {t(
+                        'Output structured evidence sections (SUMMARY / TRANSCRIPTION / LAYOUT / UNCERTAINTY) instead of prose. Applies only when the prompt is left empty.'
                       )}
                     </FormDescription>
                   </SettingsSwitchContent>

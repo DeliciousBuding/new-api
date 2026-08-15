@@ -153,6 +153,7 @@ const MODELS_SECTIONS = [
       <VisionRelaySettingsCard
         defaultValues={{
           enabled: settings['vision_relay.enabled'],
+          structured: settings['vision_relay.structured'],
           target_models: settings['vision_relay.target_models'],
           models: settings['vision_relay.models'],
           base_url: settings['vision_relay.base_url'],
