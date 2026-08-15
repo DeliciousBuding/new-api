@@ -102,6 +102,45 @@ jobs:
           git tag -a "${{ steps.version.outputs.tag }}" -m "TokenDance Gateway release ${{ steps.version.outputs.tag }}"
           git push origin "${{ steps.version.outputs.tag }}"
 
+      - name: Create GitHub release
+        if: steps.dryrun.outputs.value != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.tag }}"
+          # 上一个 td tag（按创建时间倒序，排除刚打的本 tag）。首个发布时为空。
+          PREV=$(git tag -l "v*-td-*" --sort=-creatordate | grep -vx "$TAG" | head -1 || true)
+          NOTES_FILE="release-notes.md"
+          {
+            echo "## Changes"
+            echo
+            if [ -z "$PREV" ]; then
+              echo "- Initial TokenDance Gateway release."
+            else
+              echo "### ✨ Features"
+              git log --no-merges --pretty=format:'- %s' "$PREV..$TAG" | grep -iE '^- feat(:|\()' || echo "_none_"
+              echo
+              echo
+              echo "### 🐛 Fixes"
+              git log --no-merges --pretty=format:'- %s' "$PREV..$TAG" | grep -iE '^- fix(:|\()' || echo "_none_"
+              echo
+              echo
+              echo "### 📝 Docs"
+              git log --no-merges --pretty=format:'- %s' "$PREV..$TAG" | grep -iE '^- docs(:|\()' || echo "_none_"
+              echo
+              echo
+              echo "### 🧹 Chores & other"
+              git log --no-merges --pretty=format:'- %s' "$PREV..$TAG" | grep -iEv '^- (feat|fix|docs)(:|\()' || echo "_none_"
+            fi
+            echo
+            echo "## Images"
+            echo
+            echo "- \`ghcr.io/deliciousbuding/new-api:${TAG}\` (amd64 + arm64, built by docker-build.yml)"
+          } > "$NOTES_FILE"
+          gh release create "$TAG" --title "$TAG" --notes-file "$NOTES_FILE"
+          echo "Created GitHub release $TAG with generated notes."
+
       - name: Dispatch CD image build
         if: steps.dryrun.outputs.value != 'true'
         env:
