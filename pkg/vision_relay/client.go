@@ -105,12 +105,16 @@ func wrapResult(index, total int, desc string) string {
 }
 
 // BuildInstruction 识图指令（配置自定义 > 结构化默认 > 散文默认）。
-// 自定义 Prompt 永远优先且不触发结构化解析/渲染（输出格式未知）。
+// 自定义 Prompt 永远优先且不触发结构化解析/渲染（输出格式未知）；
+// StructuredPrompt 覆盖结构化默认指令（仍走四小节解析渲染）。
 func BuildInstruction(cfg Config) string {
 	if p := strings.TrimSpace(cfg.Prompt); p != "" {
 		return p
 	}
 	if cfg.Structured {
+		if sp := strings.TrimSpace(cfg.StructuredPrompt); sp != "" {
+			return sp
+		}
 		return structuredInstruction
 	}
 	return defaultInstruction
@@ -306,8 +310,9 @@ func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, data
 	if len(models) == 0 {
 		return DescribeResult{Enum: EnumServiceUnavailable}
 	}
-	// structuredActive：结构化解析/渲染只在「默认结构化指令」产出时发生。
-	// 自定义 Prompt 的返回格式未知，不做解析。
+	// structuredActive：结构化解析/渲染只在 Prompt 为空时发生——此时指令要么是
+	// 内置 structuredInstruction，要么是自定义 StructuredPrompt，两者都产出
+	// 四小节结构。自定义 Prompt 的返回格式未知，不做解析。
 	structuredActive := cfg.Structured && strings.TrimSpace(cfg.Prompt) == ""
 	// 总预算：优先 ctx deadline（请求级全局），无 deadline 时退回 cfg.TimeoutSec
 	var totalBudget time.Duration

@@ -208,6 +208,7 @@ export type ModelSettings = {
   'grok.violation_deduction_amount': number
   'vision_relay.enabled': boolean
   'vision_relay.structured': boolean
+  'vision_relay.structured_prompt': string
   'vision_relay.target_models': string
   'vision_relay.models': string
   'vision_relay.base_url': string

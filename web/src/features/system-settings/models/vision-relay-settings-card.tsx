@@ -66,6 +66,7 @@ const arrayOfStrings = (message: string) =>
 const schema = z.object({
   enabled: z.boolean(),
   structured: z.boolean(),
+  structured_prompt: z.string(),
   target_models: arrayOfStrings('Must be a JSON array of model glob patterns'),
   models: arrayOfStrings('Must be a JSON array of model names'),
   base_url: z.string(),
@@ -85,6 +86,7 @@ type VisionRelaySettingsFormInput = z.input<typeof schema>
 type FlatVisionRelaySettings = {
   'vision_relay.enabled': boolean
   'vision_relay.structured': boolean
+  'vision_relay.structured_prompt': string
   'vision_relay.target_models': string
   'vision_relay.models': string
   'vision_relay.base_url': string
@@ -106,6 +108,7 @@ export function VisionRelaySettingsCard({
   const normalizedDefaultsRef = useRef<FlatVisionRelaySettings>({
     'vision_relay.enabled': Boolean(defaultValues.enabled),
     'vision_relay.structured': Boolean(defaultValues.structured),
+    'vision_relay.structured_prompt': defaultValues.structured_prompt ?? '',
     'vision_relay.target_models': normalizeJsonString(
       defaultValues.target_models ?? ''
     ),
@@ -122,6 +125,7 @@ export function VisionRelaySettingsCard({
   ): VisionRelaySettingsFormInput => ({
     enabled: Boolean(values.enabled),
     structured: Boolean(values.structured),
+    structured_prompt: values.structured_prompt ?? '',
     target_models: formatJsonForTextarea(values.target_models ?? ''),
     models: formatJsonForTextarea(values.models ?? ''),
     base_url: values.base_url ?? '',
@@ -144,6 +148,7 @@ export function VisionRelaySettingsCard({
     normalizedDefaultsRef.current = {
       'vision_relay.enabled': Boolean(defaultValues.enabled),
       'vision_relay.structured': Boolean(defaultValues.structured),
+      'vision_relay.structured_prompt': defaultValues.structured_prompt ?? '',
       'vision_relay.target_models': normalizeJsonString(
         defaultValues.target_models ?? ''
       ),
@@ -161,6 +166,7 @@ export function VisionRelaySettingsCard({
     const normalized: FlatVisionRelaySettings = {
       'vision_relay.enabled': values.enabled,
       'vision_relay.structured': values.structured,
+      'vision_relay.structured_prompt': values.structured_prompt ?? '',
       'vision_relay.target_models': normalizeJsonString(
         values.target_models ?? ''
       ),
@@ -196,6 +202,7 @@ export function VisionRelaySettingsCard({
       buildFormDefaults({
         enabled: normalized['vision_relay.enabled'],
         structured: normalized['vision_relay.structured'],
+        structured_prompt: normalized['vision_relay.structured_prompt'],
         target_models: normalized['vision_relay.target_models'],
         models: normalized['vision_relay.models'],
         base_url: normalized['vision_relay.base_url'],
@@ -413,6 +420,33 @@ export function VisionRelaySettingsCard({
                 <FormDescription>
                   {t(
                     'Instruction template for image description. Leave empty to use the default.'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='structured_prompt'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Structured Prompt')}</FormLabel>
+                <FormControl>
+                  <Textarea
+                    {...field}
+                    value={String(field.value ?? '')}
+                    onChange={(event) => field.onChange(event.target.value)}
+                    placeholder={t(
+                      'Leave empty to use the built-in four-section template'
+                    )}
+                    rows={4}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'Structured transcription instruction template. Applies only when Structured Transcription is on and the prompt above is empty. Keep the SUMMARY/TRANSCRIPTION/LAYOUT/UNCERTAINTY section names so the output is parsed.'
                   )}
                 </FormDescription>
                 <FormMessage />

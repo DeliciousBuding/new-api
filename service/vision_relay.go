@@ -173,15 +173,16 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 		Cache: visionRelayCache{},
 	}
 	coreCfg := vision_relay.Config{
-		Enabled:        cfg.Enabled,
-		TargetModels:   cfg.TargetModels,
-		Models:         cfg.Models,
-		BaseURL:        cfg.BaseURL,
-		APIKey:         cfg.APIKey,
-		Prompt:         cfg.Prompt,
-		TimeoutSec:     cfg.TimeoutSec,
-		Structured:     cfg.Structured,
-		SidecallSecret: cfg.SidecallSecret, // 审查 P1-2：出站旁路请求必须携带认证 marker（自回环递归防护）
+		Enabled:          cfg.Enabled,
+		TargetModels:     cfg.TargetModels,
+		Models:           cfg.Models,
+		BaseURL:          cfg.BaseURL,
+		APIKey:           cfg.APIKey,
+		Prompt:           cfg.Prompt,
+		TimeoutSec:       cfg.TimeoutSec,
+		Structured:       cfg.Structured,
+		StructuredPrompt: cfg.StructuredPrompt,
+		SidecallSecret:   cfg.SidecallSecret, // 审查 P1-2：出站旁路请求必须携带认证 marker（自回环递归防护）
 	}
 	var stats vision_relay.Stats
 	enhanced, err := engine.Enhance(enhanceCtx, rawBody, format, coreCfg, &stats)

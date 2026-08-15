@@ -106,6 +106,7 @@ function defaultValues() {
   return {
     enabled: false,
     structured: false,
+    structured_prompt: '',
     target_models: '[]',
     models: '["gemma-4-31b"]',
     base_url: 'http://127.0.0.1:3000',

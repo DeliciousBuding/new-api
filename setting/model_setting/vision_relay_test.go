@@ -122,6 +122,49 @@ func TestGetVisionRelaySnapshotDefaults(t *testing.T) {
 	}
 }
 
+// 结构化转写默认开启（v0.3.1）：vision_relay.structured 未设置时默认 true，
+// 显式 false 关闭；structured_prompt 覆盖内置四小节指令（TrimSpace）。
+func TestGetVisionRelaySnapshotStructuredDefault(t *testing.T) {
+	base := map[string]string{
+		"vision_relay.enabled":       "true",
+		"vision_relay.target_models": `["deepseek*"]`,
+		"vision_relay.models":        `["gemma-4-31b"]`,
+		"vision_relay.base_url":      "https://vision.example.com",
+		"vision_relay.api_key":       "sk-test",
+		"vision_relay.timeout_sec":   "15",
+	}
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap = make(map[string]string, len(base))
+	for k, v := range base {
+		common.OptionMap[k] = v
+	}
+	common.OptionMapRWMutex.Unlock()
+
+	// 未设置 structured → 默认开启
+	snap, err := GetVisionRelaySnapshot()
+	require.NoError(t, err)
+	require.True(t, snap.Structured, "structured 应默认开启")
+	require.Empty(t, snap.StructuredPrompt, "structured_prompt 默认应为空")
+
+	// 显式 false → 关闭
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap["vision_relay.structured"] = "false"
+	common.OptionMapRWMutex.Unlock()
+	snap, err = GetVisionRelaySnapshot()
+	require.NoError(t, err)
+	require.False(t, snap.Structured, "显式 false 应关闭结构化")
+
+	// structured_prompt 覆盖内置指令（TrimSpace）
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap["vision_relay.structured"] = "true"
+	common.OptionMap["vision_relay.structured_prompt"] = "  自定义结构化指令  "
+	common.OptionMapRWMutex.Unlock()
+	snap, err = GetVisionRelaySnapshot()
+	require.NoError(t, err)
+	require.True(t, snap.Structured)
+	require.Equal(t, "自定义结构化指令", snap.StructuredPrompt)
+}
+
 // 严格解析（审核 P0-2 §4）：key 存在但格式非法 → 明确错误，不静默 no-op
 func TestGetVisionRelaySnapshotStrict(t *testing.T) {
 	base := map[string]string{

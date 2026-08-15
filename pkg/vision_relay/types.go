@@ -23,6 +23,11 @@ type Config struct {
 	// 解析后以 Markdown 分节注入下游。仅在 Prompt 为空（使用默认指令）时生效；
 	// 自定义 Prompt 优先，且不触发解析/渲染。
 	Structured bool
+	// StructuredPrompt 结构化转写指令模板（v0.3.1）：覆盖内置 structuredInstruction，
+	// 仅 Structured=true 且 Prompt 为空时生效；空 = 用内置默认四小节指令。
+	// 自定义 StructuredPrompt 输出仍走四小节解析渲染（分节名需保持
+	// SUMMARY/TRANSCRIPTION/LAYOUT/UNCERTAINTY，改动分节名则优雅降级为散文 Summary）。
+	StructuredPrompt string
 	// SidecallSecret 递归保护共享 secret（认证 marker HMAC 密钥，审核 P0-2）。
 	// 空 = 不携带 marker、不信任任何递归头（外部伪造不可 bypass）。
 	SidecallSecret string
