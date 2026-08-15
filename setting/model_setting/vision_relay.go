@@ -125,7 +125,9 @@ func parseVisionRelayFields(snap *VisionRelaySnapshot, targetsRaw, modelsRaw, ba
 	}
 	if u, err := url.Parse(snap.BaseURL); err != nil ||
 		(u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("vision_relay.base_url: invalid URL %q", snap.BaseURL)
+		// 不回显原始 baseURL：它可能带 userinfo 凭据，而该错误会经
+		// visionRelayFail 记入后端日志（审核：凭据绝不进日志）。
+		return fmt.Errorf("vision_relay.base_url: must be a valid http(s) URL with a host")
 	}
 	snap.APIKey = strings.TrimSpace(apiKey)
 	snap.Prompt = strings.TrimSpace(prompt)
@@ -235,7 +237,9 @@ func (v *VisionRelaySettings) ValidateEndpoint() error {
 			return fmt.Errorf("base_url must not be empty when enabled")
 		}
 		if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
-			return fmt.Errorf("base_url must start with http:// or https://, got %q", baseURL)
+			// 不回显原始 baseURL：它可能被误写成含凭据的形态（user:pass@host），
+			// 该错误会被 visionRelayFail 记入后端日志，回显会把凭据带进日志。
+			return fmt.Errorf("base_url must start with http:// or https://")
 		}
 		if strings.TrimSpace(v.APIKey) == "" {
 			return fmt.Errorf("api_key must not be empty when enabled")

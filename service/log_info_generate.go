@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -397,6 +398,11 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 			const maxUaLen = 256
 			if len(ua) > maxUaLen {
 				ua = ua[:maxUaLen]
+				// 字节截断可能切断多字节 UTF-8 字符，回退到最近的字边界，
+				// 避免落盘无效 UTF-8。
+				for len(ua) > 0 && !utf8.ValidString(ua) {
+					ua = ua[:len(ua)-1]
+				}
 			}
 			adminInfo["client_ua"] = ua
 		}

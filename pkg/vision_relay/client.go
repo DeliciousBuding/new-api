@@ -77,13 +77,26 @@ func enumFromErr(err error) string {
 }
 
 // placeholderUnavailable 构造占位文本（隐私安全：仅稳定枚举 + media_type，
-// 不含 URL/key/模型名/provider 错误体——审核 §8.3）
+// 不含 URL/key/模型名/provider 错误体——审核 §8.3）。
+// media_type 来自客户端请求字段或上游 Content-Type，均不可信，且占位文本会
+// 原样注入下游模型上下文（不带 untrusted 边界）——必须白名单为已知图片类型，
+// 否则会被夹带指令/特殊字符（防提示注入）。
 func placeholderUnavailable(p Patch, enum string, total int) string {
-	mt := p.Source.MediaType
-	if mt == "" {
+	mt := strings.ToLower(p.Source.MediaType)
+	if !placeholderMediaTypes[mt] {
 		mt = "image/unknown"
 	}
 	return fmt.Sprintf("[Image %d/%d unavailable: %s, original_media_type=%s]", p.Index, total, enum, mt)
+}
+
+// placeholderMediaTypes 占位文本允许回显的图片 mime 白名单。
+var placeholderMediaTypes = map[string]bool{
+	"image/png":  true,
+	"image/jpeg": true,
+	"image/webp": true,
+	"image/gif":  true,
+	"image/bmp":  true,
+	"image/tiff": true,
 }
 
 // wrapResult 成功描述带 untrusted 边界（保持非空）

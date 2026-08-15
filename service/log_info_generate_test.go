@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -739,11 +740,15 @@ func TestGenerateTextOtherInfoClientUA(t *testing.T) {
 	cases := []struct {
 		name        string
 		ua          string
+		wantLen     int
 		wantPresent bool
 	}{
 		{name: "ua present", ua: "curl/8.7.1", wantPresent: true},
 		{name: "ua absent", ua: "", wantPresent: false},
-		{name: "ua over 256 chars is truncated", ua: "X/" + strings.Repeat("a", 300), wantPresent: true},
+		{name: "ua over 256 chars is truncated", ua: "X/" + strings.Repeat("a", 300), wantLen: 256, wantPresent: true},
+		// 255 ASCII + 一个 3 字节汉字 "界"（258 字节）：字节截断会切断该字符，
+		// UTF-8 安全截断应回退到 255 字节的 ASCII 边界。
+		{name: "multibyte ua truncated on utf8 boundary", ua: strings.Repeat("a", 255) + "界", wantLen: 255, wantPresent: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -766,8 +771,9 @@ func TestGenerateTextOtherInfoClientUA(t *testing.T) {
 				return
 			}
 			require.True(t, hasUA, "client_ua should be present")
-			if tc.ua == "X/"+strings.Repeat("a", 300) {
-				require.Len(t, uaVal, 256, "client_ua should be truncated to 256 chars")
+			if tc.wantLen > 0 {
+				require.Len(t, uaVal, tc.wantLen, "client_ua should be truncated to the expected length")
+				require.True(t, utf8.ValidString(uaVal.(string)), "client_ua must stay valid UTF-8 after truncation")
 				return
 			}
 			require.Equal(t, tc.ua, uaVal)
