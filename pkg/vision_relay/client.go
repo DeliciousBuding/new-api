@@ -31,12 +31,18 @@ func (e *transportError) Unwrap() error { return e.err }
 
 // classifyNetworkErr 归类网络层错误：
 //   - context.DeadlineExceeded → ErrTimeout（不重试：预算已耗尽，重试只会再超时）
+//   - context.Canceled → 原错误原样返回（不重试：客户端已取消/断连，重试与换
+//     模型都无意义，由 DescribeOne 的 ctx.Err() 检查提前终止链）
 //   - 其余（连接拒绝/DNS/读中断等）→ transportError（同模型重试 ≤1 次）
 func classifyNetworkErr(err error) error {
-	if errors.Is(err, context.DeadlineExceeded) {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
 		return fmt.Errorf("%w: %v", ErrTimeout, err)
+	case errors.Is(err, context.Canceled):
+		return err
+	default:
+		return &transportError{err: err}
 	}
-	return &transportError{err: err}
 }
 
 // 默认识图指令（保真基线，与 vision-bridge 同款防幻觉前缀）
@@ -121,8 +127,15 @@ func (c *VisionClient) Call(ctx context.Context, model, instruction string, data
 	}
 	var text string
 	calls := 0
+	// 每次尝试的预算都从同一 deadline 递减，避免重试拿到完整 timeout 而
+	// 使单模型总耗时翻倍（无父 deadline 的纯核心/单测上下文尤其如此）。
+	deadline := time.Now().Add(timeout)
 	for attempt := 0; attempt <= 1; attempt++ { // 仅传输错误重试 ≤1（预算内）
-		text, err = c.doRequest(ctx, client, model, baseURL, apiKey, sidecallSecret, body, timeout)
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		text, err = c.doRequest(ctx, client, model, baseURL, apiKey, sidecallSecret, body, remaining)
 		calls++
 		var te *transportError
 		if err == nil || !errors.As(err, &te) {
@@ -285,6 +298,10 @@ func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, data
 	// 而不是笼统的 service_unavailable——尤其超时应如实上报 timeout。
 	lastFallbackEnum := ""
 	for _, model := range models {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			// 客户端取消/断连：后续模型无意义，停止链并如实上报。
+			return DescribeResult{Enum: EnumServiceUnavailable, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
+		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			return DescribeResult{Enum: EnumTimeout, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
@@ -298,15 +315,15 @@ func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, data
 		}
 		switch {
 		case errors.Is(err, ErrBlocked):
-			return DescribeResult{Enum: EnumBlocked, Model: model, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
+			return DescribeResult{Enum: enumFromErr(err), Model: model, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
 		case errors.Is(err, ErrAuth):
 			// 401/403：配置/鉴权错误 → 请求级熔断（Abort），不 retry 不 fallback
-			return DescribeResult{Enum: EnumAuthError, Model: model, Abort: true,
+			return DescribeResult{Enum: enumFromErr(err), Model: model, Abort: true,
 				HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
 		case errors.Is(err, ErrSizeLimit):
-			return DescribeResult{Enum: EnumSizeLimit, Model: model, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
+			return DescribeResult{Enum: enumFromErr(err), Model: model, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
 		case errors.Is(err, ErrUnsupported):
-			return DescribeResult{Enum: EnumUnsupportedFormat, Model: model, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
+			return DescribeResult{Enum: enumFromErr(err), Model: model, HTTPCalls: result.HTTPCalls, Fallbacks: result.Fallbacks}
 		default:
 			// provider 瞬时（429/5xx/空响应）、传输重试后仍失败、或超时 → 换下一模型
 			result.Fallbacks++

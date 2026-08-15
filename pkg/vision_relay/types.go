@@ -82,11 +82,14 @@ type DescriptionCache interface {
 
 // Stats 结构化统计（v0.2.2 拆分：按图片块与唯一图片分别计数）
 type Stats struct {
-	Total            int // 图片块总数
-	Success          int // 成功替换的图片块
-	Failed           int // 占位图片块
-	UniqueImages     int // 唯一 digest 数
-	CacheHits        int // 有效重复块数（Total - UniqueImages）
+	Total        int // 图片块总数
+	Success      int // 成功替换的图片块
+	Failed       int // 占位图片块
+	UniqueImages int // 唯一 digest 数
+	// CacheHits 请求内去重命中的重复块数（Total - UniqueImages）。命名沿用
+	// v0.2.2 旧字段：它是"同图多块只识图一次"的请求内去重，不是跨请求缓存
+	// 命中——跨请求缓存命中单独记在 CacheServed。
+	CacheHits        int // 请求内去重重复块数（Total - UniqueImages）
 	VisionCalls      int // 实际旁路调用次数
 	FallbackCount    int // fallback 切换次数
 	ElapsedMs        int64

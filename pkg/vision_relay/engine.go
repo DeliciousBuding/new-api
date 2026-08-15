@@ -2,6 +2,7 @@ package vision_relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -84,10 +85,10 @@ func (e *Engine) Enhance(ctx context.Context, raw []byte, format Format, cfg Con
 		}
 		gateCh, err := globalDecodeGate.acquire(ctx)
 		if err != nil {
-			// 闸等待被取消 → 保持无结果（Apply 按 service_unavailable 占位）
+			// 闸等待失败（ctx 取消/超时）→ 占位；deadline 耗尽须如实记 timeout
 			img := &PatchedImage{Patch: patches[i], Err: err}
 			images = append(images, img)
-			recordFailure([]*PatchedImage{img}, stats, EnumServiceUnavailable)
+			recordFailure([]*PatchedImage{img}, stats, gateErrEnum(err))
 			continue
 		}
 		img := PrepareImage(ctx, patches[i], e.Fetcher, MaxDecodedBytes)
@@ -171,9 +172,11 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 			//    压缩与旁路调用）。cacheKey 同时绑定 digest 与 instruction
 			//    （描述依赖识图指令，prompt 变更后旧缓存必须失效）。
 			//    缓存是纯优化——命中仍需过敏感词检查（敏感词库可能热更新），
-			//    命中敏感词则丢弃缓存走正常占位。
-			cacheKey := descriptionCacheKey(d, instruction)
+			//    命中敏感词则丢弃该缓存命中、走正常识图流程（重新识图后再过
+			//    一次敏感词检查）。
+			var cacheKey string
 			if e.Cache != nil {
+				cacheKey = descriptionCacheKey(d, instruction)
 				if cached, ok := e.Cache.Get(ctx, cacheKey); ok && cached != "" {
 					if e.SensitiveCheck == nil || !e.SensitiveCheck(cached) {
 						mu.Lock()
@@ -190,7 +193,7 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 			if err != nil {
 				// 审查 P2-2：ctx 取消/闸获取失败 → 与调度前置检查对称，补记 Failed
 				mu.Lock()
-				recordFailure(g, stats, EnumServiceUnavailable)
+				recordFailure(g, stats, gateErrEnum(err))
 				mu.Unlock()
 				return
 			}
@@ -217,18 +220,19 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 						abort.Store(true) // 请求级熔断：后续任务不再发起 sidecall
 					}
 				} else {
-					// 闸获取失败（ctx 取消）→ 与 decode 闸失败对称，占位兜底
-					enum = EnumServiceUnavailable
+					// 闸获取失败（ctx 取消/超时）→ 与 decode 闸失败对称，占位兜底
+					enum = gateErrEnum(err)
 				}
 			}
 			mu.Lock()
-			defer mu.Unlock()
 			stats.VisionCalls += calls // P2-6：实际 HTTP 次数（含 retry/fallback）
 			stats.FallbackCount += fallbacks
+			shouldCache := false
 			if enum == "" && desc != "" {
 				if e.SensitiveCheck != nil && e.SensitiveCheck(desc) {
 					// 审核 P1-3（A6）：敏感词命中 → 该图 blocked 稳定占位，不注入原文
 					recordFailure(g, stats, EnumBlocked)
+					mu.Unlock()
 					return
 				}
 				results[d] = desc
@@ -236,15 +240,18 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 				if stats.ModelsUsed == "" {
 					stats.ModelsUsed = model
 				}
-				// ③ 跨请求缓存：成功后写入（纯优化，失败静默忽略）。
-				//     key 与查询一致（digest + instruction 绑定）。
-				if e.Cache != nil {
-					_ = e.Cache.Set(ctx, cacheKey, desc, e.CacheTTL)
-				}
+				shouldCache = e.Cache != nil
 			} else {
 				// 失败：显式回写占位枚举，保留精确失败原因（timeout/auth_error/
 				// blocked/size_limit 等），不再笼统 service_unavailable
 				recordFailure(g, stats, enum)
+			}
+			mu.Unlock()
+			// ③ 跨请求缓存：成功后写入（纯优化，失败静默忽略）。移到锁外，
+			//    避免 Redis 往返阻塞兄弟 goroutine；key 与查询一致（digest +
+			//    instruction 绑定）。
+			if shouldCache {
+				_ = e.Cache.Set(ctx, cacheKey, desc, e.CacheTTL)
 			}
 		}(digest, group)
 	}
@@ -267,6 +274,15 @@ func recordFailure(group []*PatchedImage, stats *Stats, enum string) {
 		stats.FailedReasons = make(map[string]int)
 	}
 	stats.FailedReasons[enum] += len(group)
+}
+
+// gateErrEnum 闸获取失败（ctx 取消/超时）的占位枚举：deadline 耗尽 → timeout
+// （与 classifyNetworkErr 对齐，不吞成 service_unavailable），其余 → 兜底。
+func gateErrEnum(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return EnumTimeout
+	}
+	return EnumServiceUnavailable
 }
 
 // truncateResults 严格截断（v0.2.2）：
