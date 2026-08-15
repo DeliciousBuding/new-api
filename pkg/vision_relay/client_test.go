@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func testConfig(url string) Config {
@@ -479,6 +481,16 @@ func TestClassifyNetworkErr(t *testing.T) {
 	}
 }
 
+// 取消 → 原样返回（不归为可重试 transportError、不包成 ErrTimeout）：客户端
+// 已断连，重试与换模型都无意义，DescribeOne 的 ctx.Err() 检查会提前终止链。
+func TestClassifyNetworkErrCanceled(t *testing.T) {
+	got := classifyNetworkErr(context.Canceled)
+	require.Equal(t, context.Canceled, got, "context.Canceled must be returned as-is")
+	var te *transportError
+	require.False(t, errors.As(got, &te), "context.Canceled must not classify to retryable transportError")
+	require.False(t, errors.Is(got, ErrTimeout), "context.Canceled must not classify to ErrTimeout")
+}
+
 // 图片级错误 → 稳定枚举：超时/鉴权有独立枚举，不与 provider 瞬时错误混淆
 func TestEnumFromErr(t *testing.T) {
 	cases := []struct {
@@ -504,6 +516,25 @@ func TestEnumFromErr(t *testing.T) {
 	}
 }
 
+// 闸获取失败（ctx 取消/超时）的占位枚举：deadline 耗尽 → timeout（不吞成
+// service_unavailable），其余（含客户端取消）→ 兜底 service_unavailable。
+func TestGateErrEnum(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"deadline exhausted → timeout", context.DeadlineExceeded, EnumTimeout},
+		{"client canceled → service_unavailable", context.Canceled, EnumServiceUnavailable},
+		{"other error → service_unavailable", errors.New("boom"), EnumServiceUnavailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, gateErrEnum(tc.err))
+		})
+	}
+}
+
 // 超时（ctx deadline 耗尽）→ 如实上报 timeout 枚举（不吞成 service_unavailable）
 func TestDescribeOneTimeout(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -517,6 +548,62 @@ func TestDescribeOneTimeout(t *testing.T) {
 	if r.Enum != EnumTimeout {
 		t.Fatalf("deadline exceeded must surface timeout enum, got %q", r.Enum)
 	}
+}
+
+// 已取消的 ctx → DescribeOne 立即停止链，不发任何 sidecall（0 次 HTTP、0 fallback）
+func TestDescribeOneCanceledStopsChain(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Write([]byte(`{"choices":[{"message":{"content":"不应被调用"}}]}`))
+	}))
+	defer ts.Close()
+	client := &VisionClient{HTTPClient: ts.Client()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := client.DescribeOne(ctx, "指令", testImageData(), "image/png", testConfig(ts.URL))
+	require.Equal(t, EnumServiceUnavailable, r.Enum)
+	require.Zero(t, r.HTTPCalls)
+	require.Zero(t, r.Fallbacks)
+	require.Zero(t, atomic.LoadInt32(&calls), "canceled ctx must not issue any sidecall")
+}
+
+// budgetProbeTransport 记录两次尝试的请求 deadline；第一次返回传输错误触发
+// 重试，第二次成功——用于断言重试共享同一 deadline（不重新给完整 timeout）。
+type budgetProbeTransport struct {
+	firstDeadline  time.Time
+	secondDeadline time.Time
+}
+
+func (t *budgetProbeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	deadline, _ := req.Context().Deadline()
+	if t.firstDeadline.IsZero() {
+		t.firstDeadline = deadline
+		time.Sleep(200 * time.Millisecond) // 消耗预算，让重试的预算递减可观察
+		return nil, errors.New("connection reset by peer")
+	}
+	t.secondDeadline = deadline
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"}}]}`)),
+	}, nil
+}
+
+// 传输错误重试不得重新拿到完整 timeout：两次尝试共享同一 deadline，否则
+// 单模型总耗时会随重试翻倍（回归保护）。
+func TestCallRetrySharesBudget(t *testing.T) {
+	probe := &budgetProbeTransport{}
+	client := &VisionClient{HTTPClient: &http.Client{Transport: probe}}
+	text, calls, err := client.Call(context.Background(), "model", "指令",
+		testImageData(), "image/png", "http://unused", "sk", "", 500*time.Millisecond, DefaultMaxTokens)
+	require.NoError(t, err)
+	require.Equal(t, "ok", text)
+	require.Equal(t, 2, calls, "transport error must retry exactly once")
+	// 第二次尝试的 deadline 应与第一次几乎相同（共享同一预算），而不是
+	// 第一次 deadline + 一个完整 timeout。
+	require.WithinDuration(t, probe.firstDeadline, probe.secondDeadline, 50*time.Millisecond,
+		"retry must share the first attempt's deadline, not get a fresh full timeout")
 }
 
 // 跨请求缓存命中 → 跳过旁路调用（CacheServed 计数 + 描述直接复用）
