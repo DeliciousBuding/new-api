@@ -47,8 +47,6 @@ type Engine struct {
 	// Cache 跨请求识图描述缓存（纯优化，nil = 不启用）。命中后跳过该 digest
 	// 的旁路调用；Get/Set 失败静默降级为主流程，绝不影响正确性。
 	Cache DescriptionCache
-	// CacheTTL 成功描述写缓存的过期时间（Cache 非 nil 时生效）。
-	CacheTTL time.Duration
 }
 
 // Enhance 一次请求的完整增强（事务由调用方保证）：
@@ -251,7 +249,7 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 			//    避免 Redis 往返阻塞兄弟 goroutine；key 与查询一致（digest +
 			//    instruction 绑定）。
 			if shouldCache {
-				_ = e.Cache.Set(ctx, cacheKey, desc, e.CacheTTL)
+				_ = e.Cache.Set(ctx, cacheKey, desc)
 			}
 		}(digest, group)
 	}

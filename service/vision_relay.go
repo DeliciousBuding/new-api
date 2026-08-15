@@ -50,14 +50,11 @@ func (visionRelayCache) Get(ctx context.Context, key string) (string, bool) {
 	return val, true
 }
 
-func (visionRelayCache) Set(ctx context.Context, key, value string, ttl time.Duration) error {
+func (visionRelayCache) Set(ctx context.Context, key, value string) error {
 	if !common.RedisEnabled || common.RDB == nil {
 		return nil
 	}
-	if ttl <= 0 {
-		ttl = visionRelayCacheTTL
-	}
-	return common.RDB.Set(ctx, visionRelayCacheKeyPrefix+key, value, ttl).Err()
+	return common.RDB.Set(ctx, visionRelayCacheKeyPrefix+key, value, visionRelayCacheTTL).Err()
 }
 
 // visionRelayFetcher ImageFetcher 的 NewAPI 适配：SSRF 保护客户端 + 有限流下载。
@@ -163,8 +160,8 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 		},
 		// 跨请求描述缓存（纯优化）：同图同指令第二次起跳过旁路识图。
 		// 纯核心只依赖接口，Redis 未启用时 Get 恒未命中、Set 静默忽略。
-		Cache:    visionRelayCache{},
-		CacheTTL: visionRelayCacheTTL,
+		// TTL 由适配器策略决定（visionRelayCacheTTL），核心不感知。
+		Cache: visionRelayCache{},
 	}
 	coreCfg := vision_relay.Config{
 		Enabled:        cfg.Enabled,
