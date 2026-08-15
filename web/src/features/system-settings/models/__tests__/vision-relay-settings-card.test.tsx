@@ -16,91 +16,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import assert from 'node:assert/strict'
-import { after, describe, test } from 'node:test'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { fireEvent, render, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import i18next from 'i18next'
+import { beforeAll, describe, expect, test } from 'vitest'
 
-import { Window } from 'happy-dom'
+import { SettingsPageProvider } from '../../components/settings-page-context'
+import { VisionRelaySettingsCard } from '../vision-relay-settings-card'
 
-const domWindow = new Window()
-const domGlobals = [
-  'window',
-  'document',
-  'navigator',
-  'HTMLElement',
-  'HTMLInputElement',
-  'SVGElement',
-  'Node',
-  'Element',
-  'Event',
-  'CustomEvent',
-  'MutationObserver',
-  'requestAnimationFrame',
-  'cancelAnimationFrame',
-  'getComputedStyle',
-] as const
-
-for (const key of domGlobals) {
-  Object.defineProperty(globalThis, key, {
-    configurable: true,
-    value: domWindow[key],
+beforeAll(() => {
+  i18next.addResourceBundle('en', 'translation', {
+    'Must be a JSON array of model glob patterns':
+      'Must be a JSON array of model glob patterns',
+    'Must be a JSON array of model names':
+      'Must be a JSON array of model names',
+    'Must be at least 1': 'Must be at least 1',
   })
-}
-
-const { act } = await import('react')
-const { createRoot } = await import('react-dom/client')
-const { QueryClient, QueryClientProvider } =
-  await import('@tanstack/react-query')
-const { createInstance } = await import('i18next')
-const { I18nextProvider, initReactI18next } = await import('react-i18next')
-const { VisionRelaySettingsCard } = await import('../vision-relay-settings-card')
-const { SettingsPageProvider } = await import(
-  '../../components/settings-page-context'
-)
-
-const i18n = createInstance()
-await i18n.use(initReactI18next).init({
-  lng: 'en',
-  resources: {
-    en: {
-      translation: {
-        'Must be a JSON array of model glob patterns':
-          'Must be a JSON array of model glob patterns',
-        'Must be a JSON array of model names':
-          'Must be a JSON array of model names',
-        'Must be at least 1': 'Must be at least 1',
-      },
-    },
-  },
 })
-
-const reactTestGlobals = globalThis as typeof globalThis & {
-  IS_REACT_ACT_ENVIRONMENT?: boolean
-}
-reactTestGlobals.IS_REACT_ACT_ENVIRONMENT = true
-
-function changeInputValue(input: HTMLInputElement, value: string) {
-  const valueSetter = Object.getOwnPropertyDescriptor(
-    domWindow.HTMLInputElement.prototype,
-    'value'
-  )?.set
-  assert.ok(valueSetter)
-  valueSetter.call(input, value)
-  input.dispatchEvent(
-    new domWindow.Event('input', { bubbles: true }) as unknown as Event
-  )
-}
-
-function changeTextareaValue(textarea: HTMLTextAreaElement, value: string) {
-  const valueSetter = Object.getOwnPropertyDescriptor(
-    domWindow.HTMLTextAreaElement.prototype,
-    'value'
-  )?.set
-  assert.ok(valueSetter)
-  valueSetter.call(textarea, value)
-  textarea.dispatchEvent(
-    new domWindow.Event('input', { bubbles: true }) as unknown as Event
-  )
-}
 
 function defaultValues() {
   return {
@@ -118,128 +51,116 @@ function defaultValues() {
 }
 
 describe('vision relay settings card', () => {
-  after(() => {
-    domWindow.close()
-  })
-
   async function renderCard(values: ReturnType<typeof defaultValues>) {
-    const container = document.createElement('div')
-    document.body.append(container)
     const actionsContainer = document.createElement('div')
     document.body.append(actionsContainer)
-    const root = createRoot(container)
     const queryClient = new QueryClient({
       defaultOptions: { mutations: { retry: false } },
     })
+    const rendered = render(
+      <QueryClientProvider client={queryClient}>
+        <SettingsPageProvider
+          actionsContainer={actionsContainer}
+          titleStatusContainer={null}
+        >
+          <VisionRelaySettingsCard defaultValues={values} />
+        </SettingsPageProvider>
+      </QueryClientProvider>
+    )
+    return { actionsContainer, queryClient, ...rendered }
+  }
 
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <I18nextProvider i18n={i18n}>
-            <SettingsPageProvider
-              actionsContainer={actionsContainer}
-              titleStatusContainer={null}
-            >
-              <VisionRelaySettingsCard defaultValues={values} />
-            </SettingsPageProvider>
-          </I18nextProvider>
-        </QueryClientProvider>
-      )
-    })
-    return { container, actionsContainer, root, queryClient }
+  function findSaveButton(actionsContainer: HTMLElement): HTMLButtonElement {
+    const button = [...actionsContainer.querySelectorAll('button')].find(
+      (candidate) => candidate.textContent === 'Save Changes'
+    )
+    expect(button, 'Save Changes action button must render').toBeTruthy()
+    return button as HTMLButtonElement
   }
 
   test('renders switch, JSON editors and sensitive inputs', async () => {
-    const { container, actionsContainer, root, queryClient } =
+    const { container, actionsContainer, queryClient, unmount } =
       await renderCard(defaultValues())
 
     const enabledSwitch = container.querySelector<HTMLElement>(
       'span[role="switch"]'
     )
-    assert.ok(enabledSwitch, 'enabled switch must render')
+    expect(enabledSwitch, 'enabled switch must render').toBeTruthy()
 
-    const textareas = container.querySelectorAll<HTMLTextAreaElement>(
-      'textarea'
-    )
-    assert.ok(textareas.length >= 2, 'target_models/models JSON editors render')
+    const textareas =
+      container.querySelectorAll<HTMLTextAreaElement>('textarea')
+    expect(textareas.length).toBeGreaterThanOrEqual(2)
 
     const passwordInputs = container.querySelectorAll<HTMLInputElement>(
       'input[type="password"]'
     )
-    assert.equal(passwordInputs.length, 2, 'api_key + sidecall_secret inputs')
+    expect(passwordInputs.length).toBe(2)
 
-    const saveButton = [...actionsContainer.querySelectorAll('button')].find(
-      (button) => button.textContent === 'Save Changes'
-    )
-    assert.ok(saveButton, 'Save Changes action button must render')
+    expect(
+      [...actionsContainer.querySelectorAll('button')].some(
+        (button) => button.textContent === 'Save Changes'
+      )
+    ).toBe(true)
 
-    await act(async () => root.unmount())
-    container.remove()
+    unmount()
     actionsContainer.remove()
     queryClient.clear()
   })
 
   test('blocks malformed target_models JSON on save', async () => {
-    const { container, actionsContainer, root, queryClient } =
+    const { container, actionsContainer, queryClient, unmount } =
       await renderCard(defaultValues())
 
     const editor = container.querySelector<HTMLTextAreaElement>('textarea')
-    assert.ok(editor)
+    expect(editor).toBeTruthy()
 
-    await act(async () => {
-      changeTextareaValue(editor, '{}')
+    fireEvent.input(editor as HTMLTextAreaElement, {
+      target: { value: '{}' },
     })
 
-    const saveButton = [...actionsContainer.querySelectorAll('button')].find(
-      (button) => button.textContent === 'Save Changes'
+    const saveButton = findSaveButton(actionsContainer)
+    const user = userEvent.setup()
+    await user.click(saveButton)
+
+    const alert = await waitFor(() =>
+      container.querySelector('p[data-slot="form-message"]')
     )
-    assert.ok(saveButton)
-
-    await act(async () => {
-      saveButton.click()
-    })
-
-    const alert = container.querySelector('p[data-slot="form-message"]')
-    assert.ok(alert, 'validation error must be shown')
-    assert.equal(
-      alert.textContent,
+    expect(alert).not.toBeNull()
+    if (!alert) throw new Error('validation message must render')
+    expect(alert.textContent).toBe(
       'Must be a JSON array of model glob patterns'
     )
 
-    await act(async () => root.unmount())
-    container.remove()
+    unmount()
     actionsContainer.remove()
     queryClient.clear()
   })
 
   test('rejects non-positive timeout on save', async () => {
-    const { container, actionsContainer, root, queryClient } =
+    const { container, actionsContainer, queryClient, unmount } =
       await renderCard(defaultValues())
 
     const timeoutInput = container.querySelector<HTMLInputElement>(
       'input[placeholder="15"]'
     )
-    assert.ok(timeoutInput)
+    expect(timeoutInput).toBeTruthy()
 
-    await act(async () => {
-      changeInputValue(timeoutInput, '0')
+    fireEvent.input(timeoutInput as HTMLInputElement, {
+      target: { value: '0' },
     })
 
-    const saveButton = [...actionsContainer.querySelectorAll('button')].find(
-      (button) => button.textContent === 'Save Changes'
+    const saveButton = findSaveButton(actionsContainer)
+    const user = userEvent.setup()
+    await user.click(saveButton)
+
+    const alert = await waitFor(() =>
+      container.querySelector('p[data-slot="form-message"]')
     )
-    assert.ok(saveButton)
+    expect(alert).not.toBeNull()
+    if (!alert) throw new Error('validation message must render')
+    expect(alert.textContent).toBe('Must be at least 1')
 
-    await act(async () => {
-      saveButton.click()
-    })
-
-    const alert = container.querySelector('p[data-slot="form-message"]')
-    assert.ok(alert, 'validation error must be shown')
-    assert.equal(alert.textContent, 'Must be at least 1')
-
-    await act(async () => root.unmount())
-    container.remove()
+    unmount()
     actionsContainer.remove()
     queryClient.clear()
   })

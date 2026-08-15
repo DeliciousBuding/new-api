@@ -16,16 +16,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import assert from 'node:assert/strict'
-import { describe, test } from 'node:test'
+import { describe, expect, test } from 'vitest'
 
 import { tokenDanceIdentity } from '../identity-branding'
 
 describe('TokenDance identity branding', () => {
   test('uses the product name for built-in OIDC login surfaces', () => {
-    assert.equal(tokenDanceIdentity.name, 'TokenDance ID')
-    assert.equal(
-      tokenDanceIdentity.continueLabelKey,
+    expect(tokenDanceIdentity.name).toBe('TokenDance ID')
+    expect(tokenDanceIdentity.continueLabelKey).toBe(
       'Continue with TokenDance ID'
     )
   })

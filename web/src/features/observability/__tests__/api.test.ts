@@ -16,21 +16,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import assert from 'node:assert/strict'
-import { after, afterEach, describe, test } from 'node:test'
+import { afterAll, afterEach, describe, expect, test } from 'vitest'
 
 // Import the shared axios instance first (same module instance the feature
 // api.ts binds to), then swap api.get for a recording stub. The original is
 // restored at suite teardown so sibling test files never see the stub.
-const { api } = await import('../../../lib/http-client')
-const {
+import { api } from '../../../lib/http-client'
+import {
   getOverview,
   getSession,
   getStatus,
   getTurnContext,
   listSessions,
   listTurns,
-} = await import('../api')
+} from '../api'
 
 const calls: string[] = []
 const originalGet = api.get
@@ -49,7 +48,7 @@ api.get = (async (url: unknown) => {
   return { data: responseData }
 }) as typeof api.get
 
-after(() => {
+afterAll(() => {
   api.get = originalGet
 })
 
@@ -61,7 +60,7 @@ afterEach(() => {
 describe('observability api endpoints', () => {
   test('getStatus hits the status route without query params', async () => {
     await getStatus()
-    assert.deepEqual(calls, ['/api/relay-observer/status'])
+    expect(calls).toEqual(['/api/relay-observer/status'])
   })
 
   test('getStatus validates a healthy status payload', async () => {
@@ -90,8 +89,11 @@ describe('observability api endpoints', () => {
       },
     }
     const result = await getStatus()
-    assert.ok(result.data && 'Enabled' in result.data)
-    assert.equal(result.data.Enabled, true)
+    expect(result.data && 'Enabled' in result.data).toBeTruthy()
+    if (!result.data || !('Enabled' in result.data)) {
+      throw new Error('status payload must carry Enabled')
+    }
+    expect(result.data.Enabled).toBe(true)
   })
 
   test('getStatus rejects malformed backend contract data', async () => {
@@ -99,19 +101,19 @@ describe('observability api endpoints', () => {
       success: true,
       data: { Enabled: 'yes' },
     }
-    await assert.rejects(() => getStatus())
+    await expect(getStatus()).rejects.toThrow()
   })
 
   test('getOverview serializes window params', async () => {
     await getOverview({ window_seconds: 300, windows: 12 })
-    assert.deepEqual(calls, [
+    expect(calls).toEqual([
       '/api/relay-observer/overview?window_seconds=300&windows=12',
     ])
   })
 
   test('getOverview omits the query string when no params are set', async () => {
     await getOverview()
-    assert.deepEqual(calls, ['/api/relay-observer/overview'])
+    expect(calls).toEqual(['/api/relay-observer/overview'])
   })
 
   test('listSessions serializes all filters in snake_case', async () => {
@@ -124,7 +126,7 @@ describe('observability api endpoints', () => {
       ip_trust: 'proxy',
       from: '2026-08-01T00:00:00Z',
     })
-    assert.deepEqual(calls, [
+    expect(calls).toEqual([
       '/api/relay-observer/sessions?page_size=50&cursor=opaque-cursor&node_scope=scope-a&user_id=7&model=gpt-4o&ip_trust=proxy&from=2026-08-01T00%3A00%3A00Z',
     ])
   })
@@ -136,17 +138,17 @@ describe('observability api endpoints', () => {
       model: '',
       country: 'US',
     })
-    assert.deepEqual(calls, ['/api/relay-observer/sessions?country=US'])
+    expect(calls).toEqual(['/api/relay-observer/sessions?country=US'])
   })
 
   test('listSessions keeps explicit false (a valid filter, not an empty value)', async () => {
     await listSessions({ success: false })
-    assert.deepEqual(calls, ['/api/relay-observer/sessions?success=false'])
+    expect(calls).toEqual(['/api/relay-observer/sessions?success=false'])
   })
 
   test('getSession builds the id path', async () => {
     await getSession('session-abc')
-    assert.deepEqual(calls, ['/api/relay-observer/sessions/session-abc'])
+    expect(calls).toEqual(['/api/relay-observer/sessions/session-abc'])
   })
 
   test('listTurns builds the session path and serializes turn filters', async () => {
@@ -155,19 +157,19 @@ describe('observability api endpoints', () => {
       cursor: 'c2',
       error_type: 'upstream',
     })
-    assert.deepEqual(calls, [
+    expect(calls).toEqual([
       '/api/relay-observer/sessions/session-abc/turns?page_size=25&cursor=c2&error_type=upstream',
     ])
   })
 
   test('listTurns without params keeps a bare turns path', async () => {
     await listTurns('session-abc')
-    assert.deepEqual(calls, ['/api/relay-observer/sessions/session-abc/turns'])
+    expect(calls).toEqual(['/api/relay-observer/sessions/session-abc/turns'])
   })
 
   test('getTurnContext always sends session_id', async () => {
     await getTurnContext('turn-1', 'session-abc')
-    assert.deepEqual(calls, [
+    expect(calls).toEqual([
       '/api/relay-observer/turns/turn-1/context?session_id=session-abc',
     ])
   })

@@ -13,61 +13,29 @@ GNU Affero General Public License for more details.
 
 You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
 */
-import assert from 'node:assert/strict'
-import { after, describe, test } from 'node:test'
+import { render } from '@testing-library/react'
+import { describe, expect, test, vi } from 'vitest'
 
-import { Window } from 'happy-dom'
+import { ClientProfileBadge } from '../client-profile-badge'
 
-const domWindow = new Window()
-const domGlobals = [
-  'window',
-  'document',
-  'navigator',
-  'HTMLElement',
-  'SVGElement',
-  'Node',
-  'Element',
-  'Event',
-  'CustomEvent',
-  'MutationObserver',
-  'requestAnimationFrame',
-  'cancelAnimationFrame',
-  'getComputedStyle',
-  'matchMedia',
-  'customElements',
-] as const
-
-for (const key of domGlobals) {
-  Object.defineProperty(globalThis, key, {
-    configurable: true,
-    value: domWindow[key],
-  })
-}
-
-const { act } = await import('react')
-const { createRoot } = await import('react-dom/client')
-
-const { ClientProfileBadge } = await import('../client-profile-badge')
-
-const reactTestGlobals = globalThis as typeof globalThis & {
-  IS_REACT_ACT_ENVIRONMENT?: boolean
-}
-reactTestGlobals.IS_REACT_ACT_ENVIRONMENT = true
+// @lobehub/icons (behind the fork's lobe-icon loader) uses ESM directory
+// imports that Vite's resolver cannot follow. These tests cover badge
+// structure and labels, not upstream SVG internals, so stub the loader.
+// Vitest hoists vi.mock, so the stub applies to the imports above.
+vi.mock('@/lib/lobe-icon', async () => {
+  const React = await import('react')
+  return {
+    getLobeIcon: () =>
+      React.createElement('svg', { 'data-mock-lobe-icon': 'true' }),
+  }
+})
 
 function renderBadge(profile: string) {
-  const host = document.createElement('div')
-  document.body.appendChild(host)
-  const root = createRoot(host)
-  act(() => {
-    root.render(<ClientProfileBadge profile={profile as never} />)
-  })
-  return { host, root }
+  return render(<ClientProfileBadge profile={profile as never} />)
 }
-
-after(() => {
-  document.body.innerHTML = ''
-})
 
 describe('ClientProfileBadge', () => {
   for (const profile of [
@@ -119,30 +87,26 @@ describe('ClientProfileBadge', () => {
     'deepseek',
   ]) {
     test(`renders ${profile} without crashing`, () => {
-      const { host, root } = renderBadge(profile)
-      const text = host.textContent ?? ''
-      assert.ok(text.trim().length > 0, 'badge should render a label')
-      root.unmount()
+      const { container } = renderBadge(profile)
+      const text = container.textContent ?? ''
+      expect(text.trim().length).toBeGreaterThan(0)
     })
   }
 
   test('brand profiles render a brand icon (codex -> Codex brand)', () => {
-    const { host, root } = renderBadge('codex_cli')
-    assert.ok(host.querySelector('svg'), 'brand icon should render as svg')
-    root.unmount()
+    const { container } = renderBadge('codex_cli')
+    expect(container.querySelector('svg')).not.toBeNull()
   })
 
   test('fallback profiles render a lucide glyph (chat)', () => {
-    const { host, root } = renderBadge('chat')
-    assert.ok(host.querySelector('svg'), 'fallback icon should render as svg')
-    root.unmount()
+    const { container } = renderBadge('chat')
+    expect(container.querySelector('svg')).not.toBeNull()
   })
 
   test('chip carries the machine profile id as title', () => {
-    const { host, root } = renderBadge('claude_sdk')
-    const chip = host.querySelector('[title]')
-    assert.ok(chip, 'chip should carry a title')
-    assert.equal(chip?.getAttribute('title'), 'client_profile: claude_sdk')
-    root.unmount()
+    const { container } = renderBadge('claude_sdk')
+    const chip = container.querySelector('[title]')
+    expect(chip).not.toBeNull()
+    expect(chip?.getAttribute('title')).toBe('client_profile: claude_sdk')
   })
 })

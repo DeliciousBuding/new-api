@@ -1,3 +1,8 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { createInstance } from 'i18next'
+import { act } from 'react'
+import { createRoot } from 'react-dom/client'
+import { I18nextProvider, initReactI18next } from 'react-i18next'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -25,45 +30,23 @@ For commercial licensing, please contact support@quantumnous.com
  * handler, so filter serialization and pagination round-trip through the
  * real query path. All session ids are fabricated UUIDs.
  */
-import assert from 'node:assert/strict'
-import { after, afterEach, describe, test } from 'node:test'
+import { afterAll, afterEach, describe, expect, test, vi } from 'vitest'
 
-import { Window } from 'happy-dom'
+import { api } from '../../../../lib/http-client'
+import { SessionsTab } from '../sessions-tab'
 
-const domWindow = new Window()
-const domGlobals = [
-  'window',
-  'document',
-  'navigator',
-  'HTMLElement',
-  'SVGElement',
-  'Node',
-  'Element',
-  'Event',
-  'CustomEvent',
-  'MutationObserver',
-  'requestAnimationFrame',
-  'cancelAnimationFrame',
-  'getComputedStyle',
-  'matchMedia',
-  'customElements',
-] as const
-
-for (const key of domGlobals) {
-  Object.defineProperty(globalThis, key, {
-    configurable: true,
-    value: domWindow[key],
-  })
-}
-
-const { act } = await import('react')
-const { createRoot } = await import('react-dom/client')
-const { QueryClient, QueryClientProvider } = await import('@tanstack/react-query')
-const { createInstance } = await import('i18next')
-const { I18nextProvider, initReactI18next } = await import('react-i18next')
-
-const { api } = await import('../../../../lib/http-client')
-const { SessionsTab } = await import('../sessions-tab')
+// Session rows render client profile badges through the fork's lobe-icon
+// loader. @lobehub/icons uses ESM directory imports that Vite's resolver
+// cannot follow; stub the loader — these tests cover row structure and
+// labels, not upstream SVG internals.
+// Vitest hoists vi.mock, so the stub applies to the imports above.
+vi.mock('@/lib/lobe-icon', async () => {
+  const React = await import('react')
+  return {
+    getLobeIcon: () =>
+      React.createElement('svg', { 'data-mock-lobe-icon': 'true' }),
+  }
+})
 
 const i18n = createInstance()
 await i18n.use(initReactI18next).init({
@@ -148,7 +131,7 @@ const stubGet = (async (url: unknown) => {
 }) as typeof api.get
 api.get = stubGet
 
-after(() => {
+afterAll(() => {
   // Chain-safe restore: only unwrap when this file's stub is still the one
   // installed (bun runs test files concurrently and every file swaps the
   // shared http-client singleton).
@@ -166,7 +149,10 @@ const reactTestGlobals = globalThis as typeof globalThis & {
 }
 reactTestGlobals.IS_REACT_ACT_ENVIRONMENT = true
 
-function renderTab(props?: { selectedSessionId?: string | null; onSelectSession?: (id: string | null) => void }) {
+function renderTab(props?: {
+  selectedSessionId?: string | null
+  onSelectSession?: (id: string | null) => void
+}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -219,42 +205,43 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     })
     if (reached) return
   }
-  assert.ok(predicate(), 'waitFor timeout')
+  expect(predicate(), 'waitFor timeout').toBeTruthy()
 }
 
 function setInputValue(input: Element, value: string) {
   const descriptor = Object.getOwnPropertyDescriptor(
-    domWindow.HTMLInputElement.prototype,
+    HTMLInputElement.prototype,
     'value'
   )
-  assert.ok(descriptor?.set, 'HTMLInputElement value setter must exist')
-  const setter = descriptor.set
-  setter.call(input, value)
-  const inputEvent = new domWindow.Event('input', {
-    bubbles: true,
-  }) as unknown as Event
-  input.dispatchEvent(inputEvent)
+  expect(
+    descriptor?.set,
+    'HTMLInputElement value setter must exist'
+  ).toBeTruthy()
+  if (!descriptor?.set) {
+    throw new Error('HTMLInputElement value setter must exist')
+  }
+  descriptor.set.call(input, value)
+  input.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
-/** happy-dom Event is not assignable to the DOM Event type — cast it
- * (pattern: cursor-pagination.test.tsx `as unknown as Event`). */
 function clickEvent(): Event {
-  return new domWindow.Event('click', { bubbles: true }) as unknown as Event
+  return new Event('click', { bubbles: true })
 }
 
 function keyEvent(key: 'Enter' | ' '): KeyboardEvent {
-  return new domWindow.KeyboardEvent('keydown', {
+  return new KeyboardEvent('keydown', {
     bubbles: true,
     cancelable: true,
     key,
-  }) as unknown as KeyboardEvent
+  })
 }
 
 function clickButton(host: HTMLElement, label: string) {
   const button = [...host.querySelectorAll('button')].find((b) =>
     b.textContent?.includes(label)
   )
-  assert.ok(button, `button "${label}" not found`)
+  expect(button, `button "${label}" not found`).toBeTruthy()
+  if (!button) throw new Error(`button "${label}" not found`)
   act(() => {
     button.dispatchEvent(clickEvent())
   })
@@ -264,7 +251,8 @@ function findRow(host: HTMLElement, text: string): HTMLElement {
   const row = [...host.querySelectorAll('tbody tr')].find((r) =>
     r.textContent?.includes(text)
   )
-  assert.ok(row, `table row containing "${text}" not found`)
+  expect(row, `table row containing "${text}" not found`).toBeTruthy()
+  if (!row) throw new Error(`table row containing "${text}" not found`)
   return row as HTMLElement
 }
 
@@ -277,15 +265,17 @@ describe('SessionsTab', () => {
     await waitForText(host, '11111111')
 
     const text = textOf(host)
-    assert.ok(text.includes('22222222'))
-    assert.ok(text.includes('#7'), 'user id value without username')
-    assert.ok(text.includes('openai'), 'client profile fallback label')
-    assert.ok(text.includes('Page 1'), 'first page index')
-    assert.equal(
+    expect(text.includes('22222222')).toBeTruthy()
+    expect(text.includes('#7'), 'user id value without username').toBeTruthy()
+    expect(
+      text.includes('openai'),
+      'client profile fallback label'
+    ).toBeTruthy()
+    expect(text.includes('Page 1'), 'first page index').toBeTruthy()
+    expect(
       host.querySelectorAll('tbody tr').length,
-      2,
       'one row per session'
-    )
+    ).toBe(2)
   })
 
   test('passes applied filters to the sessions query', async () => {
@@ -294,24 +284,23 @@ describe('SessionsTab', () => {
     await waitForText(host, '11111111')
 
     const modelInput = host.querySelector('input[placeholder="Model"]')
-    assert.ok(modelInput, 'model filter input')
+    expect(modelInput, 'model filter input').toBeTruthy()
+    if (!modelInput) throw new Error('model filter input')
     setInputValue(modelInput, 'gpt-4o')
     clickButton(host, 'Search')
     // The first page stays on screen while the refetch is in flight, so
     // wait for the filtered request itself instead of a text change.
-    await waitFor(() =>
-      calls.some((url) => url.includes('model=gpt-4o'))
-    )
+    await waitFor(() => calls.some((url) => url.includes('model=gpt-4o')))
 
     const lastCall = calls.at(-1) ?? ''
-    assert.ok(
+    expect(
       lastCall.includes('model=gpt-4o'),
       `model filter must reach the api (got ${lastCall})`
-    )
-    assert.ok(
-      !lastCall.includes('cursor='),
+    ).toBeTruthy()
+    expect(
+      lastCall.includes('cursor='),
       'applying filters resets to the first page'
-    )
+    ).toBeFalsy()
   })
 
   test('passes advanced filters (expand + numeric user id) to the query', async () => {
@@ -321,15 +310,16 @@ describe('SessionsTab', () => {
 
     clickButton(host, 'Expand')
     const userIdInput = host.querySelector('input[placeholder="User ID"]')
-    assert.ok(userIdInput, 'advanced filter input after expand')
+    expect(userIdInput, 'advanced filter input after expand').toBeTruthy()
+    if (!userIdInput) throw new Error('advanced filter input after expand')
     setInputValue(userIdInput, '7')
     clickButton(host, 'Search')
     await waitFor(() => calls.some((url) => url.includes('user_id=7')))
 
-    assert.ok(
+    expect(
       calls.at(-1)?.includes('user_id=7'),
       'numeric user id filter must reach the api'
-    )
+    ).toBeTruthy()
   })
 
   test('advances to the next page with the fetched cursor', async () => {
@@ -340,11 +330,11 @@ describe('SessionsTab', () => {
     clickButton(host, 'Next')
     await waitForText(host, '33333333')
 
-    assert.ok(
+    expect(
       calls.at(-1)?.includes('cursor=cursor-2'),
       'next page must be fetched with the previous page cursor'
-    )
-    assert.ok(textOf(host).includes('Page 2'), 'page index advances')
+    ).toBeTruthy()
+    expect(textOf(host).includes('Page 2'), 'page index advances').toBeTruthy()
   })
 
   test('steps back to the previous page', async () => {
@@ -358,11 +348,14 @@ describe('SessionsTab', () => {
     await waitForText(host, '11111111')
 
     const lastCall = calls.at(-1) ?? ''
-    assert.ok(
-      !lastCall.includes('cursor='),
+    expect(
+      lastCall.includes('cursor='),
       `back must fetch the first page without a cursor (got ${lastCall})`
-    )
-    assert.ok(textOf(host).includes('Page 1'), 'page index steps back')
+    ).toBeFalsy()
+    expect(
+      textOf(host).includes('Page 1'),
+      'page index steps back'
+    ).toBeTruthy()
   })
 
   test('shows the degraded notice when the sessions envelope is degraded', async () => {
@@ -374,11 +367,16 @@ describe('SessionsTab', () => {
     const { host } = renderTab()
     await waitForText(host, 'Observer data is temporarily unavailable')
 
-    assert.ok(
-      textOf(host).includes('The observer store is degraded. Please try again later.'),
+    expect(
+      textOf(host).includes(
+        'The observer store is degraded. Please try again later.'
+      ),
       'degraded notice, not an error'
-    )
-    assert.ok(!textOf(host).includes('Page 1'), 'no pagination while degraded')
+    ).toBeTruthy()
+    expect(
+      textOf(host).includes('Page 1'),
+      'no pagination while degraded'
+    ).toBeFalsy()
   })
 
   test('shows an empty state when no sessions match', async () => {
@@ -386,11 +384,11 @@ describe('SessionsTab', () => {
     const { host } = renderTab()
     await waitForText(host, 'No Sessions Found')
 
-    assert.ok(
+    expect(
       textOf(host).includes(
         'No sessions have been recorded yet. Sessions will appear here once the observer captures traffic.'
       )
-    )
+    ).toBeTruthy()
   })
 
   test('shows skeletons while loading, then the rows', async () => {
@@ -401,10 +399,10 @@ describe('SessionsTab', () => {
     handler = () => pending
     const { host } = renderTab()
 
-    assert.ok(
+    expect(
       host.querySelector('[data-slot=skeleton]') !== null,
       'table skeleton while loading'
-    )
+    ).toBeTruthy()
 
     await act(async () => {
       release({
@@ -414,11 +412,10 @@ describe('SessionsTab', () => {
       })
     })
     await waitForText(host, '11111111')
-    assert.equal(
+    expect(
       host.querySelectorAll('[data-slot=skeleton]').length,
-      0,
       'skeletons removed after load'
-    )
+    ).toBe(0)
   })
 
   test('selects a session row on click (uncontrolled) and toggles it off', async () => {
@@ -431,16 +428,18 @@ describe('SessionsTab', () => {
       row.dispatchEvent(clickEvent())
     })
 
-    assert.equal(row.dataset.state, 'selected', 'clicked row highlights')
-    assert.ok(
-      textOf(host).includes('Selected session: 11111111-1111-4111-8111-111111111111'),
+    expect(row.dataset.state, 'clicked row highlights').toBe('selected')
+    expect(
+      textOf(host).includes(
+        'Selected session: 11111111-1111-4111-8111-111111111111'
+      ),
       'selection notice renders the session id'
-    )
+    ).toBeTruthy()
 
     act(() => {
       row.dispatchEvent(clickEvent())
     })
-    assert.equal(row.dataset.state, undefined, 'second click deselects')
+    expect(row.dataset.state, 'second click deselects').toBe(undefined)
   })
 
   test('session rows are keyboard-selectable with Enter and Space', async () => {
@@ -454,15 +453,15 @@ describe('SessionsTab', () => {
 
     const first = findRow(host, '11111111')
     const second = findRow(host, '22222222')
-    assert.equal(first.getAttribute('role'), 'button')
-    assert.equal(first.getAttribute('tabindex'), '0')
+    expect(first.getAttribute('role')).toBe('button')
+    expect(first.getAttribute('tabindex')).toBe('0')
 
     act(() => {
       first.dispatchEvent(keyEvent('Enter'))
       second.dispatchEvent(keyEvent(' '))
     })
 
-    assert.deepEqual(selected, [
+    expect(selected).toEqual([
       '11111111-1111-4111-8111-111111111111',
       '22222222-2222-4222-8222-222222222222',
     ])
@@ -484,14 +483,11 @@ describe('SessionsTab', () => {
       row.dispatchEvent(clickEvent())
     })
 
-    assert.deepEqual(selected, [
-      '11111111-1111-4111-8111-111111111111',
-    ])
-    assert.equal(
+    expect(selected).toEqual(['11111111-1111-4111-8111-111111111111'])
+    expect(
       row.dataset.state,
-      undefined,
       'controlled parent owns the highlight (selectedSessionId stays null)'
-    )
+    ).toBe(undefined)
   })
 
   test('renders the error state when the api fails', async () => {
@@ -501,6 +497,6 @@ describe('SessionsTab', () => {
     const { host } = renderTab()
     await waitForText(host, 'Failed to load sessions')
 
-    assert.ok(textOf(host).includes('Failed to load sessions'))
+    expect(textOf(host).includes('Failed to load sessions')).toBeTruthy()
   })
 })

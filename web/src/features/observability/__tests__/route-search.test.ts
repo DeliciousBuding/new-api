@@ -22,56 +22,34 @@ For commercial licensing, please contact support@quantumnous.com
  * schema lives on the index route's validateSearch; a route without
  * validateSearch parses nothing and the Session Detail tab can never receive
  * a session id.
- *
- * Note: importing the route module loads the full sessions-page component
- * tree. The import is dynamic and happens after the happy-dom globals below
- * are installed: a hoisted static import would evaluate those components
- * without a DOM and corrupt the shared React event state, breaking the
- * concurrent test runs in this directory.
  */
-import assert from 'node:assert/strict'
-import { describe, test } from 'node:test'
+import { describe, expect, test, vi } from 'vitest'
 
-import { Window } from 'happy-dom'
+import { observabilitySessionsSearchSchema } from '@/routes/_authenticated/observability/index'
 
-const domWindow = new Window()
-for (const key of [
-  'window',
-  'document',
-  'navigator',
-  'HTMLElement',
-  'SVGElement',
-  'Node',
-  'Element',
-  'Event',
-  'CustomEvent',
-  'MutationObserver',
-  'requestAnimationFrame',
-  'cancelAnimationFrame',
-  'getComputedStyle',
-  'matchMedia',
-  'customElements',
-] as const) {
-  Object.defineProperty(globalThis, key, {
-    configurable: true,
-    value: domWindow[key],
-  })
-}
-
-const { observabilitySessionsSearchSchema } = await import(
-  '@/routes/_authenticated/observability/index'
-)
+// The route module pulls in the sessions page tree, which renders client
+// profile badges through the fork's lobe-icon loader. @lobehub/icons uses
+// ESM directory imports that Vite's resolver cannot follow, so stub the
+// loader — this seam test only checks the route search schema.
+// Vitest hoists vi.mock, so the stub applies to the import above.
+vi.mock('@/lib/lobe-icon', async () => {
+  const React = await import('react')
+  return {
+    getLobeIcon: () =>
+      React.createElement('svg', { 'data-mock-lobe-icon': 'true' }),
+  }
+})
 
 describe('observability route — ?session= URL-state', () => {
   test('parses the session search param', () => {
     const parsed = observabilitySessionsSearchSchema.parse({
       session: 'abc-123',
     })
-    assert.deepEqual(parsed, { session: 'abc-123' })
+    expect(parsed).toEqual({ session: 'abc-123' })
   })
 
   test('an absent session parses to an empty search state', () => {
     const parsed = observabilitySessionsSearchSchema.parse({})
-    assert.deepEqual(parsed, {})
+    expect(parsed).toEqual({})
   })
 })

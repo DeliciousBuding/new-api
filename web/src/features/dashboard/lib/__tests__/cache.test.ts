@@ -16,8 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import assert from 'node:assert/strict'
-import { describe, test } from 'node:test'
+import { describe, expect, test } from 'vitest'
 
 import {
   buildCacheRateSpec,
@@ -46,10 +45,10 @@ describe('buildCacheSummary', () => {
         cache_rate: 100,
       },
     ])
-    assert.equal(summary.inputTokens, 12500)
-    assert.equal(summary.cacheReadTokens, 10500)
-    assert.equal(summary.cacheCreationTokens, 600)
-    assert.equal(summary.rate, 84)
+    expect(summary.inputTokens).toBe(12500)
+    expect(summary.cacheReadTokens).toBe(10500)
+    expect(summary.cacheCreationTokens).toBe(600)
+    expect(summary.rate).toBe(84)
   })
 
   test('no double counting keeps a real ~100% hit rate at 100%', () => {
@@ -63,7 +62,7 @@ describe('buildCacheSummary', () => {
         cache_rate: 100,
       },
     ])
-    assert.equal(summary.rate, 100)
+    expect(summary.rate).toBe(100)
   })
 
   test('partial cache hit rates below the cap', () => {
@@ -77,7 +76,7 @@ describe('buildCacheSummary', () => {
         cache_rate: 11.1,
       },
     ])
-    assert.equal(summary.rate, 11.1)
+    expect(summary.rate).toBe(11.1)
   })
 
   test('all cached with no fresh prompt counts as 100%', () => {
@@ -91,13 +90,13 @@ describe('buildCacheSummary', () => {
         cache_rate: 100,
       },
     ])
-    assert.equal(summary.rate, CACHE_RATE_AXIS_MAX)
+    expect(summary.rate).toBe(CACHE_RATE_AXIS_MAX)
   })
 
   test('empty rows give a zero rate', () => {
     const summary = buildCacheSummary([])
-    assert.equal(summary.rate, 0)
-    assert.equal(summary.inputTokens, 0)
+    expect(summary.rate).toBe(0)
+    expect(summary.inputTokens).toBe(0)
   })
 })
 
@@ -130,12 +129,9 @@ describe('buildCacheRateSpec', () => {
       }
     )
 
-    assert.deepEqual(
-      spec.data[0].values.map((row) => row.day),
-      [2, 3]
-    )
+    expect(spec.data[0].values.map((row) => row.day)).toEqual([2, 3])
     const inputLine = spec.tooltip.mark.content[3]
-    assert.equal(inputLine.value(spec.data[0].values[0]), '25')
+    expect(inputLine.value(spec.data[0].values[0])).toBe('25')
   })
 })
 
@@ -143,6 +139,6 @@ describe('formatDayLabel', () => {
   test('renders the UTC day bucket in the local timezone', () => {
     // Day bucket 2 corresponds to 1970-01-03T00:00:00Z.
     const label = formatDayLabel(2)
-    assert.match(label, /^\d{2}-\d{2}$/)
+    expect(label).toMatch(/^\d{2}-\d{2}$/)
   })
 })

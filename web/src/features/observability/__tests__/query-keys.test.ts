@@ -16,42 +16,43 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import assert from 'node:assert/strict'
-import { describe, test } from 'node:test'
+import { describe, expect, test } from 'vitest'
 
-const { observabilityQueryKeys } = await import('../query-keys')
+import { observabilityQueryKeys } from '../query-keys'
 
 describe('observabilityQueryKeys', () => {
   test('status and overview keys are stable', () => {
-    assert.deepEqual(observabilityQueryKeys.status(), [
-      'observability',
-      'status',
-    ])
-    assert.deepEqual(observabilityQueryKeys.overview(), [
+    expect(observabilityQueryKeys.status()).toEqual(['observability', 'status'])
+    expect(observabilityQueryKeys.overview()).toEqual([
       'observability',
       'overview',
       undefined,
     ])
-    assert.deepEqual(
-      observabilityQueryKeys.overview({ window_seconds: 300, windows: 12 }),
-      ['observability', 'overview', { window_seconds: 300, windows: 12 }]
-    )
+    expect(
+      observabilityQueryKeys.overview({ window_seconds: 300, windows: 12 })
+    ).toEqual([
+      'observability',
+      'overview',
+      { window_seconds: 300, windows: 12 },
+    ])
   })
 
   test('session list keys nest under sessions/list with filters', () => {
-    assert.deepEqual(observabilityQueryKeys.sessions.lists(), [
+    expect(observabilityQueryKeys.sessions.lists()).toEqual([
       'observability',
       'sessions',
       'list',
     ])
-    assert.deepEqual(
-      observabilityQueryKeys.sessions.list({ page_size: 50 }),
-      ['observability', 'sessions', 'list', { page_size: 50 }]
-    )
+    expect(observabilityQueryKeys.sessions.list({ page_size: 50 })).toEqual([
+      'observability',
+      'sessions',
+      'list',
+      { page_size: 50 },
+    ])
   })
 
   test('session detail key carries the session id', () => {
-    assert.deepEqual(observabilityQueryKeys.sessions.detail('session-abc'), [
+    expect(observabilityQueryKeys.sessions.detail('session-abc')).toEqual([
       'observability',
       'sessions',
       'detail',
@@ -60,21 +61,20 @@ describe('observabilityQueryKeys', () => {
   })
 
   test('turn list keys are scoped per session', () => {
-    assert.deepEqual(observabilityQueryKeys.turns.list('session-abc', {}), [
+    expect(observabilityQueryKeys.turns.list('session-abc', {})).toEqual([
       'observability',
       'turns',
       'list',
       'session-abc',
       {},
     ])
-    assert.notDeepEqual(
-      observabilityQueryKeys.turns.list('session-abc', {}),
+    expect(observabilityQueryKeys.turns.list('session-abc', {})).not.toEqual(
       observabilityQueryKeys.turns.list('session-xyz', {})
     )
   })
 
   test('context key carries both turn and session ids', () => {
-    assert.deepEqual(observabilityQueryKeys.context('turn-1', 'session-abc'), [
+    expect(observabilityQueryKeys.context('turn-1', 'session-abc')).toEqual([
       'observability',
       'context',
       'turn-1',
@@ -83,25 +83,23 @@ describe('observabilityQueryKeys', () => {
   })
 
   test('transcript list key is scoped per session', () => {
-    assert.deepEqual(observabilityQueryKeys.transcript.list('session-abc'), [
+    expect(observabilityQueryKeys.transcript.list('session-abc')).toEqual([
       'observability',
       'transcript',
       'list',
       'session-abc',
     ])
-    assert.notDeepEqual(
-      observabilityQueryKeys.transcript.list('session-abc'),
+    expect(observabilityQueryKeys.transcript.list('session-abc')).not.toEqual(
       observabilityQueryKeys.transcript.list('session-xyz')
     )
-    assert.deepEqual(
-      observabilityQueryKeys.transcript.lists().slice(
-        0,
-        observabilityQueryKeys.transcript.lists().length
-      ),
+    expect(
+      observabilityQueryKeys.transcript
+        .lists()
+        .slice(0, observabilityQueryKeys.transcript.lists().length)
+    ).toEqual(
       observabilityQueryKeys.transcript
         .list('session-abc')
-        .slice(0, observabilityQueryKeys.transcript.lists().length),
-      'lists() is the prefix of every page key'
+        .slice(0, observabilityQueryKeys.transcript.lists().length)
     )
   })
 
@@ -109,13 +107,13 @@ describe('observabilityQueryKeys', () => {
     const first = observabilityQueryKeys.sessions.list({ cursor: undefined })
     const second = observabilityQueryKeys.sessions.list({ cursor: 'c1' })
     const third = observabilityQueryKeys.sessions.list({ cursor: 'c2' })
-    assert.notDeepEqual(first, second)
-    assert.notDeepEqual(second, third)
+    expect(first).not.toEqual(second)
+    expect(second).not.toEqual(third)
   })
 
   test('invalidating lists() also matches every page key (prefix semantics)', () => {
     const prefix = observabilityQueryKeys.sessions.lists()
     const page = observabilityQueryKeys.sessions.list({ cursor: 'c1' })
-    assert.deepEqual(page.slice(0, prefix.length), prefix)
+    expect(page.slice(0, prefix.length)).toEqual(prefix)
   })
 })
