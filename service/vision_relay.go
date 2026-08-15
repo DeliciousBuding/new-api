@@ -57,6 +57,15 @@ func (visionRelayCache) Set(ctx context.Context, key, value string) error {
 	return common.RDB.Set(ctx, visionRelayCacheKeyPrefix+key, value, visionRelayCacheTTL).Err()
 }
 
+// Delete 删除跨请求描述缓存 key（缓存值被敏感词热更新判定为污染时清除）。
+// Redis 未启用/连接失败时静默忽略（缓存是纯优化，不影响识图主流程）。
+func (visionRelayCache) Delete(ctx context.Context, key string) error {
+	if !common.RedisEnabled || common.RDB == nil {
+		return nil
+	}
+	return common.RDB.Del(ctx, visionRelayCacheKeyPrefix+key).Err()
+}
+
 // visionRelayFetcher ImageFetcher 的 NewAPI 适配：SSRF 保护客户端 + 有限流下载。
 // 纯核心包不感知 SSRF 客户端/下载策略（v0.2.1 边界）。
 // SSRF 保护客户端不可用时**返回错误**（该图 service_unavailable 占位），
