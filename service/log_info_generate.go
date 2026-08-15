@@ -97,6 +97,9 @@ func DetectClientProfile(c *gin.Context) string {
 		return ""
 	}
 	h := c.Request.Header
+	// 小写归一 UA 只做一次：头部子分支（X-Codex-* 循环、X-App=cli）与下方
+	// 主 UA switch 共用同一结果，避免对同一 UA 重复 ToLower。
+	ua := strings.ToLower(c.Request.UserAgent())
 	if v := h.Get("Originator"); v != "" {
 		lv := strings.ToLower(v)
 		switch {
@@ -120,7 +123,6 @@ func DetectClientProfile(c *gin.Context) string {
 	}
 	for _, name := range []string{"X-Codex-Turn-State", "X-Codex-Turn-Metadata", "X-Codex-Window-Id", "X-OpenAI-Subagent"} {
 		if h.Get(name) != "" {
-			ua := strings.ToLower(c.Request.UserAgent())
 			if strings.Contains(ua, "desktop") {
 				return "codex_desktop"
 			}
@@ -136,7 +138,6 @@ func DetectClientProfile(c *gin.Context) string {
 			// (external, <variant>) 括号里携带更精确的封装形态，须优先细分，
 			// 否则会整体落 claude_cli（生产日志实证：claude-vscode / claude-desktop-3p
 			// 两种 variant 曾都被识别为 claude_cli）。
-			ua := strings.ToLower(c.Request.UserAgent())
 			switch {
 			case strings.Contains(ua, "claude-vscode"):
 				return "claude_vscode"
@@ -170,7 +171,6 @@ func DetectClientProfile(c *gin.Context) string {
 	// 匹配顺序 = 特异性降序：子串越泛化越靠后，避免互相覆盖。
 	// 品牌词都足够特异（正常请求 UA 不会含这些子串），Contains 误伤可控；
 	// 泛化形态（裸浏览器等）不做识别，落 chat 兜底。
-	ua := strings.ToLower(c.Request.UserAgent())
 	switch {
 	// 通用 HTTP 客户端（Go 默认 UA / 中转代理）
 	case strings.Contains(ua, "go-http-client"):
