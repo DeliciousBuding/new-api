@@ -74,6 +74,10 @@ const (
 	// QueryErrNotFound marks a query whose target row does not exist (for
 	// example GET /sessions/:id of an unknown session).
 	QueryErrNotFound QueryErrorKind = "not_found"
+	// QueryErrResultTooLarge marks a transcript result that exceeded its
+	// bounded flatten budget. The Root controller maps it to the normal
+	// degraded envelope instead of returning a partial transcript.
+	QueryErrResultTooLarge QueryErrorKind = "result_too_large"
 )
 
 // QueryError is a classified bounded query failure. Kind is stable and
@@ -301,13 +305,21 @@ const (
 	TranscriptDirLatest = "latest"
 	TranscriptDirOlder  = "older"
 
-	// maxTranscriptContextRows bounds how many observer_contexts rows a
-	// transcript read materializes before paging. Each row is a turn's full
-	// checkpoint or a delta; without this cap a session with a very long
-	// history makes the Root transcript endpoint do O(session) memory and
-	// time regardless of PageSize. Rows beyond the cap are the oldest and are
-	// dropped, which also disables older-direction paging for that session.
+	// maxTranscriptContextRows is the newest context window read by a
+	// transcript. The query reads one additional predecessor row so a window
+	// boundary can calculate the first retained delta without materializing the
+	// session before it.
 	maxTranscriptContextRows = 5000
+	// maxTranscriptFlattenItems bounds the number of flattened digest
+	// references processed for one transcript result. A session with a
+	// divergent or corrupt history must degrade rather than grow work without
+	// limit.
+	maxTranscriptFlattenItems = 20000
+	// maxTranscriptFlattenBytes bounds the digest JSON and flattened digest
+	// reference bytes processed by one transcript result. It is deliberately
+	// independent of page size: the page remains bounded while the flatten
+	// scan still has an explicit work budget.
+	maxTranscriptFlattenBytes = 64 * 1024 * 1024
 )
 
 // TranscriptQuery selects one page of GET /sessions/:id/transcript. The
@@ -323,8 +335,8 @@ type TranscriptQuery struct {
 	// Direction selects the trailing page ("latest") or the page before
 	// Cursor ("older").
 	Direction string
-	// Cursor is the message index of the oldest already-loaded message;
-	// ignored when Direction is "latest".
+	// Cursor is the message index of the oldest already-loaded message within
+	// the retained newest context window; ignored when Direction is "latest".
 	Cursor int64
 	// PageSize is clamped into [DefaultPageSize, MaxPageSize].
 	PageSize int
@@ -338,7 +350,9 @@ type TranscriptQuery struct {
 type TranscriptMessage struct {
 	// TurnID identifies the turn the message belongs to.
 	TurnID uuid.UUID
-	// TurnSeq is the 0-based position of the turn within the session.
+	// TurnSeq is the 0-based position of the turn within the retained
+	// transcript window. It is also the session position when the session fits
+	// inside the context-row bound.
 	TurnSeq int64
 	// Seq is the 0-based position of the message within its turn's new
 	// messages.
@@ -366,7 +380,7 @@ type TranscriptPage struct {
 	Items []TranscriptMessage
 	// PrevCursor is the message index of the oldest message of this page;
 	// it is the cursor of the next "older" page. Zero when the page starts
-	// at the beginning of the stream.
+	// at the beginning of the retained stream.
 	PrevCursor int64
 	// HasOlder reports whether older messages exist before this page.
 	HasOlder bool
@@ -904,60 +918,75 @@ type transcriptFlatRef struct {
 	digest  string
 }
 
-// transcriptQ flattens a session's context rows into one ordered message
-// stream and returns one page. Every context row stores the turn's complete
-// history; a turn's new messages are its digest list beyond the previous
-// turn's list (the append-only conversation view). A history compaction (a
-// shorter list than the previous turn) restarts the window so the whole
-// compacted view is shown once instead of dropping messages. A divergence
-// (same-length or longer list whose content changed) starts at the real
-// common prefix so edited/inserted messages are not silently dropped.
+// transcriptQ flattens the newest bounded context window into one ordered
+// message stream and returns one page. The SQL reads newest-first under an
+// explicit LIMIT, then restores chronological order; one extra predecessor
+// establishes the first retained turn's delta without reading the preceding
+// session. Pagination retains only the requested older page and a trailing
+// ring, never one reference per message in the window. Item and byte budgets
+// reject pathological divergence explicitly instead of returning a partial
+// transcript.
 func transcriptQ(ctx context.Context, q contentQuerier, query TranscriptQuery, previousKey string) (TranscriptPage, error) {
 	if err := ctx.Err(); err != nil {
 		return TranscriptPage{}, classifiedQueryError(QueryErrTimeout, "query context expired", err)
 	}
-	rows, err := q.Query(ctx, `SELECT id, turn_id::text, checkpoint_id, group_ordinal, common_prefix_count, item_count, item_digests, logical_bytes FROM observer_contexts WHERE session_id = $1 ORDER BY id`, query.SessionID.String())
+	pageSize := clampPageSize(query.PageSize)
+	rows, err := q.Query(ctx, `SELECT id, turn_id::text, checkpoint_id, group_ordinal, common_prefix_count, item_count, item_digests, logical_bytes, count(*) OVER ()
+FROM (
+	SELECT id, turn_id, checkpoint_id, group_ordinal, common_prefix_count, item_count, item_digests, logical_bytes
+	FROM observer_contexts
+	WHERE session_id = $1
+	ORDER BY id DESC
+	LIMIT $2
+) AS latest_contexts
+ORDER BY id`, query.SessionID.String(), maxTranscriptContextRows+1)
 	if err != nil {
 		return TranscriptPage{}, fmt.Errorf("relayobserver: transcript: read context rows: %w", err)
 	}
-	defer func() {
-		if closer, ok := rows.(interface{ Close() error }); ok {
-			_ = closer.Close()
-		}
-	}()
+	defer closeRows(rows)
 
-	var flat []transcriptFlatRef
-	var prevCount int64
-	var prevDigests []string
-	var turnSeq int64
-	// truncatedOlder is set when the row cap is hit: the oldest rows are
-	// dropped, so the caller cannot page further back and HasOlder must be
-	// reported false even if start > 0.
-	var truncatedOlder bool
-	rowCount := 0
+	olderRequested := query.Direction == TranscriptDirOlder && query.Cursor > 0
+	olderPageStart := query.Cursor - int64(pageSize)
+	if olderPageStart < 0 {
+		olderPageStart = 0
+	}
+	olderPageEnd := query.Cursor
+	olderPage := make([]transcriptFlatRef, 0, pageSize)
+	latestRing := make([]transcriptFlatRef, pageSize)
+	latestRingCount := 0
+	latestRingNext := 0
+
+	var previousDigests []string
+	previousItemCount := 0
+	retainedTurnSeq := int64(0)
+	flattenedItemCount := int64(0)
+	flattenedBytes := int64(0)
+	rowPosition := int64(0)
 	// currentFullID and currentFullDigests track the full checkpoint of the
 	// current storage group: its row id and its already-decoded digest list.
-	// Rows come ORDER BY id, so a full row always precedes its deltas; deltas
-	// reconstruct against the cached digest list in memory instead of
-	// re-decoding the full checkpoint JSONB on every row — the transcript read
-	// must stay bounded for sessions with thousands of turns.
+	// The predecessor can be a delta whose full row is just outside the SQL
+	// window; that one base is loaded by primary key and used only as bounded
+	// reconstruction state.
 	var currentFullID int64
 	var currentFullDigests []string
 	for rows.Next() {
-		if rowCount >= maxTranscriptContextRows {
-			truncatedOlder = true
-			break
-		}
-		rowCount++
 		var row contextRow
 		var turnRaw string
-		if err := rows.Scan(&row.id, &turnRaw, &row.checkpointID, &row.groupOrdinal, &row.commonPrefix, &row.itemCount, &row.itemDigests, &row.logicalBytes); err != nil {
+		var selectedContextCount int64
+		if err := rows.Scan(&row.id, &turnRaw, &row.checkpointID, &row.groupOrdinal, &row.commonPrefix, &row.itemCount, &row.itemDigests, &row.logicalBytes, &selectedContextCount); err != nil {
 			return TranscriptPage{}, fmt.Errorf("relayobserver: transcript: scan context row: %w", err)
 		}
+		if int64(len(row.itemDigests)) > maxTranscriptFlattenBytes-flattenedBytes {
+			return TranscriptPage{}, classifiedQueryError(QueryErrResultTooLarge, "transcript flatten byte limit exceeded", nil)
+		}
+		flattenedBytes += int64(len(row.itemDigests))
+
 		turnID, err := uuid.Parse(turnRaw)
 		if err != nil {
 			return TranscriptPage{}, classifiedErrorWrap(ContentErrCorrupt, "invalid turn id in context row", err)
 		}
+		windowHasPredecessor := selectedContextCount > int64(maxTranscriptContextRows)
+		isWindowPredecessor := windowHasPredecessor && rowPosition == 0
 		if row.groupOrdinal == groupFullOrdinal {
 			currentFullID = row.id
 			var full []string
@@ -974,7 +1003,32 @@ func transcriptQ(ctx context.Context, q contentQuerier, query TranscriptQuery, p
 			digests = currentFullDigests
 		} else {
 			if currentFullDigests == nil || currentFullID != row.checkpointID {
-				return TranscriptPage{}, classifiedError(ContentErrMissingBase, "delta %d references missing full checkpoint %d", row.id, row.checkpointID)
+				if !isWindowPredecessor {
+					return TranscriptPage{}, classifiedError(ContentErrMissingBase, "delta %d references missing full checkpoint %d", row.id, row.checkpointID)
+				}
+				fullRow, loadErr := loadContextRowByIDQ(ctx, q, query.SessionID, row.checkpointID)
+				if errors.Is(loadErr, sql.ErrNoRows) {
+					return TranscriptPage{}, classifiedError(ContentErrMissingBase, "delta %d references missing full checkpoint %d", row.id, row.checkpointID)
+				}
+				if loadErr != nil {
+					return TranscriptPage{}, fmt.Errorf("relayobserver: transcript: read boundary checkpoint: %w", loadErr)
+				}
+				if fullRow.groupOrdinal != groupFullOrdinal {
+					return TranscriptPage{}, classifiedError(ContentErrChainBase, "delta %d references checkpoint %d which is itself a delta", row.id, row.checkpointID)
+				}
+				if int64(len(fullRow.itemDigests)) > maxTranscriptFlattenBytes-flattenedBytes {
+					return TranscriptPage{}, classifiedQueryError(QueryErrResultTooLarge, "transcript flatten byte limit exceeded", nil)
+				}
+				flattenedBytes += int64(len(fullRow.itemDigests))
+				var full []string
+				if err := common.Unmarshal(fullRow.itemDigests, &full); err != nil {
+					return TranscriptPage{}, classifiedErrorWrap(ContentErrCorrupt, "decode boundary checkpoint digests", err)
+				}
+				if len(full) != fullRow.itemCount {
+					return TranscriptPage{}, classifiedError(ContentErrCorrupt, "full checkpoint declares %d digests, row says %d", len(full), fullRow.itemCount)
+				}
+				currentFullID = fullRow.id
+				currentFullDigests = full
 			}
 			var suffix []string
 			if err := common.Unmarshal(row.itemDigests, &suffix); err != nil {
@@ -986,44 +1040,78 @@ func transcriptQ(ctx context.Context, q contentQuerier, query TranscriptQuery, p
 				return TranscriptPage{}, assembleErr
 			}
 		}
-		start := int64(commonPrefix(prevDigests, digests))
-		if int64(len(digests)) < prevCount {
-			start = 0 // compaction restart: show the whole compacted view once
+
+		if isWindowPredecessor {
+			previousItemCount = len(digests)
+			previousDigests = digests
+			rowPosition++
+			continue
 		}
-		for i := start; i < int64(len(digests)); i++ {
-			flat = append(flat, transcriptFlatRef{turnID: turnID, turnSeq: turnSeq, seq: i - start, digest: digests[i]})
+
+		newItemStart := commonPrefix(previousDigests, digests)
+		if len(digests) < previousItemCount {
+			newItemStart = 0 // compaction restart: show the whole compacted view once
 		}
-		prevCount = int64(len(digests))
-		prevDigests = digests
-		turnSeq++
+		newItemCount := int64(len(digests) - newItemStart)
+		if newItemCount > int64(maxTranscriptFlattenItems)-flattenedItemCount {
+			return TranscriptPage{}, classifiedQueryError(QueryErrResultTooLarge, "transcript flatten item limit exceeded", nil)
+		}
+		newDigestBytes := int64(0)
+		for itemIndex := newItemStart; itemIndex < len(digests); itemIndex++ {
+			digestBytes := int64(len(digests[itemIndex]))
+			if digestBytes > maxTranscriptFlattenBytes-flattenedBytes-newDigestBytes {
+				return TranscriptPage{}, classifiedQueryError(QueryErrResultTooLarge, "transcript flatten byte limit exceeded", nil)
+			}
+			newDigestBytes += digestBytes
+		}
+		flattenedBytes += newDigestBytes
+
+		for itemIndex := newItemStart; itemIndex < len(digests); itemIndex++ {
+			ref := transcriptFlatRef{
+				turnID:  turnID,
+				turnSeq: retainedTurnSeq,
+				seq:     int64(itemIndex - newItemStart),
+				digest:  digests[itemIndex],
+			}
+			if olderRequested && flattenedItemCount >= olderPageStart && flattenedItemCount < olderPageEnd {
+				olderPage = append(olderPage, ref)
+			}
+			latestRing[latestRingNext] = ref
+			latestRingNext = (latestRingNext + 1) % pageSize
+			if latestRingCount < pageSize {
+				latestRingCount++
+			}
+			flattenedItemCount++
+		}
+		previousItemCount = len(digests)
+		previousDigests = digests
+		retainedTurnSeq++
+		rowPosition++
 	}
 	if err := rows.Err(); err != nil {
 		return TranscriptPage{}, fmt.Errorf("relayobserver: transcript: read context rows: %w", err)
 	}
 
-	total := int64(len(flat))
-	var start, end int64
-	if query.Direction == TranscriptDirOlder && query.Cursor > 0 {
-		end = query.Cursor
-		if end > total {
-			end = total
-		}
-		start = end - int64(query.PageSize)
-		if start < 0 {
-			start = 0
-		}
+	var page []transcriptFlatRef
+	pageStart := int64(0)
+	if olderRequested && query.Cursor <= flattenedItemCount {
+		page = olderPage
+		pageStart = olderPageStart
 	} else {
-		end = total
-		start = total - int64(query.PageSize)
-		if start < 0 {
-			start = 0
+		pageStart = flattenedItemCount - int64(latestRingCount)
+		page = make([]transcriptFlatRef, latestRingCount)
+		firstRingIndex := latestRingNext - latestRingCount
+		if firstRingIndex < 0 {
+			firstRingIndex += pageSize
+		}
+		for pageIndex := range page {
+			page[pageIndex] = latestRing[(firstRingIndex+pageIndex)%pageSize]
 		}
 	}
-	page := flat[start:end]
 
 	out := TranscriptPage{
-		PrevCursor: start,
-		HasOlder:   start > 0 && !truncatedOlder,
+		PrevCursor: pageStart,
+		HasOlder:   pageStart > 0,
 	}
 	if len(page) == 0 {
 		return out, nil

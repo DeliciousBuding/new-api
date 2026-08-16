@@ -79,6 +79,7 @@ type fakeContextRow struct {
 	prefix       int
 	itemCount    int
 	digests      []string
+	rawDigests   []byte
 	logicalBytes int64
 }
 
@@ -142,9 +143,13 @@ func (f *fakeQueryDB) QueryRow(ctx context.Context, query string, args ...any) r
 		sid := args[1].(string)
 		for _, c := range f.contexts {
 			if c.sessionID == sid && c.id == id {
-				raw, err := common.Marshal(c.digests)
-				if err != nil {
-					return &fakeQueryRow{err: err}
+				raw := c.rawDigests
+				if raw == nil {
+					var marshalErr error
+					raw, marshalErr = common.Marshal(c.digests)
+					if marshalErr != nil {
+						return &fakeQueryRow{err: marshalErr}
+					}
 				}
 				return &fakeQueryRow{values: []any{c.id, c.checkpointID, c.ordinal, c.prefix, c.itemCount, raw, c.logicalBytes}}
 			}
@@ -191,6 +196,36 @@ func (f *fakeQueryDB) Query(ctx context.Context, query string, args ...any) (row
 	case strings.Contains(query, "FROM observer_turns"):
 		rows := f.turnRows(args)
 		return &fakeQueryRows{rows: rows, scanErr: f.scanErr, rowsErr: f.rowsErr}, nil
+	case strings.Contains(query, "latest_contexts"):
+		sid := args[0].(string)
+		limit := args[1].(int)
+		selected := make([]fakeContextRow, 0, len(f.contexts))
+		for _, c := range f.contexts {
+			if c.sessionID == sid {
+				selected = append(selected, c)
+			}
+		}
+		sort.Slice(selected, func(i, j int) bool { return selected[i].id > selected[j].id })
+		if len(selected) > limit {
+			selected = selected[:limit]
+		}
+		selectedCount := int64(len(selected))
+		sort.Slice(selected, func(i, j int) bool { return selected[i].id < selected[j].id })
+		rows := make([]*fakeQueryRow, 0, len(selected))
+		for _, c := range selected {
+			raw := c.rawDigests
+			if raw == nil {
+				var err error
+				raw, err = common.Marshal(c.digests)
+				if err != nil {
+					return nil, err
+				}
+			}
+			rows = append(rows, &fakeQueryRow{values: []any{
+				c.id, c.turnID, c.checkpointID, c.ordinal, c.prefix, c.itemCount, raw, c.logicalBytes, selectedCount,
+			}})
+		}
+		return &fakeQueryRows{rows: rows, scanErr: f.scanErr, rowsErr: f.rowsErr}, nil
 	case strings.Contains(query, "FROM observer_contexts"):
 		sid := args[0].(string)
 		var rows []*fakeQueryRow
@@ -198,9 +233,13 @@ func (f *fakeQueryDB) Query(ctx context.Context, query string, args ...any) (row
 			if c.sessionID != sid {
 				continue
 			}
-			raw, err := common.Marshal(c.digests)
-			if err != nil {
-				return nil, err
+			raw := c.rawDigests
+			if raw == nil {
+				var err error
+				raw, err = common.Marshal(c.digests)
+				if err != nil {
+					return nil, err
+				}
 			}
 			rows = append(rows, &fakeQueryRow{values: []any{
 				c.id, c.turnID, c.checkpointID, c.ordinal, c.prefix, c.itemCount, raw, c.logicalBytes,
@@ -950,6 +989,127 @@ func TestTranscriptPagination(t *testing.T) {
 	require.Len(t, edge.Items, 3)
 	assert.Equal(t, int64(2), edge.PrevCursor)
 	assert.True(t, edge.HasOlder)
+}
+
+// TestTranscriptRetainsNewestBoundedContextWindow proves that a session over
+// the context-row cap keeps its newest window and still pages older items
+// inside that retained window. The boundary predecessor is a delta, so the
+// test also covers one-hop reconstruction just outside the selected rows.
+func TestTranscriptRetainsNewestBoundedContextWindow(t *testing.T) {
+	f := newFakeQueryDB()
+	sessionID := uuid.MustParse("00000000-0000-0000-0000-0000000000aa")
+	totalContexts := maxTranscriptContextRows + 2
+	f.contexts = make([]fakeContextRow, 0, totalContexts)
+
+	for contextNumber := 1; contextNumber <= totalContexts; contextNumber++ {
+		digest := fmt.Sprintf("%064x", contextNumber)
+		contextRow := fakeContextRow{
+			id:           int64(contextNumber),
+			sessionID:    sessionID.String(),
+			turnID:       fmt.Sprintf("00000000-0000-0000-0000-%012d", contextNumber),
+			checkpointID: int64(contextNumber),
+			ordinal:      groupFullOrdinal,
+			itemCount:    1,
+			digests:      []string{digest},
+		}
+		if contextNumber == 2 {
+			contextRow.checkpointID = 1
+			contextRow.ordinal = 1
+			contextRow.prefix = 1
+			contextRow.itemCount = 2
+			contextRow.digests = []string{digest}
+		}
+		f.contexts = append(f.contexts, contextRow)
+
+		if contextNumber < totalContexts-3 {
+			continue
+		}
+		item := CanonicalItem{Kind: CanonicalKindMessage, Role: "user", LogicalBytes: 4, Hmac: digest}
+		payload, logicalBytes, err := encodeItem(item)
+		require.NoError(t, err)
+		f.objects[digest] = contentObjectRow{payload: payload, logicalBytes: logicalBytes}
+	}
+
+	latest, err := transcriptQ(context.Background(), f, TranscriptQuery{
+		SessionID: sessionID,
+		Direction: TranscriptDirLatest,
+		PageSize:  2,
+	}, "")
+	require.NoError(t, err)
+	require.Len(t, latest.Items, 2)
+	assert.Equal(t, int64(maxTranscriptContextRows-2), latest.PrevCursor)
+	assert.True(t, latest.HasOlder)
+	assert.Equal(t, fmt.Sprintf("00000000-0000-0000-0000-%012d", totalContexts-1), latest.Items[0].TurnID.String())
+	assert.Equal(t, fmt.Sprintf("00000000-0000-0000-0000-%012d", totalContexts), latest.Items[1].TurnID.String())
+	assert.Equal(t, int64(maxTranscriptContextRows-2), latest.Items[0].TurnSeq)
+	assert.Equal(t, int64(maxTranscriptContextRows-1), latest.Items[1].TurnSeq)
+
+	older, err := transcriptQ(context.Background(), f, TranscriptQuery{
+		SessionID: sessionID,
+		Direction: TranscriptDirOlder,
+		Cursor:    latest.PrevCursor,
+		PageSize:  2,
+	}, "")
+	require.NoError(t, err)
+	require.Len(t, older.Items, 2)
+	assert.Equal(t, int64(maxTranscriptContextRows-4), older.PrevCursor)
+	assert.True(t, older.HasOlder)
+	assert.Equal(t, fmt.Sprintf("00000000-0000-0000-0000-%012d", totalContexts-3), older.Items[0].TurnID.String())
+	assert.Equal(t, fmt.Sprintf("00000000-0000-0000-0000-%012d", totalContexts-2), older.Items[1].TurnID.String())
+}
+
+// TestTranscriptFlattenItemLimitDegrades proves that pathological flattening
+// returns a classified error rather than a partial page.
+func TestTranscriptFlattenItemLimitDegrades(t *testing.T) {
+	f := newFakeQueryDB()
+	sessionID := uuid.MustParse("00000000-0000-0000-0000-0000000000aa")
+	digests := make([]string, maxTranscriptFlattenItems+1)
+	for digestIndex := range digests {
+		digests[digestIndex] = fmt.Sprintf("%064x", digestIndex+1)
+	}
+	f.contexts = []fakeContextRow{{
+		id:           1,
+		sessionID:    sessionID.String(),
+		turnID:       "00000000-0000-0000-0000-000000000001",
+		checkpointID: 1,
+		ordinal:      groupFullOrdinal,
+		itemCount:    len(digests),
+		digests:      digests,
+	}}
+
+	_, err := transcriptQ(context.Background(), f, TranscriptQuery{
+		SessionID: sessionID,
+		Direction: TranscriptDirLatest,
+		PageSize:  10,
+	}, "")
+	require.Error(t, err)
+	assert.Equal(t, QueryErrResultTooLarge, queryErrKind(t, err))
+	assert.Contains(t, err.Error(), "item limit")
+}
+
+// TestTranscriptFlattenByteLimitDegrades proves that oversized digest input
+// degrades before JSON decoding can allocate an unbounded result.
+func TestTranscriptFlattenByteLimitDegrades(t *testing.T) {
+	f := newFakeQueryDB()
+	sessionID := uuid.MustParse("00000000-0000-0000-0000-0000000000aa")
+	f.contexts = []fakeContextRow{{
+		id:           1,
+		sessionID:    sessionID.String(),
+		turnID:       "00000000-0000-0000-0000-000000000001",
+		checkpointID: 1,
+		ordinal:      groupFullOrdinal,
+		itemCount:    1,
+		rawDigests:   make([]byte, maxTranscriptFlattenBytes+1),
+	}}
+
+	_, err := transcriptQ(context.Background(), f, TranscriptQuery{
+		SessionID: sessionID,
+		Direction: TranscriptDirLatest,
+		PageSize:  10,
+	}, "")
+	require.Error(t, err)
+	assert.Equal(t, QueryErrResultTooLarge, queryErrKind(t, err))
+	assert.Contains(t, err.Error(), "byte limit")
 }
 
 func TestTranscriptEmptySession(t *testing.T) {
