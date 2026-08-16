@@ -2,6 +2,10 @@
 
 本目录保存源码之外仍需长期维护的架构、配置和操作契约。公开产品介绍与安装入口在项目根 `README.md`；agent 硬边界在 `AGENTS.md`。
 
+## Product contracts
+
+- [`product/tokendance-gateway.md`](product/tokendance-gateway.md)：接入 TokenDance Gateway 公开 API 前阅读；包含 canonical base、API key 与 TokenDance ID 边界、curl quickstart、多协议说明、错误/状态词汇和私有运维边界。
+
 ## Developer contracts
 
 - [`dev/vision-relay.md`](dev/vision-relay.md)：修改图片接管、视觉 sidecall、缓存或 `vision_relay.*` 设置前阅读；包含失败语义、安全边界和已知实现债务。
