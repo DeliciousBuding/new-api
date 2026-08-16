@@ -663,6 +663,14 @@ func applyIndexMigrations(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("relayobserver: index migration: check %s: %w", m.name, err)
 		}
 		if valid {
+			// The index already exists (for example it was created manually,
+			// as with the production v7/v8 indexes), but the schema version row
+			// may be missing. Record it idempotently so observer_schema_versions
+			// reflects the index's real presence, not just the builds this
+			// process happened to perform.
+			if err := recordIndexVersion(ctx, db, m.version); err != nil {
+				return fmt.Errorf("relayobserver: index migration: record existing %s version %d: %w", m.name, m.version, err)
+			}
 			continue
 		}
 		// A previous CONCURRENTLY attempt may have left an INVALID index;
