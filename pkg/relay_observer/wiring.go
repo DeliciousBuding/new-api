@@ -86,11 +86,10 @@ type Runtime struct {
 	// It is a test seam: production never sets it.
 	openTimeout time.Duration
 
-	// queryTimeout is the Root query budget stored from the init configuration
-	// (Config.QueryTimeout, which ConfigFromEnv clamps into [1ms, 2s]). The
-	// Root controllers read it through QuerySurface and bound every
-	// database-backed query with it.
-	queryTimeout time.Duration
+	// cfg is the startup configuration snapshot. QuerySurface reads the
+	// hot-reloadable RuntimeTunable from it via GetRuntimeTunable, which
+	// layers DB options over these env-derived values.
+	cfg Config
 	// hmacKey is the content HMAC key of the running configuration; it is a
 	// secret and must never appear in status output, logs, or API responses.
 	// An empty key skips the per-item digest re-verification of the turn
@@ -170,7 +169,7 @@ func (r *Runtime) Init() {
 	disp.Start()
 	r.disp = disp
 	r.store = store
-	r.queryTimeout = cfg.QueryTimeout
+	r.cfg = cfg
 	r.hmacKey = cfg.HMACKey
 	r.state = stateEnabled
 	r.publishable.Store(true)
@@ -231,7 +230,9 @@ func (r *Runtime) Status() Status {
 func (r *Runtime) QuerySurface() (QueryStore, time.Duration, bool) {
 	r.mu.Lock()
 	seam := r.querySurface
-	timeout := r.queryTimeout
+	// Resolve the query budget through the hot-reloadable runtime snapshot so
+	// operators can tune it via the DB option without a process restart.
+	timeout := GetRuntimeTunable(r.cfg).QueryTimeout
 	if seam == nil {
 		// Default path: the wrapper creation stays under the lock (it is
 		// idempotent and cheap), but the seam — a test-injected callback that

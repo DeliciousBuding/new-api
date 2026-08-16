@@ -155,6 +155,74 @@ const (
 	DefaultRetentionContentDays = 14
 )
 
+// Runtime-tunable option keys. These are read from common.OptionMap at each
+// use point (hot reload, NewAPI convention) and fall back to the startup
+// Config when unset.
+const (
+	optQueryTimeoutMs       = "relay_observer.query_timeout_ms"
+	optRetentionTurnDays    = "relay_observer.retention_turn_days"
+	optRetentionContentDays = "relay_observer.retention_content_days"
+)
+
+// RuntimeTunable is the hot-reloadable runtime tuning snapshot of the
+// observer. It is deliberately separate from Config (the startup,
+// environment-owned configuration): Config owns DSN, schema mode, HMAC keys,
+// and the enabled switch, which are fixed at startup; RuntimeTunable owns
+// parameters an operator may retune at runtime through the options table
+// without restarting the process.
+type RuntimeTunable struct {
+	QueryTimeout         time.Duration
+	RetentionTurnDays    int
+	RetentionContentDays int
+}
+
+// GetRuntimeTunable reads the hot-reloadable runtime snapshot from the option
+// map. Each field falls back to its startup Config value when the option is
+// unset, empty, or invalid, and clamps to the same bounds as ConfigFromEnv.
+// Callers read it at each use point so a changed option takes effect without
+// a restart. Safe to call concurrently.
+func GetRuntimeTunable(cfg Config) RuntimeTunable {
+	return RuntimeTunable{
+		QueryTimeout:         tunableDuration(optQueryTimeoutMs, cfg.QueryTimeout, MaxQueryTimeout),
+		RetentionTurnDays:    tunableInt(optRetentionTurnDays, cfg.RetentionTurnDays, 1, MaxRetentionDays),
+		RetentionContentDays: tunableInt(optRetentionContentDays, cfg.RetentionContentDays, 1, MaxRetentionDays),
+	}
+}
+
+// tunableDuration resolves one millisecond-valued runtime option.
+func tunableDuration(key string, fallback, max time.Duration) time.Duration {
+	common.OptionMapRWMutex.RLock()
+	raw := common.OptionMap[key]
+	common.OptionMapRWMutex.RUnlock()
+	if raw == "" {
+		return fallback
+	}
+	ms, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || ms < 1 {
+		return fallback
+	}
+	d := time.Duration(ms) * time.Millisecond
+	if d > max {
+		return max
+	}
+	return d
+}
+
+// tunableInt resolves one integer-valued runtime option.
+func tunableInt(key string, fallback, min, max int) int {
+	common.OptionMapRWMutex.RLock()
+	raw := common.OptionMap[key]
+	common.OptionMapRWMutex.RUnlock()
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return clampInt(v, min, max)
+}
+
 // DefaultConfig returns the SSOT defaults for every field.
 func DefaultConfig() Config {
 	return Config{
