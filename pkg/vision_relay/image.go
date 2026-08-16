@@ -30,9 +30,15 @@ var (
 // PrepareImage 从 Patch 提取/下载图片数据并计算 digest。
 // base64 源：无分配预检查 → 解码 → 字节校验 → digest；
 // URL 源：通过 fetcher 有限流下载（调用方传入，nil 时该图按下载失败占位）。
+// 本函数不解析图片像素，必须在全局 decode gate 外调用；DecodeConfig、完整
+// Decode、resize 和重编码统一由 CompressForVision 在 gate 内完成。
 // 失败返回带 Err 的单元（不返回错误——图片级错误占位处理）。
 func PrepareImage(ctx context.Context, p Patch, fetcher ImageFetcher, maxBytes int64) *PatchedImage {
 	img := &PatchedImage{Patch: p}
+	if err := ctx.Err(); err != nil {
+		img.Err = err
+		return img
+	}
 	if p.Source.Data != "" {
 		// 内嵌 base64：编码长度预检查（无分配），超限直接拒绝不解码
 		if int64(len(p.Source.Data)) > ((maxBytes+2)/3)*4 {
@@ -48,6 +54,10 @@ func PrepareImage(ctx context.Context, p Patch, fetcher ImageFetcher, maxBytes i
 			img.Err = ErrSizeLimit
 			return img
 		}
+		if err := ctx.Err(); err != nil {
+			img.Err = err
+			return img
+		}
 		img.Data = decoded
 	} else if p.Source.URL != "" {
 		if fetcher == nil {
@@ -56,6 +66,14 @@ func PrepareImage(ctx context.Context, p Patch, fetcher ImageFetcher, maxBytes i
 		}
 		data, mediaType, err := fetcher.Fetch(ctx, p.Source.URL, maxBytes)
 		if err != nil {
+			if contextError := ctx.Err(); contextError != nil {
+				img.Err = contextError
+			} else {
+				img.Err = err
+			}
+			return img
+		}
+		if err := ctx.Err(); err != nil {
 			img.Err = err
 			return img
 		}
@@ -73,6 +91,11 @@ func PrepareImage(ctx context.Context, p Patch, fetcher ImageFetcher, maxBytes i
 		return img
 	}
 	img.Digest = DigestBytes(img.Data)
+	if err := ctx.Err(); err != nil {
+		img.Data = nil
+		img.Digest = ""
+		img.Err = err
+	}
 	return img
 }
 
@@ -90,7 +113,7 @@ func descriptionCacheKey(digest, instruction string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// CompressForVision 像素校验 + 压缩（必须在解码并发闸内调用）：
+// CompressForVision 像素校验 + 压缩（必须且只应在解码并发闸内调用）：
 //  1. DecodeConfig 只读头校验（宽/高/像素和实际格式，超限拒绝——解压炸弹防线，
 //     不触发完整 Decode）
 //  2. 声明 MIME 与实际格式一致的小图原样发送（≤2000px 且 ≤1.5MB；小 PNG 无损保留）
