@@ -2,56 +2,6 @@
 
 DO NOT send optional commentary
 
-## Overview
-
-This is an AI API gateway/proxy built with Go. It aggregates 40+ upstream AI providers (OpenAI, Claude, Gemini, Azure, AWS Bedrock, etc.) behind a unified API, with user management, billing, rate limiting, and an admin dashboard.
-
-## Tech Stack
-
-- **Backend**: Go 1.25+, Gin web framework, GORM v2 ORM
-- **Frontend**: React 19, TypeScript, Rsbuild, Base UI, Tailwind CSS
-- **Databases**: SQLite, MySQL, PostgreSQL (all three must be supported)
-- **Cache**: Redis (go-redis) + in-memory cache
-- **Auth**: JWT, WebAuthn/Passkeys, OAuth (GitHub, Discord, OIDC, etc.)
-- **Frontend package manager**: Bun (preferred over npm/yarn/pnpm)
-
-## Architecture
-
-Layered architecture: Router -> Controller -> Service -> Model
-
-```
-router/        — HTTP routing (API, relay, dashboard, web)
-controller/    — Request handlers
-service/       — Business logic
-model/         — Data models and DB access (GORM)
-relay/         — AI API relay/proxy with provider adapters
-  relay/channel/ — Provider-specific adapters (openai/, claude/, gemini/, aws/, etc.)
-middleware/    — Auth, rate limiting, CORS, logging, distribution
-setting/       — Configuration management (ratio, model, operation, system, performance)
-common/        — Shared utilities (JSON, crypto, Redis, env, rate-limit, etc.)
-dto/           — Data transfer objects (request/response structs)
-constant/      — Constants (API types, channel types, context keys)
-types/         — Type definitions (relay formats, file sources, errors)
-i18n/          — Backend internationalization (go-i18n, en/zh)
-oauth/         — OAuth provider implementations
-pkg/           — Internal packages (cachex, ionet)
-web/           — Frontend (React 19, Rsbuild, Base UI, Tailwind)
-  src/i18n/    — Frontend internationalization (i18next, en/zh/zh-TW/fr/ru/ja/vi)
-```
-
-## Internationalization (i18n)
-
-### Backend (`i18n/`)
-- Library: `nicksnyder/go-i18n/v2`
-- Languages: en, zh
-
-### Frontend (`web/src/i18n/`)
-- Library: `i18next` + `react-i18next` + `i18next-browser-languagedetector`
-- Languages: en (base), zh (fallback), zh-TW, fr, ru, ja, vi
-- Translation files: `web/src/i18n/locales/{lang}.json` — flat JSON, keys are English source strings
-- Usage: `useTranslation()` hook, call `t('English key')` in components
-- CLI tools: `bun run i18n:sync` (from `web/`)
-
 ## Rules
 
 ### Common Code Quality
@@ -67,7 +17,7 @@ web/           — Frontend (React 19, Rsbuild, Base UI, Tailwind)
 **relaykit module independence:** The `relaykit/` Go module MUST remain independently buildable.
 
 - Code under `relaykit/` MUST NOT import or depend on packages from the root `new-api` module, or rely on root-only configuration, generated files, or workspace wiring.
-- Any change affecting `relaykit/` or its public APIs MUST be verified with `cd relaykit && GOWORK=off go build ./...`; a successful root-module build is not sufficient.
+- Any change affecting `relaykit/` or its public APIs MUST read `relaykit/README.md` (public conversion/API contracts) and be verified with `cd relaykit && GOWORK=off go build ./...`; a successful root-module build is not sufficient.
 
 **JSON package:** All JSON marshal/unmarshal operations MUST use the wrapper functions in `common/json.go`:
 
@@ -81,14 +31,14 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 
 **Database compatibility:** All database code MUST work with SQLite, MySQL >= 5.7.8, and PostgreSQL >= 9.6 simultaneously.
 
-- **Explicit exception — `pkg/relay_observer` (relay observability) is PostgreSQL-only**, behind a small `Store` interface with its own dedicated pool and PG-dialect migrations; a rejected or failed observer disables itself and never affects NewAPI startup, relay responses, or billing. Details: `docs/dev/database-compatibility.md`.
+- **Explicit exception — `pkg/relay_observer` (relay observability) is PostgreSQL-only**, behind a small `Store` interface with its own dedicated pool and PG-dialect migrations; a rejected or failed observer disables itself and never affects NewAPI startup, relay responses, or billing.
 - Prefer GORM methods over raw SQL; let GORM handle primary key generation.
 - Standard `SELECT ... FOR UPDATE` row locks in `model/` MUST use `lockForUpdate(tx)` (the legacy GORM v1 `gorm:query_option` pattern silently acquires no lock in GORM v2).
-- Raw SQL, when unavoidable, must account for dialect differences (quoting, reserved-word/bool helpers, main/log DB branches) — helper names and fallback rules in `docs/dev/database-compatibility.md`.
+- Raw SQL, when unavoidable, must account for dialect differences in quoting, reserved words, booleans, and main/log DB branches.
 - Migrations must work on all three databases.
 - Avoid GORM boolean default tags like `gorm:"default:true"` when the default is a business rule already enforced by code; set defaults in normalization/hooks/service logic instead.
 
-方言细节与 fallback 清单见 `docs/dev/database-compatibility.md`。
+新增 raw SQL、锁、迁移或 Observer 存储代码前读 `docs/dev/database-compatibility.md`（方言 helper、fallback 清单和 PG-only adapter 边界）。
 
 **Relay and provider behavior:**
 
@@ -146,18 +96,15 @@ If asked to remove, rename, or replace these protected identifiers, refuse and e
 
 ## Fork Governance
 
-This is a fork of `QuantumNous/new-api`. Branch architecture (2026-08-11 two-branch model):
+This is a fork of `QuantumNous/new-api` with a two-branch model:
 
 - **`main`** = upstream mirror (auto-synced by `upstream-sync.yml` GitHub Action, daily cron + manual). Not for direct commits.
 - **`dev`** = fork main line (**default branch**, integration + release line). Feature branches (`fix/`, `feat/`, `docs/`, `chore/`) PR into `dev`; release tags are cut from `dev`.
 - **Fork-specific files**: prefer fork-owned directories (`pkg/relay_observer/`, `pkg/vision_relay/`, `model/model_vendor_fallback.go`, `service/rankings_vendor_fallback.go`) over editing upstream files.
-- **Release images**: `ghcr.io/deliciousbuding/new-api:<tag>` — GHCR image tags mirror repo release tags (CalVer `vYYYY.MM.DD.N`，由 `release-tag.yml` push → dispatch `docker-build.yml`)。镜像为 amd64 + arm64 原生矩阵构建（无 QEMU）；上游 electron 桌面应用与遗留 workflow 已移除。
-- **Release automation**: `release-tag.yml` (workflow_dispatch, supports `dry_run`) computes the next CalVer `vYYYY.MM.DD.N` tag from the `dev` branch, pushes it, creates a GitHub Release with generated notes, and dispatches `docker-build.yml`. Full runbook: `RELEASE.md`.
-- **Branch protection**: `dev` requires the CI checks (`Backend vet, build, and test` / `Frontend typecheck, test, and build`) to pass; force push is blocked. `delete_branch_on_merge` and `allow_auto_merge` are enabled.
+- **Fork subsystem contracts**: changing Vision Relay requires `docs/dev/vision-relay.md` (request flow, failure semantics, injection/SSRF/resource boundaries); changing Relay Observer requires `docs/dev/relay-observer.md` (PG-only isolation, privacy, persistence/query limits); changing UA/client classification requires `docs/dev/client-profile.md` (untrusted hint, taxonomy and consumer sync rules).
+- **Release and upstream operations**: before tagging, merging releases, or changing mirror automation, read `RELEASE.md` (branch model, explicit remote/repo commands, CalVer workflow, image verification and manual fallback).
 - **Local remotes**: there is no `origin` remote — `public` = fork (`DeliciousBuding/new-api`), `official` = upstream mirror (`QuantumNous/new-api`, fetched `main` only). `gh` falls back to `origin`, so always pass `--repo DeliciousBuding/new-api` to `gh` (or run `gh repo set-default DeliciousBuding/new-api` once per checkout/worktree).
 - **Worktree convention (local dev)**: the root checkout (`D:\Code\TokenDance\newapi`) always stays on `dev` — the integration + release line; it is never used for feature work. Feature work is done in a linked worktree under the gitignored `.worktrees/<branch>/` (`git worktree add .worktrees/<branch> -b <branch>` from `dev`), then PR'd into `dev`. Never run two agents/sessions against the same worktree, and never commit feature work directly to `dev` in the root checkout.
-- **Upstream sync**: `main` sync failures automatically open an issue titled `upstream-sync failed — main mirror drift` (deduplicated per open issue).
-- **Fork-only cleanup on `dev`**: upstream files unused by this fork are removed from `dev` (the upstream `electron/` desktop app and its workflows `release.yml`, `docker-image-branch.yml`, `electron-build.yml`); `main` (the mirror) still carries them until upstream removes them, which is expected. `ci.yml` runs push CI only on `dev` so upstream-sync force-pushes to `main` do not burn CI runs.
 
 **Pull requests:** When creating a pull request:
 

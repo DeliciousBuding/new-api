@@ -1,6 +1,6 @@
 # Billing Safety — 实现细节与审计埋点
 
-> 从 `AGENTS.md`「Billing safety invariants」下沉的实现细节。不变量条文留在 AGENTS.md（常驻），本文是按需层。
+新增计费乘数、quota 转换、媒体计费或旁路参数时阅读本文；不可产生负扣费等硬边界以 `AGENTS.md` 为准。
 
 ## 边界常量（新增 relay format / DTO 时复用）
 

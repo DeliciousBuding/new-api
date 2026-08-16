@@ -2,7 +2,7 @@
 
 TokenDance Gateway 发布流程：`dev`（fork 主线兼发布线）→ tag → GHCR image。
 
-## 分支模型（2026-08-11 起，双分支）
+## 分支模型
 
 - `main` = upstream mirror（`upstream-sync.yml` 每日 02:00 自动同步 + 手动触发；失败自动开 issue 告警）。禁止直接提交。
 - `dev` = **默认分支**，fork 唯一主线 = 发布线。功能分支（`fix/`、`feat/`、`docs/`、`chore/`）PR 进 `dev`；发布 tag 直接从 `dev` 打。
@@ -12,8 +12,8 @@ TokenDance Gateway 发布流程：`dev`（fork 主线兼发布线）→ tag → 
 
 ```bash
 # 1. feat → dev
-gh pr create --base dev --head <branch> --title "<summary>" --body-file <body.md>
-gh pr merge --merge <pr-number>
+gh pr create --repo DeliciousBuding/new-api --base dev --head <branch> --title "<summary>" --body-file <body.md>
+gh pr merge --repo DeliciousBuding/new-api --merge <pr-number>
 ```
 
 PR body 使用 `.github/PULL_REQUEST_TEMPLATE.md`；如提交者是 AI 协助，需在 body 中声明。
@@ -56,12 +56,12 @@ gh api users/DeliciousBuding/packages/container/new-api/versions \
 ## 手工兜底（仅自动化故障时）
 
 ```bash
-git checkout dev && git pull
-git tag v$(date +%Y.%m.%d).1 && git push origin <tag>
+git checkout dev && git pull public dev
+git tag v$(date +%Y.%m.%d).1 && git push public <tag>
 # 再在 GitHub Actions 手动运行 docker-build.yml，输入 tag
 ```
 
-## 已知治理设置（2026-08-11）
+## 仓库治理设置
 
 - `delete_branch_on_merge=true`：PR 合并后自动删除 head 分支
 - `allow_auto_merge=true`：PR 满足 required checks 后可 auto-merge

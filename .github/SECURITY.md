@@ -89,7 +89,7 @@ Please ensure the following security-related environment variables and settings 
 - `SQL_DSN` - Ensure database connection uses secure configuration
 - `REDIS_CONN_STRING` - If using Redis, ensure secure connection
 
-For detailed configuration instructions, please refer to the project documentation.
+For deployment options, see the [project README](../README.md). For session secrets, cookie security, trusted proxies, and multi-node authentication behavior, see the [authentication contract](../docs/authentication.md).
 
 ## Disclaimer
 
