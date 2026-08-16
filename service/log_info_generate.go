@@ -117,6 +117,10 @@ func DetectClientProfile(c *gin.Context) string {
 			// OpenAI 官方 desktop app 发送的 Originator 为 "Codex Desktop"（带空格，
 			// openai/codex #31481 实证），与 codex_desktop 下划线变体等价。
 			return "codex_desktop"
+		case strings.HasPrefix(lv, "codex_vscode"):
+			// OpenAI 官方 VS Code 扩展的 Originator 为 codex_vscode（openai/codex
+			// PR #8873 clientInfo.name 实证）。须先于下方 codex 兜底，否则会落 codex_app。
+			return "codex_vscode"
 		case strings.HasPrefix(lv, "codex"):
 			return "codex_app"
 		}
