@@ -1,6 +1,7 @@
 package relayobserver
 
 import (
+	"context"
 	"net/http"
 	"testing"
 	"time"
@@ -262,7 +263,13 @@ func TestWorkerAppendFailureRetainsAndRetries(t *testing.T) {
 	require.True(t, d.TryEnqueue(contentEventPtr(), 1<<20))
 	waitNotify(t, store.writeNotify)
 	require.Eventually(t, func() bool { return d.writtenTotal.Load() == 1 }, 2*time.Second, time.Millisecond)
-	//  content failure does not open the circuit and drops nothing.
+	require.Eventually(t, func() bool { return d.Status().PendingContentCount == 1 }, 2*time.Second, time.Millisecond)
+	status := d.Status()
+	assert.Greater(t, status.PendingContentBytes, int64(0))
+	assert.LessOrEqual(t, status.PendingContentBytes, d.cfg.PendingAppendBytes)
+	assert.Zero(t, status.QueueCount, "worker-owned content must not inflate admission queue count")
+	assert.Zero(t, status.QueueBytes, "worker-owned content must not inflate admission queue bytes")
+	// Content failure does not open the circuit and drops nothing.
 	require.Equal(t, circuitClosed, d.circuitStateVal())
 	assert.Equal(t, int64(0), d.droppedTotal.Load())
 
@@ -282,21 +289,127 @@ func TestWorkerAppendFailureRetainsAndRetries(t *testing.T) {
 	require.Len(t, store.appends, 1)
 	require.Len(t, store.appends[0], 1)
 	assert.Equal(t, turnRowID("node-a", "req_123"), store.appends[0][0].TurnID)
+	status = d.Status()
+	assert.Zero(t, status.PendingContentCount)
+	assert.Zero(t, status.PendingContentBytes)
+	assert.Equal(t, int64(1), status.ContentRetriedTotal)
+	assert.Zero(t, status.ContentDroppedTotal)
 }
 
-// TestWorkerAppendFailureDropsOldestBeyondCap locks the pending-appends bound:
-// a persistently failing content store keeps at most maxPendingAppendEvents
-// appends; beyond the cap the oldest are dropped and counted as content gaps
-// while the metadata rows stay written.
-func TestWorkerAppendFailureDropsOldestBeyondCap(t *testing.T) {
-	d := &Dispatcher{cfg: DefaultConfig()}
-	appends := make([]ContentInput, maxPendingAppendEvents+3)
-	for i := range appends {
-		appends[i].TurnID = turnRowID("node-a", "req")
-	}
-	d.retainPendingAppends(appends)
-	require.Len(t, d.pendingAppends, maxPendingAppendEvents)
-	assert.Equal(t, int64(3), d.contentGaps.Load())
+// TestPendingContentBudgetFallsBackBeforeMetadataWrite proves the byte budget
+// is charged from the complete ContentInput before metadata persistence. A
+// full append that misses by one byte becomes a session-only metadata row;
+// the store never sees canonical items that cannot be retained for retry.
+func TestPendingContentBudgetFallsBackBeforeMetadataWrite(t *testing.T) {
+	probeConfig := DefaultConfig()
+	probeConfig.HMACKey = testHMACKey
+	probeConfig.HMACKeyVersion = 1
+	probe := &Dispatcher{cfg: probeConfig}
+	probeEvent := contentEventPtr()
+	probeAppends := probe.planContent([]queuedEvent{{ev: probeEvent}})
+	require.Len(t, probeAppends, 1)
+	fullAppendBytes := probeAppends[0].bytes
+	probe.releasePendingContent(probeAppends)
+
+	store := contentStore()
+	d, _ := newTestDispatcher(t, store, contentCfg(func(c *Config) {
+		c.BatchSize = 1
+		c.PendingAppendBytes = fullAppendBytes - 1
+	}))
+	require.True(t, d.TryEnqueue(contentEventPtr(), 1<<20))
+	waitNotify(t, store.writeNotify)
+	require.Eventually(t, func() bool { return d.writtenTotal.Load() == 1 }, 2*time.Second, time.Millisecond)
+
+	store.mu.Lock()
+	require.Len(t, store.batches, 1)
+	assert.Equal(t, ContentStateMetadataOnly, store.batches[0][0].ContentState)
+	require.Len(t, store.appends, 1)
+	require.Len(t, store.appends[0], 1)
+	assert.Equal(t, ContentStateMetadataOnly, store.appends[0][0].ContentState)
+	assert.Empty(t, store.appends[0][0].Items)
+	store.mu.Unlock()
+
+	status := d.Status()
+	assert.Zero(t, status.PendingContentCount)
+	assert.Zero(t, status.PendingContentBytes)
+	assert.Equal(t, int64(1), status.ContentGapsTotal)
+	assert.Equal(t, int64(1), status.ContentDroppedTotal)
+}
+
+// TestPendingContentBudgetDropsSessionAppendWhenMetadataDoesNotFit covers the
+// hard floor: even the metadata-only fallback may exceed a deliberately tiny
+// budget. The turn metadata still persists as metadata_only, no content input
+// is retained, and all pending accounting stays at zero.
+func TestPendingContentBudgetDropsSessionAppendWhenMetadataDoesNotFit(t *testing.T) {
+	store := contentStore()
+	d, _ := newTestDispatcher(t, store, contentCfg(func(c *Config) {
+		c.BatchSize = 1
+		c.PendingAppendBytes = 1
+	}))
+	require.True(t, d.TryEnqueue(contentEventPtr(), 1<<20))
+	waitNotify(t, store.writeNotify)
+	require.Eventually(t, func() bool { return d.writtenTotal.Load() == 1 }, 2*time.Second, time.Millisecond)
+
+	store.mu.Lock()
+	require.Len(t, store.batches, 1)
+	assert.Equal(t, ContentStateMetadataOnly, store.batches[0][0].ContentState)
+	assert.Empty(t, store.appends)
+	store.mu.Unlock()
+	status := d.Status()
+	assert.Zero(t, status.PendingContentCount)
+	assert.Zero(t, status.PendingContentBytes)
+	assert.Equal(t, int64(1), status.ContentGapsTotal)
+	assert.Equal(t, int64(1), status.ContentDroppedTotal)
+}
+
+// TestPendingContentRetriesOnIdleFlush proves recovery does not depend on a
+// later relay request. The existing flush timer retries the bounded backlog
+// and releases its complete count/byte charge on success.
+func TestPendingContentRetriesOnIdleFlush(t *testing.T) {
+	store := contentStore()
+	store.setAppendErr(errBoom)
+	d, clock := newTestDispatcher(t, store, contentCfg(func(c *Config) { c.BatchSize = 1 }))
+
+	require.True(t, d.TryEnqueue(contentEventPtr(), 1<<20))
+	waitNotify(t, store.writeNotify)
+	require.Eventually(t, func() bool { return d.Status().PendingContentCount == 1 }, 2*time.Second, time.Millisecond)
+	require.Eventually(t, func() bool {
+		return store.appendAttemptsSnapshot() >= 2
+	}, 2*time.Second, time.Millisecond, "bulk failure and isolated retry must both run")
+	initialAppendAttempts := store.appendAttemptsSnapshot()
+
+	store.setAppendErr(nil)
+	clock.snapshot()[0].fire()
+	require.Eventually(t, func() bool {
+		return d.Status().PendingContentCount == 0 && store.appendAttemptsSnapshot() > initialAppendAttempts
+	}, 2*time.Second, time.Millisecond)
+	status := d.Status()
+	assert.Zero(t, status.PendingContentBytes)
+	assert.Equal(t, int64(1), status.ContentRetriedTotal)
+	assert.Equal(t, int64(1), status.WrittenTotal, "idle retry must not invent a metadata write")
+}
+
+// TestPendingContentShutdownDropsAndReleasesAccounting covers the final
+// bounded shutdown attempt. A still-failing store cannot strand canonical
+// content references or leave non-zero backlog counters after worker exit.
+func TestPendingContentShutdownDropsAndReleasesAccounting(t *testing.T) {
+	store := contentStore()
+	store.setAppendErr(errBoom)
+	d, _ := newTestDispatcher(t, store, contentCfg(func(c *Config) { c.BatchSize = 1 }))
+
+	require.True(t, d.TryEnqueue(contentEventPtr(), 1<<20))
+	waitNotify(t, store.writeNotify)
+	require.Eventually(t, func() bool { return d.Status().PendingContentCount == 1 }, 2*time.Second, time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	d.Stop(ctx)
+	status := d.Status()
+	assert.Zero(t, status.PendingContentCount)
+	assert.Zero(t, status.PendingContentBytes)
+	assert.Empty(t, d.pendingAppends)
+	assert.Equal(t, int64(1), status.ContentGapsTotal)
+	assert.Equal(t, int64(1), status.ContentDroppedTotal)
 }
 
 // TestWorkerMetadataFailureKeepsRetainedAppends locks the retained-appends

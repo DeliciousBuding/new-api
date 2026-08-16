@@ -34,16 +34,17 @@ func sampleEventPtr() *Event {
 // scripted error and appends recording so content failures are scriptable
 // independently of metadata writes.
 type scriptedStore struct {
-	mu           sync.Mutex
-	batches      [][]Event
-	appends      [][]ContentInput
-	writeCount   int
-	err          error
-	appendErr    error
-	panicOnWrite bool
-	blockWrites  chan struct{}
-	writeNotify  chan struct{}
-	closed       bool
+	mu             sync.Mutex
+	batches        [][]Event
+	appends        [][]ContentInput
+	writeCount     int
+	appendAttempts int
+	err            error
+	appendErr      error
+	panicOnWrite   bool
+	blockWrites    chan struct{}
+	writeNotify    chan struct{}
+	closed         bool
 }
 
 var _ Store = (*scriptedStore)(nil)
@@ -95,6 +96,7 @@ func (s *scriptedStore) WriteBatch(ctx context.Context, events []Event) error {
 
 func (s *scriptedStore) AppendTurns(ctx context.Context, turns []ContentInput) error {
 	s.mu.Lock()
+	s.appendAttempts++
 	appendErr := s.appendErr
 	s.mu.Unlock()
 	if appendErr != nil {
@@ -132,6 +134,12 @@ func (s *scriptedStore) writeCountSnapshot() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.writeCount
+}
+
+func (s *scriptedStore) appendAttemptsSnapshot() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.appendAttempts
 }
 
 // fakeTimer is the fake side of the clock seam: it never fires on its own, the

@@ -895,13 +895,97 @@ func (s *pgStore) Close(ctx context.Context) error {
 	return s.closeErr
 }
 
-// Retention bounds per the SSOT: at most one pass every six hours, at most
-// 1000 expired turns, 100 expired sessions, and 1000 orphan objects per pass.
+// Retention work remains bounded per pass while allowing cleanup to outrun
+// ordinary gateway traffic at the worker's one-minute cadence.
 const (
-	retentionMaxTurnsPerPass    = 1000
-	retentionMaxSessionsPerPass = 100
-	retentionMaxOrphansPerPass  = 1000
+	retentionMaxTurnsPerPass     = 1_000
+	retentionMaxSessionsPerPass  = 100
+	retentionMaxOrphansPerPass   = 1_000
+	retentionBacklogInspectLimit = 10_000
 )
+
+// InspectRetentionBacklog implements ContentPersistence. Counts are sampled
+// through indexed, payload-free queries capped at limit+1 so the worker can
+// expose an honest lower bound and a truncation bit without a full-table
+// count during an outage backlog.
+func (s *pgStore) InspectRetentionBacklog(ctx context.Context, turnCutoff, contentCutoff time.Time, limit int) (RetentionBacklog, error) {
+	return inspectRetentionBacklogQ(ctx, sqlDBAdapter{db: s.db}, turnCutoff, contentCutoff, limit)
+}
+
+func inspectRetentionBacklogQ(ctx context.Context, q contentQuerier, turnCutoff, contentCutoff time.Time, limit int) (RetentionBacklog, error) {
+	if limit < 1 {
+		return RetentionBacklog{}, nil
+	}
+	probeLimit := limit + 1
+
+	turns, turnOldest, turnTruncated, err := scanRetentionBacklogClass(ctx, q, `SELECT COUNT(*), COALESCE(MIN(occurred_at), to_timestamp(0))
+FROM (
+    SELECT occurred_at FROM observer_turns
+    WHERE occurred_at < $1
+    ORDER BY occurred_at
+    LIMIT $2
+) retention_backlog`, turnCutoff, limit, probeLimit)
+	if err != nil {
+		return RetentionBacklog{}, fmt.Errorf("relayobserver: inspect retention turns: %w", err)
+	}
+	sessions, sessionOldest, sessionTruncated, err := scanRetentionBacklogClass(ctx, q, `SELECT COUNT(*), COALESCE(MIN(last_seen), to_timestamp(0))
+FROM (
+    SELECT last_seen FROM observer_sessions
+    WHERE last_seen < $1
+    ORDER BY last_seen
+    LIMIT $2
+) retention_backlog`, turnCutoff, limit, probeLimit)
+	if err != nil {
+		return RetentionBacklog{}, fmt.Errorf("relayobserver: inspect retention sessions: %w", err)
+	}
+	objects, objectOldest, objectTruncated, err := scanRetentionBacklogClass(ctx, q, `SELECT COUNT(*), COALESCE(MIN(created_at), to_timestamp(0))
+FROM (
+    SELECT o.created_at FROM observer_content_objects o
+    WHERE o.created_at < $1
+      AND NOT EXISTS (
+        SELECT 1 FROM observer_contexts c
+        WHERE c.session_id = o.session_id
+          AND c.item_digests @> to_jsonb(encode(o.item_digest, 'hex'))
+      )
+    ORDER BY o.created_at
+    LIMIT $2
+) retention_backlog`, contentCutoff, limit, probeLimit)
+	if err != nil {
+		return RetentionBacklog{}, fmt.Errorf("relayobserver: inspect retention objects: %w", err)
+	}
+
+	backlog := RetentionBacklog{
+		Turns:     turns,
+		Sessions:  sessions,
+		Objects:   objects,
+		Truncated: turnTruncated || sessionTruncated || objectTruncated,
+	}
+	for _, candidate := range []struct {
+		count  int64
+		oldest time.Time
+	}{
+		{count: turns, oldest: turnOldest},
+		{count: sessions, oldest: sessionOldest},
+		{count: objects, oldest: objectOldest},
+	} {
+		if candidate.count > 0 && (backlog.Oldest.IsZero() || candidate.oldest.Before(backlog.Oldest)) {
+			backlog.Oldest = candidate.oldest
+		}
+	}
+	return backlog, nil
+}
+
+func scanRetentionBacklogClass(ctx context.Context, q contentQuerier, query string, cutoff time.Time, limit, probeLimit int) (int64, time.Time, bool, error) {
+	var count int64
+	var oldest time.Time
+	if err := q.QueryRow(ctx, query, cutoff, probeLimit).Scan(&count, &oldest); err != nil {
+		return 0, time.Time{}, false, err
+	}
+	if count > int64(limit) {
+		return int64(limit), oldest, true, nil
+	}
+	return count, oldest, false, nil
+}
 
 // ListExpiredTurns implements ContentPersistence. See the interface comment
 // for the full contract. The limit bounds the pass; the predicate is the
@@ -985,16 +1069,20 @@ func listExpiredSessionsQ(ctx context.Context, q contentQuerier, cutoff time.Tim
 
 // DeleteTurnRetention implements ContentPersistence. See the interface
 // comment for the full contract.
-func (s *pgStore) DeleteTurnRetention(ctx context.Context, turnID uuid.UUID) error {
+func (s *pgStore) DeleteTurnRetention(ctx context.Context, turnID uuid.UUID) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("relayobserver: delete turn retention: begin: %w", err)
+		return false, fmt.Errorf("relayobserver: delete turn retention: begin: %w", err)
 	}
 	defer tx.Rollback() // no-op after a successful Commit
-	if err := deleteTurnRetentionTx(ctx, sqlTxAdapter{tx: tx}, turnID); err != nil {
-		return err
+	deleted, err := deleteTurnRetentionTx(ctx, sqlTxAdapter{tx: tx}, turnID)
+	if err != nil {
+		return false, err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return deleted, nil
 }
 
 // deleteTurnRetentionTx deletes one expired turn, its context row, and a
@@ -1006,38 +1094,47 @@ func (s *pgStore) DeleteTurnRetention(ctx context.Context, turnID uuid.UUID) err
 // excludes the row's own checkpoint self-reference (SSOT: a full row stores
 // checkpoint_id = id), so a full checkpoint that no retained delta references
 // is deletable instead of blocking its own turn forever.
-func deleteTurnRetentionTx(ctx context.Context, tx contentTx, turnID uuid.UUID) error {
+func deleteTurnRetentionTx(ctx context.Context, tx contentTx, turnID uuid.UUID) (bool, error) {
 	var referenced bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM observer_contexts d WHERE d.checkpoint_id IN (SELECT id FROM observer_contexts WHERE turn_id = $1) AND d.id <> d.checkpoint_id)`, turnID.String()).Scan(&referenced); err != nil {
-		return fmt.Errorf("relayobserver: delete turn retention: check checkpoint references: %w", err)
+		return false, fmt.Errorf("relayobserver: delete turn retention: check checkpoint references: %w", err)
 	}
 	if referenced {
-		return nil
+		return false, nil
 	}
 	if _, err := tx.Exec(ctx, `UPDATE observer_session_heads SET context_id = NULL, checkpoint_id = NULL, group_ordinal = NULL WHERE context_id IN (SELECT id FROM observer_contexts WHERE turn_id = $1)`, turnID.String()); err != nil {
-		return fmt.Errorf("relayobserver: delete turn retention: clear head: %w", err)
+		return false, fmt.Errorf("relayobserver: delete turn retention: clear head: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM observer_contexts WHERE turn_id = $1`, turnID.String()); err != nil {
-		return fmt.Errorf("relayobserver: delete turn retention: delete context: %w", err)
+		return false, fmt.Errorf("relayobserver: delete turn retention: delete context: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM observer_turns WHERE id = $1`, turnID.String()); err != nil {
-		return fmt.Errorf("relayobserver: delete turn retention: delete turn: %w", err)
+	result, err := tx.Exec(ctx, `DELETE FROM observer_turns WHERE id = $1`, turnID.String())
+	if err != nil {
+		return false, fmt.Errorf("relayobserver: delete turn retention: delete turn: %w", err)
 	}
-	return nil
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("relayobserver: delete turn retention: rows affected: %w", err)
+	}
+	return rows > 0, nil
 }
 
 // DeleteSessionRetention implements ContentPersistence. See the interface
 // comment for the full contract.
-func (s *pgStore) DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID, cutoff time.Time) error {
+func (s *pgStore) DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID, cutoff time.Time) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("relayobserver: delete session retention: begin: %w", err)
+		return false, fmt.Errorf("relayobserver: delete session retention: begin: %w", err)
 	}
 	defer tx.Rollback() // no-op after a successful Commit
-	if err := deleteSessionRetentionTx(ctx, sqlTxAdapter{tx: tx}, sessionID, cutoff); err != nil {
-		return err
+	deleted, err := deleteSessionRetentionTx(ctx, sqlTxAdapter{tx: tx}, sessionID, cutoff)
+	if err != nil {
+		return false, err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return deleted, nil
 }
 
 // deleteSessionRetentionTx deletes one expired session and everything that
@@ -1051,36 +1148,41 @@ func (s *pgStore) DeleteSessionRetention(ctx context.Context, sessionID uuid.UUI
 // session's turns (every turn of a still-expired session is itself expired,
 // because last_seen is never older than any of its turns' occurred_at), and
 // the session row itself. After it returns, no row references the session.
-func deleteSessionRetentionTx(ctx context.Context, tx contentTx, sessionID uuid.UUID, cutoff time.Time) error {
+func deleteSessionRetentionTx(ctx context.Context, tx contentTx, sessionID uuid.UUID, cutoff time.Time) (bool, error) {
 	var lastSeen time.Time
 	if err := tx.QueryRow(ctx, `SELECT last_seen FROM observer_sessions WHERE id = $1 FOR UPDATE`, sessionID.String()).Scan(&lastSeen); err != nil {
-		return fmt.Errorf("relayobserver: delete session retention: lock session: %w", err)
+		return false, fmt.Errorf("relayobserver: delete session retention: lock session: %w", err)
 	}
 	if !lastSeen.Before(cutoff) {
 		// The session became active again after the retention list query; the
 		// delete is a no-op. The locked row is released by the commit/rollback.
-		return nil
+		return false, nil
 	}
 	runRetentionHook()
 	if _, err := tx.Exec(ctx, `DELETE FROM observer_content_objects WHERE session_id = $1`, sessionID.String()); err != nil {
-		return fmt.Errorf("relayobserver: delete session retention: delete content: %w", err)
+		return false, fmt.Errorf("relayobserver: delete session retention: delete content: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM observer_contexts WHERE session_id = $1`, sessionID.String()); err != nil {
-		return fmt.Errorf("relayobserver: delete session retention: delete contexts: %w", err)
+		return false, fmt.Errorf("relayobserver: delete session retention: delete contexts: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM observer_session_heads WHERE session_id = $1`, sessionID.String()); err != nil {
-		return fmt.Errorf("relayobserver: delete session retention: delete head: %w", err)
+		return false, fmt.Errorf("relayobserver: delete session retention: delete head: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM observer_session_aliases WHERE session_id = $1`, sessionID.String()); err != nil {
-		return fmt.Errorf("relayobserver: delete session retention: delete aliases: %w", err)
+		return false, fmt.Errorf("relayobserver: delete session retention: delete aliases: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM observer_turns WHERE session_id = $1`, sessionID.String()); err != nil {
-		return fmt.Errorf("relayobserver: delete session retention: delete turns: %w", err)
+		return false, fmt.Errorf("relayobserver: delete session retention: delete turns: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM observer_sessions WHERE id = $1`, sessionID.String()); err != nil {
-		return fmt.Errorf("relayobserver: delete session retention: delete session: %w", err)
+	result, err := tx.Exec(ctx, `DELETE FROM observer_sessions WHERE id = $1`, sessionID.String())
+	if err != nil {
+		return false, fmt.Errorf("relayobserver: delete session retention: delete session: %w", err)
 	}
-	return nil
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("relayobserver: delete session retention: rows affected: %w", err)
+	}
+	return rows > 0, nil
 }
 
 // DeleteOrphanContent implements ContentPersistence. See the interface
