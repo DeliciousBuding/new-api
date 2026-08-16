@@ -295,9 +295,9 @@ func TestSessionScopeForClientProfile(t *testing.T) {
 		want    SessionScope
 	}{
 		{profile: "codex_cli", want: ScopeCodexCLI},
+		{profile: "codex_app", want: ScopeCodexCLI},
 		{profile: "codex_vscode", want: ScopeCodexCLI},
-		{profile: "codex_app", want: ScopeUnknown},
-		{profile: "codex_browser", want: ScopeUnknown},
+		{profile: "codex_browser", want: ScopeCodexCLI},
 		{profile: "codex_desktop", want: ScopeCodexDesktop},
 		{profile: "claude_cli", want: ScopeClaudeCLI},
 		{profile: "claude_vscode", want: ScopeClaudeCLI},

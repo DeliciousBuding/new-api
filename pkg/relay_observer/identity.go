@@ -159,7 +159,7 @@ const (
 // the source of the scope/profile drift fixed by issue #118.
 func SessionScopeForClientProfile(clientProfile string) SessionScope {
 	switch strings.ToLower(strings.TrimSpace(clientProfile)) {
-	case "codex_cli", "codex_vscode":
+	case "codex_cli", "codex_app", "codex_vscode", "codex_browser":
 		return ScopeCodexCLI
 	case "codex_desktop":
 		return ScopeCodexDesktop

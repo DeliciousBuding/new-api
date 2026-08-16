@@ -24,7 +24,7 @@ Client Profile 是从请求 header 和 User-Agent 推断出的细粒度客户端
 
 每个 turn 保存当次细粒度 `ClientProfile`。session 的 `client_family` 是首次观察到的展示 profile，并保持 first-seen sticky；后续 turn 不覆盖它。
 
-会话分组不能依赖 profile。身份 alias 使用协议稳定字段、scope 和版本化 HMAC；因此同一底层会话从 CLI、VS Code 或桌面壳访问时仍可归入同一 session。修改 profile taxonomy 不得改变 alias digest、session claim 或 rotation adoption。
+会话分组不能直接依赖可伪造的展示 profile。身份 alias 使用协议稳定字段、由请求路径 profile 通过 `SessionScopeForClientProfile` 得出的固定 scope 和版本化 HMAC；因此同一底层会话从 CLI、VS Code 或桌面壳访问时仍可归入同一 session。修改 profile taxonomy 必须同步审查 scope 映射，不得意外改变 alias digest、session claim 或 rotation adoption。
 
 ## Taxonomy 变更规则
 
