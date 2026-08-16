@@ -1,12 +1,12 @@
 # Database Compatibility — 三库方言实现细节
 
-> 从 `AGENTS.md`「Database compatibility」下沉的实现细节。铁律条文留在 AGENTS.md（常驻），本文是按需层。
+新增 raw SQL、锁、迁移或 Relay Observer 存储代码前阅读本文；跨库硬边界以 `AGENTS.md` 为准。
 
 ## relay_observer（PG-only 显式例外）
 
 - `pkg/relay_observer/store_pg.go` 刻意 PG-only，包在小型 `Store` 接口之后；其余 NewAPI 保持库无关。
 - 独立连接池（与 `model.DB`、`LOG_DB` 分离；max open 2 / max idle 1 / 60s lifetime）。
-- versioned migrations（`pkg/relay_observer/migrations/*.sql`）为 PG 方言（`TIMESTAMPTZ`、`BYTEA`、advisory locks）。
+- v1-v4 结构迁移位于 `pkg/relay_observer/migrations/*.sql`；v5-v8 并发索引迁移由 `pkg/relay_observer/store_pg.go` 管理。两类迁移都使用 PG 方言或机制（`TIMESTAMPTZ`、`BYTEA`、advisory locks、`CREATE INDEX CONCURRENTLY`）。
 - runtime 用 `pgx.ParseConfig` 拒绝非 PG observer DSN；失败时 observer 自禁用，绝不影响启动、relay 响应或计费。
 
 ## GORM 偏好

@@ -12,7 +12,7 @@ every id is a `fx-*` fixture id and every message is placeholder text.
 | `codex-multiturn.json` | responses | codex_cli | tool invocation loop, latest activity at the tail |
 | `claude-small.json` | messages | claude_cli | single user message + session header |
 | `claude-tool-chain.json` | messages | claude_cli | tool_use / tool_result adjacency chain |
-| `boundary-full-fit.json` | responses | codex_cli | capture total inside the old envelope band (full-fit bypass) |
+| `boundary-full-fit.json` | responses | codex_cli | canonical capture fits the configured budget without truncation |
 | `boundary-exact-fit.json` | chat | codex_cli | capture total exactly equal to the limit (full-fit bypass) |
 | `boundary-below-gap-marker.json` | messages | claude_cli | capture limit below the gap marker itself |
 
@@ -21,11 +21,11 @@ harness infers the format of the other samples from the body shape.
 
 ## Per-sample record (the `_meta` block)
 
-Every fixture carries the capture metrics the P0-B budget work needs:
+Every fixture carries the capture metrics needed to verify admission and canonical capture budgets:
 
 - `raw_body_bytes` — the request body size as admitted (reservation input)
 - `capture_limit` — the canonical capture budget derived from it (for the
-  boundary fixtures, deliberately tuned to pin the P0-B boundary)
+  boundary fixtures, deliberately tuned to pin the capture boundary)
 - `scope_expect` / `sources_expect` — the identity resolution contract
 
 The normalize/capture outcome matrix (normalized_item_count, unbounded
