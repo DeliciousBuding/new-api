@@ -30,16 +30,12 @@ const (
 	maxCooldown     = 5 * time.Minute
 )
 
-// retentionInterval is the fixed cadence of the retention pass (SSOT: "The
-// worker runs at most one pass every six hours"). It is deliberately not
-// configurable.
-const retentionInterval = 6 * time.Hour
+// retentionInterval keeps bounded cleanup frequent enough to outpace normal
+// observer ingestion without turning a failure into a tight retry loop.
+const retentionInterval = time.Minute
 
-// maxPendingAppendEvents caps the retained content appends of failed
-// AppendTurns calls: the worker retries them on the next pass, and the cap
-// bounds the retained memory of a persistently failing content store. When
-// the cap is exceeded the oldest appends are dropped and counted as content
-// gaps (fail-open extreme protection; the metadata rows stay written).
+// maxPendingAppendEvents complements Config.PendingAppendBytes with a fixed
+// per-append overhead bound.
 const maxPendingAppendEvents = 4 * MaxBatchSize
 
 // recentVolume packs a fixed one-second admission bucket into one atomic
@@ -113,6 +109,18 @@ type queuedEvent struct {
 	epoch       int64
 }
 
+// pendingContentAppend couples one content persistence input with its exact
+// serialized byte charge. The worker reserves count and bytes before writing
+// the turn metadata, so a budget miss can backfill metadata_only honestly.
+// retry marks an input retained after a failed AppendTurns call.
+type pendingContentAppend struct {
+	input              ContentInput
+	bytes              int64
+	retry              bool
+	gapCounted         bool
+	degradationCounted bool
+}
+
 // Dispatcher is the bounded, fail-open runtime core of the observer: one
 // worker consumes an admission queue under a count and byte budget and writes
 // bounded batches to a Store. Construct with NewDispatcher, start with Start,
@@ -166,12 +174,17 @@ type Dispatcher struct {
 	pendingCount atomic.Int64
 	pendingBytes atomic.Int64
 
-	acceptedTotal atomic.Int64
-	writtenTotal  atomic.Int64
-	droppedTotal  atomic.Int64
-	contentGaps   atomic.Int64
-	recentVolume  atomic.Uint64
-	pgLatencyMS   atomic.Int64
+	pendingContentCount atomic.Int64
+	pendingContentBytes atomic.Int64
+
+	acceptedTotal  atomic.Int64
+	writtenTotal   atomic.Int64
+	droppedTotal   atomic.Int64
+	contentGaps    atomic.Int64
+	contentRetried atomic.Int64
+	contentDropped atomic.Int64
+	recentVolume   atomic.Uint64
+	pgLatencyMS    atomic.Int64
 
 	// contentFailureLoggedAt is the unix-nanosecond timestamp of the last
 	// content-append failure log. It rate-limits the operator-visible
@@ -198,8 +211,10 @@ type Dispatcher struct {
 	// after their metadata batch was already written. The worker merges them
 	// into the next flush pass and retries; metadata rows are idempotent
 	// (ON CONFLICT DO NOTHING) and content objects dedup, so a retry never
-	// duplicates anything. Bounded by maxPendingAppendEvents. Worker-only.
-	pendingAppends []ContentInput
+	// duplicates anything. Count and serialized bytes are reserved before the
+	// metadata write and remain charged until success or an explicit drop.
+	// Worker-only.
+	pendingAppends []pendingContentAppend
 
 	// retention is the T5.1 retention surface of the store, set when the
 	// store implements it. When set, Start launches the retention worker as
@@ -212,11 +227,16 @@ type Dispatcher struct {
 	// Retention counters, all totals since process start. lastRetentionPass
 	// holds the last pass completion in unix nanoseconds; zero means no pass
 	// has completed yet.
-	lastRetentionPass        atomic.Int64
-	retentionTurnsDeleted    atomic.Int64
-	retentionSessionsDeleted atomic.Int64
-	retentionObjectsDeleted  atomic.Int64
-	retentionFailures        atomic.Int64
+	lastRetentionPass         atomic.Int64
+	retentionTurnsDeleted     atomic.Int64
+	retentionSessionsDeleted  atomic.Int64
+	retentionObjectsDeleted   atomic.Int64
+	retentionFailures         atomic.Int64
+	retentionTurnsPending     atomic.Int64
+	retentionSessionsPending  atomic.Int64
+	retentionObjectsPending   atomic.Int64
+	retentionBacklogOldest    atomic.Int64
+	retentionBacklogTruncated atomic.Bool
 
 	ipTrust atomic.Pointer[IPTrust]
 }
@@ -433,6 +453,8 @@ func (d *Dispatcher) Stop(ctx context.Context) {
 		close(d.stopNotify)
 	})
 	if !d.started.Load() {
+		d.dropPendingContent(d.pendingAppends)
+		d.pendingAppends = nil
 		d.store.Close(ctx)
 		return
 	}
@@ -457,30 +479,45 @@ func (d *Dispatcher) Stop(ctx context.Context) {
 // code and IPTrust the effective configuration tier. Safe to call
 // concurrently with any other method.
 func (d *Dispatcher) Status() Status {
+	now := d.clock.Now()
 	st := Status{
-		Enabled:          true,
-		IPTrust:          d.ipTrustValue(),
-		QueueCount:       int(d.pendingCount.Load()),
-		QueueBytes:       d.pendingBytes.Load(),
-		AcceptedTotal:    d.acceptedTotal.Load(),
-		WrittenTotal:     d.writtenTotal.Load(),
-		DroppedTotal:     d.droppedTotal.Load(),
-		PGLatencyMS:      d.pgLatencyMS.Load(),
-		ContentGapsTotal: d.contentGaps.Load(),
-		RecentVolume:     d.recentVolumeAt(d.clock.Now()),
+		Enabled:             true,
+		IPTrust:             d.ipTrustValue(),
+		QueueCount:          int(d.pendingCount.Load()),
+		QueueBytes:          d.pendingBytes.Load(),
+		PendingContentCount: int(d.pendingContentCount.Load()),
+		PendingContentBytes: d.pendingContentBytes.Load(),
+		AcceptedTotal:       d.acceptedTotal.Load(),
+		WrittenTotal:        d.writtenTotal.Load(),
+		DroppedTotal:        d.droppedTotal.Load(),
+		PGLatencyMS:         d.pgLatencyMS.Load(),
+		ContentGapsTotal:    d.contentGaps.Load(),
+		ContentRetriedTotal: d.contentRetried.Load(),
+		ContentDroppedTotal: d.contentDropped.Load(),
+		RecentVolume:        d.recentVolumeAt(now),
 
-		RetentionTurnsDeleted:    d.retentionTurnsDeleted.Load(),
-		RetentionSessionsDeleted: d.retentionSessionsDeleted.Load(),
-		RetentionObjectsDeleted:  d.retentionObjectsDeleted.Load(),
-		RetentionFailures:        d.retentionFailures.Load(),
+		RetentionTurnsDeleted:     d.retentionTurnsDeleted.Load(),
+		RetentionSessionsDeleted:  d.retentionSessionsDeleted.Load(),
+		RetentionObjectsDeleted:   d.retentionObjectsDeleted.Load(),
+		RetentionFailures:         d.retentionFailures.Load(),
+		RetentionTurnsPending:     d.retentionTurnsPending.Load(),
+		RetentionSessionsPending:  d.retentionSessionsPending.Load(),
+		RetentionObjectsPending:   d.retentionObjectsPending.Load(),
+		RetentionBacklogTruncated: d.retentionBacklogTruncated.Load(),
 	}
 	if nano := d.lastRetentionPass.Load(); nano != 0 {
 		st.LastRetentionPass = time.Unix(0, nano)
 	}
+	if nano := d.retentionBacklogOldest.Load(); nano != 0 {
+		st.RetentionBacklogAge = now.Sub(time.Unix(0, nano))
+		if st.RetentionBacklogAge < 0 {
+			st.RetentionBacklogAge = 0
+		}
+	}
 	if circuitStateVal(d.circuitState.Load()) != circuitClosed {
 		st.CircuitOpen = true
 		st.ReasonCode = ReasonCircuitOpen
-		remaining := d.circuitUntilNano.Load() - d.clock.Now().UnixNano()
+		remaining := d.circuitUntilNano.Load() - now.UnixNano()
 		if remaining < 0 {
 			remaining = 0
 		}
@@ -593,6 +630,8 @@ func (d *Dispatcher) loop() (normalStop bool) {
 					if err := d.flush(&batch); err != nil {
 						d.openCircuit()
 					}
+				} else if len(d.pendingAppends) > 0 {
+					d.retryPendingContent()
 				}
 			case <-d.stopNotify:
 				d.drainDrop(batch)
@@ -630,6 +669,7 @@ func (d *Dispatcher) drainDrop(batch []queuedEvent) {
 			d.releaseReservation(qe)
 			d.droppedTotal.Add(1)
 		default:
+			d.flushPendingContentOnStop()
 			return
 		}
 	}
@@ -692,25 +732,70 @@ func (d *Dispatcher) flush(batch *[]queuedEvent) error {
 // outcome. A metadata-write failure returns an error (the caller opens the
 // circuit). A content-append failure is absorbed here: the appends are
 // isolated and nil is returned so the circuit stays closed.
-func (d *Dispatcher) flushChunk(ctx context.Context, chunk *[]queuedEvent) error {
+func (d *Dispatcher) flushChunk(ctx context.Context, chunk *[]queuedEvent) (err error) {
 	n := len(*chunk)
 	appends := d.planContent(*chunk)
+	contentTransferred := false
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if !contentTransferred {
+				d.releasePendingContent(appends)
+			}
+			panic(recovered)
+		}
+	}()
 	events := make([]Event, n)
 	for i := range *chunk {
 		events[i] = *(*chunk)[i].ev
 	}
 	if err := d.store.WriteBatch(ctx, events); err != nil {
+		// These inputs never became retryable because their metadata rows did
+		// not commit. Release their content reservations without counting an
+		// additional content drop; the metadata batch drop is counted by flush.
+		d.releasePendingContent(appends)
+		contentTransferred = true
 		return err
 	}
 	d.writtenTotal.Add(int64(n))
-	appends = append(d.pendingAppends, appends...)
+	combined := make([]pendingContentAppend, 0, len(d.pendingAppends)+len(appends))
+	combined = append(combined, d.pendingAppends...)
+	combined = append(combined, appends...)
+	clear(d.pendingAppends)
 	d.pendingAppends = nil
-	if len(appends) > 0 {
-		if err := d.store.AppendTurns(ctx, appends); err != nil {
-			d.handleContentAppendFailure(appends, err)
-		}
-	}
+	contentTransferred = true
+	d.persistContent(ctx, combined)
 	return nil
+}
+
+// persistContent attempts one bounded bulk append. A failure is isolated per
+// turn so deterministic poison is dropped while transient failures keep their
+// existing count and byte reservations for a later metadata or idle flush.
+func (d *Dispatcher) persistContent(ctx context.Context, appends []pendingContentAppend) {
+	if len(appends) == 0 {
+		return
+	}
+	if err := d.appendPendingContent(ctx, appends); err != nil {
+		d.handleContentAppendFailure(appends, err)
+		return
+	}
+	d.completePendingContent(appends)
+}
+
+func (d *Dispatcher) appendPendingContent(ctx context.Context, appends []pendingContentAppend) error {
+	inputs := make([]ContentInput, len(appends))
+	for i := range appends {
+		inputs[i] = appends[i].input
+	}
+	return d.appendContentInputs(ctx, inputs)
+}
+
+func (d *Dispatcher) appendContentInputs(ctx context.Context, inputs []ContentInput) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errors.New("relayobserver: content append panic")
+		}
+	}()
+	return d.store.AppendTurns(ctx, inputs)
 }
 
 // handleContentAppendFailure isolates failed content appends. Without
@@ -722,10 +807,13 @@ func (d *Dispatcher) flushChunk(ctx context.Context, chunk *[]queuedEvent) error
 // deterministically are dropped and counted as content gaps; transient
 // failures (deadlock, timeout, connection loss) are retained for the next
 // pass. The metadata rows stay written either way.
-func (d *Dispatcher) handleContentAppendFailure(appends []ContentInput, firstErr error) {
+func (d *Dispatcher) handleContentAppendFailure(appends []pendingContentAppend, firstErr error) {
 	d.logContentHealth(firstErr, len(appends))
 	deadline := time.Now().Add(d.cfg.WriteTimeout)
-	retained := make([]ContentInput, 0, len(appends))
+	retained := make([]pendingContentAppend, 0, len(appends))
+	for i := range appends {
+		appends[i].retry = true
+	}
 	for i := range appends {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
@@ -734,20 +822,21 @@ func (d *Dispatcher) handleContentAppendFailure(appends []ContentInput, firstErr
 			break
 		}
 		ctx, cancel := context.WithTimeout(d.stopCtxSnapshot(), remaining)
-		err := d.store.AppendTurns(ctx, []ContentInput{appends[i]})
+		err := d.appendContentInputs(ctx, []ContentInput{appends[i].input})
 		cancel()
 		if err == nil {
-			continue // single-turn retry succeeded: already persisted idempotently
+			d.completePendingContent(appends[i : i+1])
+			continue
 		}
 		if isDeterministicContentError(err) {
-			// Deterministic poison: drop the turn and count a content gap.
-			d.contentGaps.Add(1)
+			// Deterministic poison cannot make progress on a future pass.
+			d.dropPendingContent(appends[i : i+1])
 			continue
 		}
 		// Transient or unknown failure: retain for the next pass.
 		retained = append(retained, appends[i])
 	}
-	d.retainPendingAppends(retained)
+	d.pendingAppends = retained
 }
 
 // isDeterministicContentError classifies a content-append failure as a
@@ -793,16 +882,91 @@ func (d *Dispatcher) logContentHealth(err error, turns int) {
 	common.SysError(fmt.Sprintf("relayobserver: content append failed (turns=%d): %v", turns, err))
 }
 
-// retainPendingAppends keeps failed content appends for the next pass, bounded
-// by maxPendingAppendEvents: beyond the cap the oldest appends are dropped and
-// counted as content gaps (extreme protection for a persistently failing
-// content store; the metadata rows stay written).
-func (d *Dispatcher) retainPendingAppends(appends []ContentInput) {
-	if len(appends) > maxPendingAppendEvents {
-		d.contentGaps.Add(int64(len(appends) - maxPendingAppendEvents))
-		appends = appends[len(appends)-maxPendingAppendEvents:]
+// retryPendingContent gives retained content a chance to make progress even
+// when no later metadata event arrives to trigger a normal flush.
+func (d *Dispatcher) retryPendingContent() {
+	appends := d.pendingAppends
+	d.pendingAppends = nil
+	ctx, cancel := context.WithTimeout(d.stopCtxSnapshot(), d.cfg.WriteTimeout)
+	d.persistContent(ctx, appends)
+	cancel()
+}
+
+// flushPendingContentOnStop performs one final bulk attempt within the
+// caller's shutdown context. Failure is not retried during shutdown: all
+// references and reservations are released before the worker exits.
+func (d *Dispatcher) flushPendingContentOnStop() {
+	appends := d.pendingAppends
+	d.pendingAppends = nil
+	if len(appends) == 0 {
+		return
 	}
-	d.pendingAppends = appends
+	ctx, cancel := context.WithTimeout(d.stopCtxSnapshot(), d.cfg.WriteTimeout)
+	err := d.appendPendingContent(ctx, appends)
+	cancel()
+	if err == nil {
+		d.completePendingContent(appends)
+		return
+	}
+	d.logContentHealth(err, len(appends))
+	d.dropPendingContent(appends)
+}
+
+func (d *Dispatcher) completePendingContent(appends []pendingContentAppend) {
+	for i := range appends {
+		if appends[i].retry {
+			d.contentRetried.Add(1)
+		}
+		d.pendingContentCount.Add(-1)
+		d.pendingContentBytes.Add(-appends[i].bytes)
+		appends[i].input = ContentInput{}
+	}
+}
+
+func (d *Dispatcher) dropPendingContent(appends []pendingContentAppend) {
+	for i := range appends {
+		if !appends[i].gapCounted {
+			d.contentGaps.Add(1)
+		}
+		if !appends[i].degradationCounted {
+			d.contentDropped.Add(1)
+		}
+		d.pendingContentCount.Add(-1)
+		d.pendingContentBytes.Add(-appends[i].bytes)
+		appends[i].input = ContentInput{}
+	}
+}
+
+func (d *Dispatcher) releasePendingContent(appends []pendingContentAppend) {
+	for i := range appends {
+		d.pendingContentCount.Add(-1)
+		d.pendingContentBytes.Add(-appends[i].bytes)
+		appends[i].input = ContentInput{}
+	}
+}
+
+// reservePendingContent measures the complete persistence input with the
+// project JSON wrapper, then charges both worker-owned budgets. The worker is
+// the only writer of these counters; atomics let Status read them safely.
+func (d *Dispatcher) reservePendingContent(input ContentInput) (pendingContentAppend, bool) {
+	encoded, err := common.Marshal(input)
+	if err != nil {
+		return pendingContentAppend{}, false
+	}
+	retainedBytes := int64(len(encoded))
+	if retainedBytes < 1 {
+		retainedBytes = 1
+	}
+	if d.pendingContentCount.Load() >= maxPendingAppendEvents {
+		return pendingContentAppend{}, false
+	}
+	currentBytes := d.pendingContentBytes.Load()
+	if currentBytes > d.cfg.PendingAppendBytes-retainedBytes {
+		return pendingContentAppend{}, false
+	}
+	d.pendingContentCount.Add(1)
+	d.pendingContentBytes.Add(retainedBytes)
+	return pendingContentAppend{input: input, bytes: retainedBytes}, true
 }
 
 // planContent runs the worker-side content capture pipeline (T2.6) over one
@@ -813,14 +977,21 @@ func (d *Dispatcher) retainPendingAppends(appends []ContentInput) {
 // fail-open per event: a panicking or unknown request degrades that event to
 // metadata-only (counted as a content gap) and never affects the batch, the
 // store, or the request path.
-func (d *Dispatcher) planContent(batch []queuedEvent) []ContentInput {
+func (d *Dispatcher) planContent(batch []queuedEvent) (appends []pendingContentAppend) {
 	km := KeyMaterial{
 		CurrentKey:      d.cfg.HMACKey,
 		CurrentVersion:  d.cfg.HMACKeyVersion,
 		PreviousKey:     d.cfg.PreviousHMACKey,
 		PreviousVersion: d.cfg.PreviousHMACKeyVersion,
 	}
-	appends := make([]ContentInput, 0, len(batch))
+	appends = make([]pendingContentAppend, 0, len(batch))
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			d.releasePendingContent(appends)
+			appends = nil
+			panic(recovered)
+		}
+	}()
 	for i := range batch {
 		qe := &batch[i]
 		ev := qe.ev
@@ -829,11 +1000,7 @@ func (d *Dispatcher) planContent(batch []queuedEvent) []ContentInput {
 		}
 		plan := d.normalizeOne(ev)
 		ev.ContentState = plan.state
-		if plan.state == ContentStateGap || plan.state == ContentStateMetadataOnly {
-			// ContentGapsTotal counts turns whose capture ended with a gap
-			// marker or metadata-only state (Status contract).
-			d.contentGaps.Add(1)
-		}
+		gapCounted := plan.state == ContentStateGap || plan.state == ContentStateMetadataOnly
 		// Identity resolution is decoupled from content capture (T2
 		// decoupling): a turn with a resolvable session identity is tracked
 		// even when normalization produced no items, so session views see
@@ -844,6 +1011,9 @@ func (d *Dispatcher) planContent(batch []queuedEvent) []ContentInput {
 			// oversized sources, or an unconfigured HMAC key): no session to
 			// bind. A turn without aliases is never tracked — the event keeps
 			// its normalized ContentState.
+			if gapCounted {
+				d.contentGaps.Add(1)
+			}
 			continue
 		}
 		aliases := make([]Alias, 0, 1+len(idRes.Auxiliary))
@@ -855,7 +1025,7 @@ func (d *Dispatcher) planContent(batch []queuedEvent) []ContentInput {
 			previousAliases = append(previousAliases, idRes.PreviousPrimary)
 			previousAliases = append(previousAliases, idRes.PreviousAuxiliary...)
 		}
-		appends = append(appends, ContentInput{
+		input := ContentInput{
 			NodeScope:       ev.NodeScope,
 			UserID:          ev.UserID,
 			ClientProfile:   ev.ClientProfile,
@@ -864,7 +1034,30 @@ func (d *Dispatcher) planContent(batch []queuedEvent) []ContentInput {
 			TurnID:          turnRowID(ev.NodeScope, ev.EventID),
 			ContentState:    plan.state,
 			Items:           plan.items,
-		})
+		}
+		pending, reserved := d.reservePendingContent(input)
+		degradationCounted := false
+		if !reserved {
+			// The canonical append cannot be retained safely. Backfill the turn
+			// before WriteBatch and keep a smaller session-only append when it
+			// fits; otherwise drop the append explicitly.
+			ev.ContentState = ContentStateMetadataOnly
+			input.ContentState = ContentStateMetadataOnly
+			input.Items = nil
+			gapCounted = true
+			degradationCounted = true
+			d.contentDropped.Add(1)
+			pending, reserved = d.reservePendingContent(input)
+		}
+		if gapCounted {
+			d.contentGaps.Add(1)
+		}
+		if !reserved {
+			continue
+		}
+		pending.gapCounted = gapCounted
+		pending.degradationCounted = degradationCounted
+		appends = append(appends, pending)
 	}
 	return appends
 }
@@ -1041,11 +1234,11 @@ func (d *Dispatcher) runRetention() {
 	}
 }
 
-// retentionPass runs one bounded retention pass: expired turns, then expired
-// sessions, then orphan content, each under its own short timeout and limit,
-// with a yield between segments. Any segment failure counts and aborts the
-// pass; the next scheduled pass retries (never a tight loop). LastRetentionPass
-// records the completion time whether the pass succeeded or failed.
+// retentionPass runs one bounded retention pass: expired turns, sessions,
+// orphan content, then a payload-free backlog inspection. A delete failure
+// aborts later delete segments, but the independent inspection still runs so
+// operators can see the remaining count and age. The one-minute scheduler is
+// the only retry loop.
 func (d *Dispatcher) retentionPass() {
 	start := d.clock.Now()
 	// Resolve retention days through the hot-reloadable runtime snapshot so an
@@ -1054,23 +1247,28 @@ func (d *Dispatcher) retentionPass() {
 	turnCutoff := start.Add(-retentionDays(tunable.RetentionTurnDays))
 	contentCutoff := start.Add(-retentionDays(tunable.RetentionContentDays))
 
-	// Segment 1/3: expired turns, bounded by the SSOT limit.
+	var passErr error
 	if err := d.retentionTurnsSegment(turnCutoff); err != nil {
-		d.failRetentionPass(err)
-		d.lastRetentionPass.Store(start.UnixNano())
-		return
+		passErr = err
 	}
-	runtime.Gosched() // yield between segments: never hold the pool back-to-back
-	// Segment 2/3: expired sessions.
-	if err := d.retentionSessionsSegment(turnCutoff); err != nil {
-		d.failRetentionPass(err)
-		d.lastRetentionPass.Store(start.UnixNano())
-		return
+	if passErr == nil {
+		runtime.Gosched()
+		if err := d.retentionSessionsSegment(turnCutoff); err != nil {
+			passErr = err
+		}
+	}
+	if passErr == nil {
+		runtime.Gosched()
+		if err := d.retentionOrphansSegment(contentCutoff); err != nil {
+			passErr = err
+		}
 	}
 	runtime.Gosched()
-	// Segment 3/3: orphan content past its grace period.
-	if err := d.retentionOrphansSegment(contentCutoff); err != nil {
-		d.failRetentionPass(err)
+	if err := d.retentionBacklogSegment(turnCutoff, contentCutoff); err != nil && passErr == nil {
+		passErr = err
+	}
+	if passErr != nil {
+		d.failRetentionPass(passErr)
 	}
 	d.lastRetentionPass.Store(start.UnixNano())
 }
@@ -1105,10 +1303,13 @@ func (d *Dispatcher) retentionTurnsSegment(cutoff time.Time) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := d.retention.DeleteTurnRetention(ctx, ref.TurnID); err != nil {
+		deleted, err := d.retention.DeleteTurnRetention(ctx, ref.TurnID)
+		if err != nil {
 			return err
 		}
-		d.retentionTurnsDeleted.Add(1)
+		if deleted {
+			d.retentionTurnsDeleted.Add(1)
+		}
 	}
 	return nil
 }
@@ -1126,10 +1327,13 @@ func (d *Dispatcher) retentionSessionsSegment(cutoff time.Time) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := d.retention.DeleteSessionRetention(ctx, id, cutoff); err != nil {
+		deleted, err := d.retention.DeleteSessionRetention(ctx, id, cutoff)
+		if err != nil {
 			return err
 		}
-		d.retentionSessionsDeleted.Add(1)
+		if deleted {
+			d.retentionSessionsDeleted.Add(1)
+		}
 	}
 	return nil
 }
@@ -1144,6 +1348,27 @@ func (d *Dispatcher) retentionOrphansSegment(cutoff time.Time) error {
 		return err
 	}
 	d.retentionObjectsDeleted.Add(int64(n))
+	return nil
+}
+
+// retentionBacklogSegment refreshes bounded in-memory backlog signals. The
+// status endpoint only reads these atomics and never queries PostgreSQL.
+func (d *Dispatcher) retentionBacklogSegment(turnCutoff, contentCutoff time.Time) error {
+	ctx, cancel := d.retentionSegmentCtx()
+	defer cancel()
+	backlog, err := d.retention.InspectRetentionBacklog(ctx, turnCutoff, contentCutoff, retentionBacklogInspectLimit)
+	if err != nil {
+		return err
+	}
+	d.retentionTurnsPending.Store(backlog.Turns)
+	d.retentionSessionsPending.Store(backlog.Sessions)
+	d.retentionObjectsPending.Store(backlog.Objects)
+	d.retentionBacklogTruncated.Store(backlog.Truncated)
+	if backlog.Oldest.IsZero() {
+		d.retentionBacklogOldest.Store(0)
+	} else {
+		d.retentionBacklogOldest.Store(backlog.Oldest.UnixNano())
+	}
 	return nil
 }
 

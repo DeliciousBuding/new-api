@@ -68,6 +68,9 @@ type ContentPersistence interface {
 	// content cleanup is the retention pass's (T5.1) responsibility, so
 	// deletion never breaks a reference to still-retained content.
 	DeleteGroup(ctx context.Context, sessionID uuid.UUID, checkpointID int64) error
+	// InspectRetentionBacklog returns bounded count and age signals for rows
+	// eligible at the supplied turn and content cutoffs.
+	InspectRetentionBacklog(ctx context.Context, turnCutoff, contentCutoff time.Time, limit int) (RetentionBacklog, error)
 	// ListExpiredTurns returns at most limit expired turns (occurred_at <
 	// cutoff) in ascending age order, carrying only the columns the retention
 	// pass needs — turn id and session id. It never reads payload columns.
@@ -84,7 +87,7 @@ type ContentPersistence interface {
 	// checkpoint is kept: the turn is skipped and retried by a later pass, so
 	// retention never leaves a retained delta dangling. Content objects are
 	// not deleted here: orphan-safe cleanup is DeleteOrphanContent's job.
-	DeleteTurnRetention(ctx context.Context, turnID uuid.UUID) error
+	DeleteTurnRetention(ctx context.Context, turnID uuid.UUID) (bool, error)
 	// DeleteSessionRetention atomically deletes one session that was still
 	// expired at the cutoff: its content objects, context rows, head, alias
 	// bindings, and turns (every turn of an expired session is itself
@@ -93,7 +96,7 @@ type ContentPersistence interface {
 	// against the cutoff inside the transaction, so a session that received a
 	// new turn after the retention list query is left intact (TOCTOU guard).
 	// After commit nothing references the deleted session.
-	DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID, cutoff time.Time) error
+	DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID, cutoff time.Time) (bool, error)
 	// DeleteOrphanContent deletes at most limit content objects whose
 	// created_at is older than cutoff and that no retained context of their
 	// session references (reference safety is the hard condition, the grace
@@ -111,6 +114,18 @@ type TurnRetentionRef struct {
 	SessionID *uuid.UUID
 }
 
+// RetentionBacklog is a bounded observation of rows eligible for retention.
+// Counts are capped by the adapter's inspection limit; Truncated makes that
+// lower-bound semantics explicit. Oldest is the oldest sampled row across
+// the three retention classes, or zero when the sample is empty.
+type RetentionBacklog struct {
+	Turns     int64
+	Sessions  int64
+	Objects   int64
+	Oldest    time.Time
+	Truncated bool
+}
+
 // RetentionStore is the T5.1 retention port the worker consumes: expired
 // turn/session listing and retention deletion. It is a strict subset of
 // ContentPersistence (the adapter implements both through the same methods)
@@ -118,6 +133,9 @@ type TurnRetentionRef struct {
 // pass is fully isolated from the write circuit: it never enqueues, never
 // probes, and never touches the circuit state.
 type RetentionStore interface {
+	// InspectRetentionBacklog returns bounded count and age signals for the
+	// current retention cutoffs. It reads metadata only and never payloads.
+	InspectRetentionBacklog(ctx context.Context, turnCutoff, contentCutoff time.Time, limit int) (RetentionBacklog, error)
 	// ListExpiredTurns returns at most limit expired turns (occurred_at <
 	// cutoff) in ascending age order, with only the retention columns.
 	ListExpiredTurns(ctx context.Context, cutoff time.Time, limit int) ([]TurnRetentionRef, error)
@@ -126,12 +144,12 @@ type RetentionStore interface {
 	ListExpiredSessions(ctx context.Context, cutoff time.Time, limit int) ([]uuid.UUID, error)
 	// DeleteTurnRetention atomically deletes one expired turn together with
 	// its context row and clears a pointing head.
-	DeleteTurnRetention(ctx context.Context, turnID uuid.UUID) error
+	DeleteTurnRetention(ctx context.Context, turnID uuid.UUID) (bool, error)
 	// DeleteSessionRetention atomically deletes one session that was still
 	// expired at the cutoff and everything that references it; the last_seen
 	// re-check against the cutoff inside the transaction guards the TOCTOU
 	// window between the list query and the delete.
-	DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID, cutoff time.Time) error
+	DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID, cutoff time.Time) (bool, error)
 	// DeleteOrphanContent deletes at most limit unreferenced, past-grace
 	// content objects and returns the deleted row count.
 	DeleteOrphanContent(ctx context.Context, cutoff time.Time, limit int) (int, error)
