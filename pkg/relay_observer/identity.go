@@ -20,10 +20,12 @@ import (
 // stable output consumed by T2.3 session persistence; contract tests lock the
 // shapes and the resolution rules below.
 
-// SessionScope is the frozen client-profile scope of a session. Aliases from
+// SessionScope is the frozen identity-family scope of a session. Aliases from
 // different scopes never merge: the scope is part of the alias identity, so a
-// session observed by codex_cli and claude_cli stays two separate sessions
-// even if their raw identifiers collide.
+// session observed by Codex and Claude stays two separate sessions even if
+// their raw identifiers collide. The request path supplies the already
+// detected client profile; this package only maps that low-cardinality value
+// to the identity family and never re-parses request headers.
 type SessionScope string
 
 const (
@@ -105,6 +107,11 @@ type KeyMaterial struct {
 // of prompt_cache_key and Claude metadata. The body is read-only and is
 // expected to come from the bounded BodyStorage of the request path.
 type IdentityInput struct {
+	// Scope is mapped from service.DetectClientProfile on the request path. It
+	// selects one bounded identity chain but is not itself an identity
+	// credential. The observer worker never re-parses request headers to infer
+	// it.
+	Scope   SessionScope
 	Headers http.Header
 	Body    []byte
 }
@@ -140,55 +147,45 @@ const (
 	MaxAliasValueBytes = 2048
 )
 
-// DetectSessionScope classifies the client profile of a request into the
-// scopes that own a session identity chain, mirroring the business profile
-// detection order (Originator prefix, X-Codex-* headers, X-App) without
-// importing the service layer. Profiles without a chain (for example
-// claude_desktop or codex_app variants) resolve to ScopeUnknown.
-func DetectSessionScope(h http.Header) SessionScope {
-	if h == nil {
+// SessionScopeForClientProfile maps the request-path client profile to the
+// stable identity family used by alias generation. Profile variants that are
+// different display labels but share the same protocol identity chain map to
+// one scope, so changing a shell (for example Claude CLI to its VS Code
+// extension) does not split a session. Profiles without a supported identity
+// chain remain unknown and fail open.
+//
+// This is deliberately a value-only mapping. Header and User-Agent parsing
+// belongs to service.DetectClientProfile; duplicating that parser here was
+// the source of the scope/profile drift fixed by issue #118.
+func SessionScopeForClientProfile(clientProfile string) SessionScope {
+	switch strings.ToLower(strings.TrimSpace(clientProfile)) {
+	case "codex_cli", "codex_vscode":
+		return ScopeCodexCLI
+	case "codex_desktop":
+		return ScopeCodexDesktop
+	case "claude_cli", "claude_vscode", "claude_desktop_3p":
+		return ScopeClaudeCLI
+	default:
 		return ScopeUnknown
 	}
-	if v := strings.ToLower(h.Get("Originator")); v != "" {
-		switch {
-		case strings.HasPrefix(v, "codex_cli"), strings.HasPrefix(v, "codex-tui"):
-			return ScopeCodexCLI
-		case strings.HasPrefix(v, "codex_desktop"):
-			return ScopeCodexDesktop
-		}
-		// A non-codex Originator (for example curl/8.0, which Claude CLI
-		// sends) is not a scope by itself: fall through to the X-Codex-* and
-		// X-App chains below, mirroring service.DetectClientProfile. Returning
-		// ScopeUnknown here would silently drop Claude CLI sessions that carry
-		// an Originator.
-	}
-	for _, name := range []string{"X-Codex-Turn-State", "X-Codex-Turn-Metadata", "X-Codex-Window-Id", "X-OpenAI-Subagent"} {
-		if h.Get(name) != "" {
-			if strings.Contains(strings.ToLower(h.Get("User-Agent")), "desktop") {
-				return ScopeCodexDesktop
-			}
-			return ScopeCodexCLI
-		}
-	}
-	if v := strings.ToLower(h.Get("X-App")); strings.Contains(v, "cli") {
-		return ScopeClaudeCLI
-	}
-	return ScopeUnknown
 }
 
-// ResolveIdentity resolves the session aliases of one request: it detects
-// the scope, extracts the bounded candidate values in priority order, hashes
-// them with the current key, and returns the primary alias plus the bounded
-// auxiliary set. When a previous key is configured it also re-keys every
-// candidate under the previous generation: a rotation window uses those
-// to adopt a session bound under the old key. Malformed or missing sources
-// are skipped deterministically; only an unconfigured HMAC key is an error.
-// Raw identifiers never appear in the result.
+// ResolveIdentity resolves the session aliases of one request: it maps the
+// request-path profile to a scope, extracts the bounded candidate values in
+// priority order, hashes them with the current key, and returns the primary
+// alias plus the bounded auxiliary set. When a previous key is configured it
+// also re-keys every candidate under the previous generation: a rotation
+// window uses those to adopt a session bound under the old key. Malformed or
+// missing sources are skipped deterministically; only an unconfigured HMAC
+// key is an error. Raw identifiers never appear in the result.
 func ResolveIdentity(in IdentityInput, km KeyMaterial) (IdentityResult, error) {
 	if km.CurrentKey == "" {
 		return IdentityResult{}, errHMACKeyNotConfigured
 	}
-	scope := DetectSessionScope(in.Headers)
+	scope := in.Scope
+	if scope == "" {
+		scope = ScopeUnknown
+	}
 	candidates := collectCandidates(in, scope)
 
 	seen := make(map[string]bool, len(candidates))

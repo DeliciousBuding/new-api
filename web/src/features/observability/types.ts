@@ -134,6 +134,10 @@ export const observerTurnSchema = z.object({
   quota: z.number(),
   attempts: z.array(observerAttemptSchema),
   content_state: z.string(),
+  // Closed, low-cardinality value from the request-path profile detector.
+  // Keep this schema open to unknown historical values; the shared badge
+  // component provides the safe fallback label.
+  client_profile: z.string(),
 })
 export type ObserverTurn = z.infer<typeof observerTurnSchema>
 

@@ -136,9 +136,8 @@ describe('observability api endpoints', () => {
       page_size: undefined,
       cursor: null as unknown as string,
       model: '',
-      country: 'US',
     })
-    expect(calls).toEqual(['/api/relay-observer/sessions?country=US'])
+    expect(calls).toEqual(['/api/relay-observer/sessions'])
   })
 
   test('listSessions keeps explicit false (a valid filter, not an empty value)', async () => {
@@ -160,6 +159,51 @@ describe('observability api endpoints', () => {
     expect(calls).toEqual([
       '/api/relay-observer/sessions/session-abc/turns?page_size=25&cursor=c2&error_type=upstream',
     ])
+  })
+
+  test('listTurns validates and returns the per-turn client profile', async () => {
+    responseData = {
+      success: true,
+      message: '',
+      data: {
+        page_size: 25,
+        items: [
+          {
+            turn_id: 'turn-1',
+            event_id: 'request-1',
+            session_id: 'session-abc',
+            occurred_at: '2026-08-01T00:00:00Z',
+            node_scope: 'scope-a',
+            user_id: 7,
+            model: 'gpt-5',
+            upstream_model: 'gpt-5',
+            relay_format: 'responses',
+            success: true,
+            status_code: 200,
+            error_type: '',
+            error_code: '',
+            latency_ms: 120,
+            stream: true,
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            cached_tokens: 2,
+            quota: 15,
+            attempts: [],
+            content_state: 'full',
+            client_profile: 'claude_vscode',
+          },
+        ],
+        meta: { next_cursor: '', has_more: false },
+      },
+    }
+
+    const result = await listTurns('session-abc')
+
+    expect(result.data && 'items' in result.data).toBeTruthy()
+    if (!result.data || !('items' in result.data)) {
+      throw new Error('turn page payload must carry items')
+    }
+    expect(result.data.items[0]?.client_profile).toBe('claude_vscode')
   })
 
   test('listTurns without params keeps a bare turns path', async () => {

@@ -206,7 +206,6 @@ func buildTurnEvent(c *gin.Context, info *relaycommon.RelayInfo, usage TurnUsage
 		OccurredAt:         time.Now(),
 		UserID:             int64(info.UserId),
 		TokenID:            int64(info.TokenId),
-		ClientProfile:      DetectClientProfile(c),
 		Model:              info.OriginModelName,
 		UpstreamModel:      info.UpstreamModelName,
 		RelayFormat:        string(info.GetFinalRequestRelayFormat()),
@@ -229,6 +228,16 @@ func buildTurnEvent(c *gin.Context, info *relaycommon.RelayInfo, usage TurnUsage
 		// default metadata-only state.
 		ContentState: relayobserver.ContentStateMetadataOnly,
 	}
+	// Detect the profile once on the request path. The observer carries this
+	// value through the event and maps it to an identity scope; it deliberately
+	// does not inspect the headers again in the worker.
+	ev.ClientProfile = DetectClientProfile(c)
+	ev.Identity = relayobserver.IdentityInput{
+		Scope: relayobserver.SessionScopeForClientProfile(ev.ClientProfile),
+	}
+	if c != nil && c.Request != nil {
+		ev.Identity.Headers = c.Request.Header
+	}
 	if info.Request != nil {
 		ev.Request = &info.Request
 	}
@@ -237,18 +246,17 @@ func buildTurnEvent(c *gin.Context, info *relaycommon.RelayInfo, usage TurnUsage
 	// storage). The body bytes are snapshotted here, before the publish send:
 	// the request path never writes them again, and the worker reads them
 	// through the channel-send happens-before (same rule as Request). A
-	// missing body storage degrades identity resolution, never the event.
+	// missing body storage degrades body-derived identity to the header-only
+	// snapshot above, never the event.
 	// Disk-backed bodies are never read wholesale into memory (issue #43):
 	// the event's identity degrades to header-only, so alias sources that
 	// live in the body (prompt_cache_key, claude meta session) are absent.
 	if bs, err := common.GetBodyStorage(c); err == nil && bs != nil {
-		identity := relayobserver.IdentityInput{Headers: c.Request.Header}
 		if !bs.IsDisk() {
 			if body, err := bs.Bytes(); err == nil {
-				identity.Body = body
+				ev.Identity.Body = body
 			}
 		}
-		ev.Identity = identity
 	}
 	if info.HasSendResponse() {
 		ev.FirstResponseMS = info.FirstResponseTime.Sub(info.StartTime).Milliseconds()

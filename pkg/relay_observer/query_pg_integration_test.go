@@ -473,7 +473,7 @@ func TestIntegrationQueryGetSession(t *testing.T) {
 
 // TestIntegrationQueryFilterDimensions covers the T3.2 filter dimensions on
 // the real database: the session list's turn-derived EXISTS filters
-// (model/success/country/asn/ip) and the turn list's own filters
+// (model/success/ip) and the turn list's own filters
 // (model/success/error_type) return exactly the matching rows.
 func TestIntegrationQueryFilterDimensions(t *testing.T) {
 	dsn := integrationDSN(t)
@@ -487,8 +487,8 @@ func TestIntegrationQueryFilterDimensions(t *testing.T) {
 	insertQuerySession(t, db, sidA, scope, epoch.Add(2*time.Hour))
 	insertQuerySession(t, db, sidB, scope, epoch.Add(time.Hour))
 
-	// Session A: one successful gpt-5 turn from US/ASN 15169/198.51.100.7.
-	// Session B: one failed claude-5 turn from JP/ASN 1/198.51.100.8.
+	// Session A: one successful gpt-5 turn from 198.51.100.7.
+	// Session B: one failed claude-5 turn from 198.51.100.8.
 	turnA := sampleEvent()
 	turnA.NodeScope = scope
 	turnA.EventID = "flt-a-1"
@@ -497,8 +497,6 @@ func TestIntegrationQueryFilterDimensions(t *testing.T) {
 	turnA.Model = "gpt-5"
 	turnA.Success = true
 	turnA.ErrorType = ""
-	turnA.CountryCode = "US"
-	turnA.ASN = 15169
 	turnA.ClientIP = net.ParseIP("198.51.100.7")
 	turnA.IPTrust = IPTrustDirect
 
@@ -510,8 +508,6 @@ func TestIntegrationQueryFilterDimensions(t *testing.T) {
 	turnB.Model = "claude-5"
 	turnB.Success = false
 	turnB.ErrorType = "upstream_error"
-	turnB.CountryCode = "JP"
-	turnB.ASN = 1
 	turnB.ClientIP = net.ParseIP("198.51.100.8")
 	turnB.IPTrust = IPTrustDirect
 	require.NoError(t, store.WriteBatch(context.Background(), []Event{turnA, turnB}))
@@ -535,10 +531,6 @@ func TestIntegrationQueryFilterDimensions(t *testing.T) {
 	assert.ElementsMatch(t, []uuid.UUID{sidA}, sessionsWith(SessionQuery{Success: &success}))
 	success = false
 	assert.ElementsMatch(t, []uuid.UUID{sidB}, sessionsWith(SessionQuery{Success: &success}))
-	assert.ElementsMatch(t, []uuid.UUID{sidA}, sessionsWith(SessionQuery{Country: "US"}))
-	assert.ElementsMatch(t, []uuid.UUID{sidB}, sessionsWith(SessionQuery{Country: "JP"}))
-	assert.ElementsMatch(t, []uuid.UUID{sidA}, sessionsWith(SessionQuery{ASN: 15169}))
-	assert.ElementsMatch(t, []uuid.UUID{sidB}, sessionsWith(SessionQuery{ASN: 1}))
 	assert.ElementsMatch(t, []uuid.UUID{sidA}, sessionsWith(SessionQuery{IP: net.ParseIP("198.51.100.7")}))
 	assert.ElementsMatch(t, []uuid.UUID{sidB}, sessionsWith(SessionQuery{IP: net.ParseIP("198.51.100.8")}))
 	// No filter returns both sessions.

@@ -90,6 +90,7 @@ func attachGoldenEvent(t *testing.T, nodeScope, eventID string) Event {
 	ev.RelayFormat = string(types.RelayFormatOpenAIResponses)
 	ev.Request = &req
 	ev.Identity = IdentityInput{
+		Scope:   ScopeCodexCLI,
 		Headers: reqObj.Header,
 		Body:    []byte(goldenResponsesInput),
 	}
@@ -280,7 +281,7 @@ func TestIntegrationContentPipelineTruncationWritesGapMarker(t *testing.T) {
 	ev.NodeScope = "t26-node"
 	ev.RelayFormat = string(types.RelayFormatOpenAI)
 	ev.Request = &req
-	ev.Identity = IdentityInput{Headers: reqObj.Header, Body: []byte(body)}
+	ev.Identity = IdentityInput{Scope: ScopeCodexCLI, Headers: reqObj.Header, Body: []byte(body)}
 	require.True(t, disp.TryEnqueue(&ev, total-1))
 
 	db := openFixturePool(t, dsn)
@@ -340,7 +341,7 @@ func TestIntegrationSessionOnlyAppendTracksIdentityWithoutContent(t *testing.T) 
 	ev.EventID = "t26-req-only"
 	ev.RelayFormat = string(types.RelayFormatOpenAI)
 	ev.Request = &req
-	ev.Identity = IdentityInput{Headers: reqObj.Header, Body: []byte(body)}
+	ev.Identity = IdentityInput{Scope: ScopeCodexCLI, Headers: reqObj.Header, Body: []byte(body)}
 	require.True(t, disp.TryEnqueue(&ev, 16))
 
 	db := openFixturePool(t, dsn)
@@ -388,6 +389,7 @@ func TestIntegrationSessionOnlyAppendMetadataOnly(t *testing.T) {
 	ev.EventID = "t26-req-meta"
 	// No request: the metadata-only outcome. Identity material still present.
 	ev.Identity = IdentityInput{
+		Scope:   ScopeCodexCLI,
 		Headers: http.Header{"X-Codex-Turn-Metadata": {`{"thread_id":"t26-thr-meta","session_id":"t26-ses-meta"}`}},
 	}
 	require.True(t, disp.TryEnqueue(&ev, 16))

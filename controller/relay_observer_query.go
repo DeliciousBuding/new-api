@@ -48,7 +48,6 @@ const (
 	relayObserverMaxNodeScopeLen = 64
 	relayObserverMaxCursorLen    = 512
 	relayObserverMaxNameLen      = 128
-	relayObserverMaxCountryLen   = 16
 	relayObserverMaxWindowSpan   = 31 * 24 * time.Hour
 	relayObserverMaxWindowSecs   = 3600
 	relayObserverMaxWindowCount  = 48
@@ -323,14 +322,6 @@ func parseSessionQuery(c *gin.Context) (relayobserver.SessionQuery, bool) {
 	if !ok {
 		return relayobserver.SessionQuery{}, false
 	}
-	country, ok := parseBoundedLenParam(c, "country", relayObserverMaxCountryLen)
-	if !ok {
-		return relayobserver.SessionQuery{}, false
-	}
-	asn, ok := parsePositiveInt64Param(c, "asn")
-	if !ok {
-		return relayobserver.SessionQuery{}, false
-	}
 	ip, ok := parseIPParam(c, "ip")
 	if !ok {
 		return relayobserver.SessionQuery{}, false
@@ -357,8 +348,6 @@ func parseSessionQuery(c *gin.Context) (relayobserver.SessionQuery, bool) {
 		ClientFamily: clientFamily,
 		Model:        model,
 		Success:      success,
-		Country:      country,
-		ASN:          asn,
 		IP:           ip,
 		IPTrust:      ipTrust,
 		From:         from,
@@ -526,6 +515,7 @@ type observerTurnDTO struct {
 	Quota            int64                          `json:"quota"`
 	Attempts         []relayobserver.AttemptSummary `json:"attempts"`
 	ContentState     string                         `json:"content_state"`
+	ClientProfile    string                         `json:"client_profile"`
 }
 
 type observerPageMetaDTO struct {
@@ -887,6 +877,7 @@ func observerTurnsDTO(items []relayobserver.TurnSummary) []observerTurnDTO {
 			Quota:            t.Quota,
 			Attempts:         t.Attempts,
 			ContentState:     t.ContentState,
+			ClientProfile:    t.ClientProfile,
 		}
 		if t.SessionID != nil {
 			sid := t.SessionID.String()
