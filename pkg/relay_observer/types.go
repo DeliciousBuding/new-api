@@ -152,6 +152,11 @@ const (
 	ReasonStoreInitFailed ReasonCode = "store_init_failed"
 	// ReasonSchemaMismatch marks a schema version mismatch at verify startup.
 	ReasonSchemaMismatch ReasonCode = "schema_mismatch"
+	// ReasonHMACKeyMissing marks an observer enabled without an HMAC key.
+	// Without the key the observer cannot derive session identity digests or
+	// verify reconstructed content, so it self-disables instead of running in
+	// a misleading metadata-only-but-healthy state.
+	ReasonHMACKeyMissing ReasonCode = "hmac_key_missing"
 	// ReasonCircuitOpen marks an open write circuit: batch writes keep failing
 	// and the worker pauses until the cooldown expires.
 	ReasonCircuitOpen ReasonCode = "circuit_open"

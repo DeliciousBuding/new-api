@@ -293,19 +293,20 @@ func (a dbtxAdapter) ExecContext(ctx context.Context, query string, args ...any)
 }
 
 // verifySchema performs the bounded startup schema check: the version table
-// must hold a complete known prefix ([1], [1,2], ..., [1..7]) awaiting
-// bootstrap, or [1..8] (current), and every required observer table must
-// exist. On the current version it also checks the v2 column and v4 alias
-// identity index so a schema whose version row lies about its structure is
-// rejected. It never runs DDL, scans data tables, or executes VACUUM.
+// must hold exactly the current [1..8] version list. Historical prefixes
+// ([1] .. [1..7]) are rejected — they are upgrade targets owned by bootstrap
+// mode, and running against them would silently miss the v4 alias identity
+// index or the v5-v8 performance indexes. Every required observer table must
+// exist, and the v2 column and v4 alias identity index are checked so a
+// schema whose version row lies about its structure is rejected. It never
+// runs DDL, scans data tables, or executes VACUUM.
 func verifySchema(ctx context.Context, db dbtx) error {
 	versions, err := readSchemaVersions(ctx, db)
 	if err != nil {
 		return fmt.Errorf("relayobserver: schema verify: %w", err)
 	}
-	current := isVersionListCurrent(versions)
-	if !current && !isVersionListV1(versions) && !isVersionListV2(versions) && !isVersionListV3(versions) && !isVersionListV4(versions) && !isVersionListV5(versions) && !isVersionListV6(versions) && !isVersionListV7(versions) {
-		return fmt.Errorf("relayobserver: schema verify: version mismatch: have %v, want a complete prefix of [1, 2, 3, 4, 5, 6, 7, 8]", versions)
+	if !isVersionListCurrent(versions) {
+		return fmt.Errorf("relayobserver: schema verify: version mismatch: have %v, want [1, 2, 3, 4, 5, 6, 7, 8]; run schema mode bootstrap to upgrade", versions)
 	}
 	missing, err := missingObserverTables(ctx, db)
 	if err != nil {
@@ -314,24 +315,22 @@ func verifySchema(ctx context.Context, db dbtx) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("relayobserver: schema verify: missing required tables %v", missing)
 	}
-	if current {
-		// The version row claims the current schema; the v2 column must
-		// actually exist, so a dropped column is caught here instead of
-		// failing the retention pass.
-		has, err := observerV2ColumnExists(ctx, db)
-		if err != nil {
-			return err
-		}
-		if !has {
-			return fmt.Errorf("relayobserver: schema verify: v2 column observer_content_objects.created_at is missing")
-		}
-		has, err = observerV4AliasIndexExists(ctx, db)
-		if err != nil {
-			return err
-		}
-		if !has {
-			return fmt.Errorf("relayobserver: schema verify: v4 provider-scoped alias identity index is missing")
-		}
+	// The version row claims the current schema; the v2 column must actually
+	// exist, so a dropped column is caught here instead of failing the
+	// retention pass.
+	has, err := observerV2ColumnExists(ctx, db)
+	if err != nil {
+		return err
+	}
+	if !has {
+		return fmt.Errorf("relayobserver: schema verify: v2 column observer_content_objects.created_at is missing")
+	}
+	has, err = observerV4AliasIndexExists(ctx, db)
+	if err != nil {
+		return err
+	}
+	if !has {
+		return fmt.Errorf("relayobserver: schema verify: v4 provider-scoped alias identity index is missing")
 	}
 	return nil
 }
@@ -359,13 +358,13 @@ func readSchemaVersions(ctx context.Context, db dbtx) ([]int, error) {
 }
 
 // isVersionListV1 reports whether versions is exactly the complete v1 state
-// [1], the schema that still awaits the v2 upgrade at bootstrap.
+// [1], the structure schema that still awaits the v2 upgrade at bootstrap.
 func isVersionListV1(versions []int) bool {
 	return len(versions) == 1 && versions[0] == observerSchemaV1
 }
 
 // isVersionListV2 reports whether versions is exactly the complete v2 state
-// [1, 2], the schema that still awaits the v3 upgrade at bootstrap.
+// [1, 2], the structure schema that still awaits the v3 upgrade at bootstrap.
 func isVersionListV2(versions []int) bool {
 	return len(versions) == 2 && versions[0] == observerSchemaV1 && versions[1] == observerSchemaV2
 }
@@ -597,13 +596,23 @@ func bootstrapSchemaTx(ctx context.Context, tx dbtx, tables map[string]bool, ver
 				return err
 			}
 		}
-	default:
-		// Existing observer tables that are not a complete older schema are
-		// never patched; the error disables the observer. A complete current
-		// schema passes verify and the bootstrap is an idempotent no-op.
+	case (isVersionListV5(versions) || isVersionListV6(versions) || isVersionListV7(versions)) && allRequiredTablesPresent(tables):
+		// Structure is complete; the remaining v5-v8 index upgrades run
+		// asynchronously, so there is no structure work here. This is a
+		// bootstrap no-op, mirroring verify mode's strict current-only rule:
+		// the index migrations — not bootstrap structure DDL — own v5-v7.
+	case isVersionListCurrent(versions):
+		// A complete current schema passes verify and the bootstrap is an
+		// idempotent no-op. The deep current-shape checks (v2 column, v4
+		// alias identity index) run here so a version row that lies about
+		// its structure is rejected.
 		if err := verifySchema(ctx, tx); err != nil {
 			return fmt.Errorf("relayobserver: schema bootstrap: existing schema is not complete: %w", err)
 		}
+	default:
+		// Partial, foreign, or otherwise mismatched schemas are never
+		// patched; the error disables the observer.
+		return fmt.Errorf("relayobserver: schema bootstrap: existing schema is not complete")
 	}
 	return nil
 }

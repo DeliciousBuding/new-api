@@ -168,10 +168,11 @@ func mustOpenTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// TestVersionListPredicates locks the schema version predicates: each complete
-// prefix [1..N] matches exactly one awaiting-upgrade predicate (v1..v7), and
-// the full [1..8] list is current. Every other list (empty, single foreign
-// version, out-of-order, extra versions) matches none.
+// TestVersionListPredicates locks the schema version predicates the bootstrap
+// and verify paths rely on: each structure prefix [1..N] (N=1..4) matches
+// exactly one awaiting-upgrade predicate, and the full [1..8] list is
+// current. Every other list (empty, single foreign version, out-of-order,
+// extra versions) matches none.
 func TestVersionListPredicates(t *testing.T) {
 	for _, tt := range []struct {
 		name     string
@@ -180,9 +181,6 @@ func TestVersionListPredicates(t *testing.T) {
 		v2       bool
 		v3       bool
 		v4       bool
-		v5       bool
-		v6       bool
-		v7       bool
 		current  bool
 	}{
 		{name: "empty", versions: nil},
@@ -191,22 +189,18 @@ func TestVersionListPredicates(t *testing.T) {
 		{name: "v1 and v2", versions: []int{1, 2}, v2: true},
 		{name: "v1 through v3", versions: []int{1, 2, 3}, v3: true},
 		{name: "v1 through v4", versions: []int{1, 2, 3, 4}, v4: true},
-		{name: "v1 through v5", versions: []int{1, 2, 3, 4, 5}, v5: true},
-		{name: "v1 through v6", versions: []int{1, 2, 3, 4, 5, 6}, v6: true},
-		{name: "v1 through v7", versions: []int{1, 2, 3, 4, 5, 6, 7}, v7: true},
+		{name: "v1 through v7", versions: []int{1, 2, 3, 4, 5, 6, 7}},
 		{name: "current v8", versions: []int{1, 2, 3, 4, 5, 6, 7, 8}, current: true},
 		{name: "unknown version", versions: []int{99}},
 		{name: "out of order", versions: []int{2, 1}},
 		{name: "duplicate", versions: []int{1, 1}},
+		{name: "extra version", versions: []int{1, 2, 3, 4, 5, 6, 7, 8, 9}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.v1, isVersionListV1(tt.versions))
 			assert.Equal(t, tt.v2, isVersionListV2(tt.versions))
 			assert.Equal(t, tt.v3, isVersionListV3(tt.versions))
 			assert.Equal(t, tt.v4, isVersionListV4(tt.versions))
-			assert.Equal(t, tt.v5, isVersionListV5(tt.versions))
-			assert.Equal(t, tt.v6, isVersionListV6(tt.versions))
-			assert.Equal(t, tt.v7, isVersionListV7(tt.versions))
 			assert.Equal(t, tt.current, isVersionListCurrent(tt.versions))
 		})
 	}
@@ -268,36 +262,13 @@ func versionRows(versions ...int) []*fakeRow {
 	return rows
 }
 
-// TestVerifySchemaBranches locks every verifySchema branch: complete v1-v7
-// prefixes and current v8 pass; foreign/empty/extra version lists are
-// rejected, and a current schema missing its v2 column or v4 alias identity
-// index is rejected.
+// TestVerifySchemaBranches locks every verifySchema branch: only the current
+// [1..8] version list passes; historical prefixes and foreign/empty/extra
+// version lists are rejected (they must be upgraded via bootstrap mode), and
+// a current schema missing a required table, its v2 column, or its v4 alias
+// identity index is rejected.
 func TestVerifySchemaBranches(t *testing.T) {
 	ctx := context.Background()
-	t.Run("complete v1 passes", func(t *testing.T) {
-		fx := &fakeDbtx{versions: versionRows(1), tables: allTables()}
-		require.NoError(t, verifySchema(ctx, fx))
-	})
-	t.Run("complete v2 passes", func(t *testing.T) {
-		fx := &fakeDbtx{versions: versionRows(1, 2), tables: allTables()}
-		require.NoError(t, verifySchema(ctx, fx))
-	})
-	t.Run("complete v3 passes", func(t *testing.T) {
-		fx := &fakeDbtx{versions: versionRows(1, 2, 3), tables: allTables()}
-		require.NoError(t, verifySchema(ctx, fx))
-	})
-	t.Run("complete v4 passes", func(t *testing.T) {
-		fx := &fakeDbtx{versions: versionRows(1, 2, 3, 4), tables: allTables()}
-		require.NoError(t, verifySchema(ctx, fx))
-	})
-	t.Run("complete v5 passes", func(t *testing.T) {
-		fx := &fakeDbtx{versions: versionRows(1, 2, 3, 4, 5), tables: allTables()}
-		require.NoError(t, verifySchema(ctx, fx))
-	})
-	t.Run("complete v6 passes", func(t *testing.T) {
-		fx := &fakeDbtx{versions: versionRows(1, 2, 3, 4, 5, 6), tables: allTables()}
-		require.NoError(t, verifySchema(ctx, fx))
-	})
 	t.Run("current v8 passes", func(t *testing.T) {
 		fx := &fakeDbtx{
 			versions:        versionRows(1, 2, 3, 4, 5, 6, 7, 8),
@@ -306,6 +277,23 @@ func TestVerifySchemaBranches(t *testing.T) {
 			hasV4AliasIndex: true,
 		}
 		require.NoError(t, verifySchema(ctx, fx))
+	})
+	t.Run("historical prefixes rejected", func(t *testing.T) {
+		for _, versions := range [][]int{
+			{1},
+			{1, 2},
+			{1, 2, 3},
+			{1, 2, 3, 4},
+			{1, 2, 3, 4, 5},
+			{1, 2, 3, 4, 5, 6},
+			{1, 2, 3, 4, 5, 6, 7},
+		} {
+			fx := &fakeDbtx{versions: versionRows(versions...), tables: allTables()}
+			err := verifySchema(ctx, fx)
+			require.Error(t, err, "versions %v", versions)
+			assert.Contains(t, err.Error(), "version mismatch", "versions %v", versions)
+			assert.Contains(t, err.Error(), "bootstrap", "versions %v must direct to bootstrap mode", versions)
+		}
 	})
 	t.Run("version mismatch rejected", func(t *testing.T) {
 		for _, versions := range [][]int{nil, {2}, {99}, {1, 2, 3, 4, 5, 7}, {1, 2, 3, 4, 5, 6, 6}, {2, 1}} {
@@ -316,7 +304,7 @@ func TestVerifySchemaBranches(t *testing.T) {
 		}
 	})
 	t.Run("missing table rejected", func(t *testing.T) {
-		fx := &fakeDbtx{versions: versionRows(1), tables: allTables()[:5]}
+		fx := &fakeDbtx{versions: versionRows(1, 2, 3, 4, 5, 6, 7, 8), tables: allTables()[:5]}
 		err := verifySchema(ctx, fx)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "missing required tables")
