@@ -57,6 +57,42 @@ func TestProcessHeaderOverride_ChannelTestSkipsClientHeaderPlaceholder(t *testin
 	require.False(t, ok)
 }
 
+func TestProcessHeaderOverride_ChannelTestAppliesStaticOverrides(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ctx.Request.Header.Set("X-Trace-Id", "trace-123")
+
+	info := &relaycommon.RelayInfo{
+		IsChannelTest: true,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ApiKey: "channel-test-api-key",
+			HeadersOverride: map[string]any{
+				"User-Agent":       "channel-test-client/1.0",
+				"X-Client-Profile": "stable-profile",
+				"X-Auth-Full":      "{api_key}",
+				"X-Auth-Bearer":    "Bearer {api_key}",
+				"X-Empty":          "",
+				"X-Trace-Forward":  "{client_header:X-Trace-Id}",
+				"*":                "",
+			},
+		},
+	}
+
+	headers, err := processHeaderOverride(info, ctx)
+	require.NoError(t, err)
+	require.Equal(t, "channel-test-client/1.0", headers["user-agent"])
+	require.Equal(t, "stable-profile", headers["x-client-profile"])
+	require.Equal(t, "channel-test-api-key", headers["x-auth-full"])
+	require.Equal(t, "Bearer channel-test-api-key", headers["x-auth-bearer"])
+	require.NotContains(t, headers, "x-empty")
+	require.NotContains(t, headers, "x-trace-forward")
+	require.NotContains(t, headers, "x-trace-id")
+}
+
 func TestProcessHeaderOverride_NonTestKeepsClientHeaderPlaceholder(t *testing.T) {
 	t.Parallel()
 
