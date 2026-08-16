@@ -104,6 +104,9 @@ func relayObserverQueryError(c *gin.Context, op string, err error) {
 		case relayobserver.QueryErrTimeout:
 			writeRelayObserverDegraded(c, "timeout", "the observer query timed out")
 			return
+		case relayobserver.QueryErrResultTooLarge:
+			writeRelayObserverDegraded(c, "unavailable", "the observer query result exceeded its bounds")
+			return
 		}
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
