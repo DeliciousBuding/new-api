@@ -168,11 +168,9 @@ func mustOpenTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// TestVersionListPredicates locks the schema version predicates: exactly [1]
-// is the complete v1 state awaiting upgrade, exactly [1,2] is the complete v2
-// state awaiting upgrade, exactly [1,2,3] is the complete v3 state awaiting
-// upgrade, exactly [1,2,3,4] is the complete v4 state awaiting upgrade, and
-// exactly [1,2,3,4,5] is current. Every other list (empty, single foreign
+// TestVersionListPredicates locks the schema version predicates: each complete
+// prefix [1..N] matches exactly one awaiting-upgrade predicate (v1..v7), and
+// the full [1..8] list is current. Every other list (empty, single foreign
 // version, out-of-order, extra versions) matches none.
 func TestVersionListPredicates(t *testing.T) {
 	for _, tt := range []struct {
@@ -184,6 +182,7 @@ func TestVersionListPredicates(t *testing.T) {
 		v4       bool
 		v5       bool
 		v6       bool
+		v7       bool
 		current  bool
 	}{
 		{name: "empty", versions: nil},
@@ -194,7 +193,8 @@ func TestVersionListPredicates(t *testing.T) {
 		{name: "v1 through v4", versions: []int{1, 2, 3, 4}, v4: true},
 		{name: "v1 through v5", versions: []int{1, 2, 3, 4, 5}, v5: true},
 		{name: "v1 through v6", versions: []int{1, 2, 3, 4, 5, 6}, v6: true},
-		{name: "current v7", versions: []int{1, 2, 3, 4, 5, 6, 7}, current: true},
+		{name: "v1 through v7", versions: []int{1, 2, 3, 4, 5, 6, 7}, v7: true},
+		{name: "current v8", versions: []int{1, 2, 3, 4, 5, 6, 7, 8}, current: true},
 		{name: "unknown version", versions: []int{99}},
 		{name: "out of order", versions: []int{2, 1}},
 		{name: "duplicate", versions: []int{1, 1}},
@@ -206,6 +206,7 @@ func TestVersionListPredicates(t *testing.T) {
 			assert.Equal(t, tt.v4, isVersionListV4(tt.versions))
 			assert.Equal(t, tt.v5, isVersionListV5(tt.versions))
 			assert.Equal(t, tt.v6, isVersionListV6(tt.versions))
+			assert.Equal(t, tt.v7, isVersionListV7(tt.versions))
 			assert.Equal(t, tt.current, isVersionListCurrent(tt.versions))
 		})
 	}
@@ -267,8 +268,8 @@ func versionRows(versions ...int) []*fakeRow {
 	return rows
 }
 
-// TestVerifySchemaBranches locks every verifySchema branch: complete v1-v6
-// prefixes and current v7 pass; foreign/empty/extra version lists are
+// TestVerifySchemaBranches locks every verifySchema branch: complete v1-v7
+// prefixes and current v8 pass; foreign/empty/extra version lists are
 // rejected, and a current schema missing its v2 column or v4 alias identity
 // index is rejected.
 func TestVerifySchemaBranches(t *testing.T) {
@@ -297,9 +298,9 @@ func TestVerifySchemaBranches(t *testing.T) {
 		fx := &fakeDbtx{versions: versionRows(1, 2, 3, 4, 5, 6), tables: allTables()}
 		require.NoError(t, verifySchema(ctx, fx))
 	})
-	t.Run("current v7 passes", func(t *testing.T) {
+	t.Run("current v8 passes", func(t *testing.T) {
 		fx := &fakeDbtx{
-			versions:        versionRows(1, 2, 3, 4, 5, 6, 7),
+			versions:        versionRows(1, 2, 3, 4, 5, 6, 7, 8),
 			tables:          allTables(),
 			hasV2Col:        true,
 			hasV4AliasIndex: true,
@@ -323,7 +324,7 @@ func TestVerifySchemaBranches(t *testing.T) {
 	})
 	t.Run("missing v2 column rejected", func(t *testing.T) {
 		fx := &fakeDbtx{
-			versions:        versionRows(1, 2, 3, 4, 5, 6, 7),
+			versions:        versionRows(1, 2, 3, 4, 5, 6, 7, 8),
 			tables:          allTables(),
 			hasV2Col:        false,
 			hasV4AliasIndex: true,
@@ -334,7 +335,7 @@ func TestVerifySchemaBranches(t *testing.T) {
 	})
 	t.Run("missing v4 alias index rejected", func(t *testing.T) {
 		fx := &fakeDbtx{
-			versions:        versionRows(1, 2, 3, 4, 5, 6, 7),
+			versions:        versionRows(1, 2, 3, 4, 5, 6, 7, 8),
 			tables:          allTables(),
 			hasV2Col:        true,
 			hasV4AliasIndex: false,

@@ -45,9 +45,10 @@ const (
 	observerSchemaV5 = 5
 	observerSchemaV6 = 6
 	observerSchemaV7 = 7
+	observerSchemaV8 = 8
 	// observerSchemaCurrent is the newest schema version; keep it in sync
 	// when an index migration is appended.
-	observerSchemaCurrent = observerSchemaV7
+	observerSchemaCurrent = observerSchemaV8
 
 	// observerSchemaLockKey is the fixed advisory-lock key serializing
 	// concurrent bootstrap attempts against the same database.
@@ -99,7 +100,11 @@ type observerIndexMigration struct {
 // row only after the index actually exists. v5 adds the transcript access-
 // path index (session_id, id); v6 adds the turn_id lookup index used by the
 // append idempotency probe and the turn-context read; v7 adds the
-// content_state index used by the overview gap count.
+// content_state index used by the overview gap count; v8 adds the
+// (session_id, occurred_at DESC, id DESC) composite index that serves the turn
+// list query (WHERE session_id ORDER BY occurred_at DESC) directly, avoiding
+// an occurred_at-index reverse scan plus filter that was ~1.3s on the
+// production table.
 var observerIndexMigrations = []observerIndexMigration{
 	{
 		name:       "idx_observer_contexts_session_id_id",
@@ -115,6 +120,11 @@ var observerIndexMigrations = []observerIndexMigration{
 		name:       "idx_observer_turns_content_state",
 		createStmt: "CREATE INDEX CONCURRENTLY idx_observer_turns_content_state ON observer_turns (content_state)",
 		version:    observerSchemaV7,
+	},
+	{
+		name:       "idx_observer_turns_session_id_occurred_at",
+		createStmt: "CREATE INDEX CONCURRENTLY idx_observer_turns_session_id_occurred_at ON observer_turns (session_id, occurred_at DESC, id DESC)",
+		version:    observerSchemaV8,
 	},
 }
 
@@ -283,8 +293,8 @@ func (a dbtxAdapter) ExecContext(ctx context.Context, query string, args ...any)
 }
 
 // verifySchema performs the bounded startup schema check: the version table
-// must hold a complete known prefix ([1], [1,2], ..., [1..6]) awaiting
-// bootstrap, or [1..7] (current), and every required observer table must
+// must hold a complete known prefix ([1], [1,2], ..., [1..7]) awaiting
+// bootstrap, or [1..8] (current), and every required observer table must
 // exist. On the current version it also checks the v2 column and v4 alias
 // identity index so a schema whose version row lies about its structure is
 // rejected. It never runs DDL, scans data tables, or executes VACUUM.
@@ -294,8 +304,8 @@ func verifySchema(ctx context.Context, db dbtx) error {
 		return fmt.Errorf("relayobserver: schema verify: %w", err)
 	}
 	current := isVersionListCurrent(versions)
-	if !current && !isVersionListV1(versions) && !isVersionListV2(versions) && !isVersionListV3(versions) && !isVersionListV4(versions) && !isVersionListV5(versions) && !isVersionListV6(versions) {
-		return fmt.Errorf("relayobserver: schema verify: version mismatch: have %v, want a complete prefix of [1, 2, 3, 4, 5, 6, 7]", versions)
+	if !current && !isVersionListV1(versions) && !isVersionListV2(versions) && !isVersionListV3(versions) && !isVersionListV4(versions) && !isVersionListV5(versions) && !isVersionListV6(versions) && !isVersionListV7(versions) {
+		return fmt.Errorf("relayobserver: schema verify: version mismatch: have %v, want a complete prefix of [1, 2, 3, 4, 5, 6, 7, 8]", versions)
 	}
 	missing, err := missingObserverTables(ctx, db)
 	if err != nil {
@@ -384,10 +394,16 @@ func isVersionListV6(versions []int) bool {
 	return len(versions) == 6 && versions[0] == observerSchemaV1 && versions[1] == observerSchemaV2 && versions[2] == observerSchemaV3 && versions[3] == observerSchemaV4 && versions[4] == observerSchemaV5 && versions[5] == observerSchemaV6
 }
 
-// isVersionListCurrent reports whether versions is exactly the current state
-// [1, 2, 3, 4, 5, 6, 7].
-func isVersionListCurrent(versions []int) bool {
+// isVersionListV7 reports whether versions is exactly the v7 state
+// [1, 2, 3, 4, 5, 6, 7], which still awaits the v8 index upgrade.
+func isVersionListV7(versions []int) bool {
 	return len(versions) == 7 && versions[0] == observerSchemaV1 && versions[1] == observerSchemaV2 && versions[2] == observerSchemaV3 && versions[3] == observerSchemaV4 && versions[4] == observerSchemaV5 && versions[5] == observerSchemaV6 && versions[6] == observerSchemaV7
+}
+
+// isVersionListCurrent reports whether versions is exactly the current state
+// [1, 2, 3, 4, 5, 6, 7, 8].
+func isVersionListCurrent(versions []int) bool {
+	return len(versions) == 8 && versions[0] == observerSchemaV1 && versions[1] == observerSchemaV2 && versions[2] == observerSchemaV3 && versions[3] == observerSchemaV4 && versions[4] == observerSchemaV5 && versions[5] == observerSchemaV6 && versions[6] == observerSchemaV7 && versions[7] == observerSchemaV8
 }
 
 // observerV2ColumnExists reports whether the v2 created_at column exists on
