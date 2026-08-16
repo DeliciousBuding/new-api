@@ -9,6 +9,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func makePNG(t *testing.T, w, h int) []byte {
@@ -114,4 +118,24 @@ func TestPrepareImageBase64(t *testing.T) {
 	if bigImg.Err == nil || !strings.Contains(bigImg.Err.Error(), "size") {
 		t.Fatalf("oversized base64 should be rejected in precheck, got %v", bigImg.Err)
 	}
+}
+
+func TestPrepareImageExpiredDeadlineStopsBeforeBase64Acquisition(t *testing.T) {
+	expiredContext, cancelContext := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	t.Cleanup(cancelContext)
+
+	patch := Patch{
+		Path:  "messages.0.content.0",
+		Index: 1,
+		Source: ImageSource{
+			Data:      "QUJD",
+			MediaType: "image/png",
+		},
+	}
+	preparedImage := PrepareImage(expiredContext, patch, nil, MaxDecodedBytes)
+
+	require.ErrorIs(t, preparedImage.Err, context.DeadlineExceeded)
+	assert.Empty(t, preparedImage.Data)
+	assert.Empty(t, preparedImage.Digest)
+	assert.Equal(t, EnumTimeout, enumFromErr(preparedImage.Err))
 }

@@ -11,9 +11,9 @@ import (
 )
 
 // 进程级并发闸（门槛四）：容量固定为常量（v0.2.1——不热调整）。
-// 解码/压缩（内存大户）与旁路调用（网络）分闸：decode gate 容量 2，
-// call gate 容量 8——图像处理内存峰值可控（v0.2.2 修复：CompressForVision
-// 的 image.Decode/resize/JPEG encode 必须真正在 decode gate 内执行）。
+// 图片字节获取/digest 准备不占 decode gate；只有 DecodeConfig、完整解码、
+// resize 和重编码（内存大户）占用容量 2 的 decode gate。旁路调用使用独立的
+// call gate（容量 8），避免慢下载或 HTTP 调用占用图像处理内存槽。
 type processGate struct {
 	ch chan struct{}
 }
@@ -51,8 +51,8 @@ type Engine struct {
 
 // Enhance 一次请求的完整增强（事务由调用方保证）：
 //
-//	Discover（协议路径扫描）→ Prepare（MaxImages 前置 + 解码/下载/校验）
-//	→ digest 分组去重 → 有界并发（decode gate 内压缩 + call gate 内 HTTP）
+//	Discover（协议路径扫描）→ Prepare（MaxImages 前置 + base64/远程获取 + digest）
+//	→ digest 分组去重 → 有界并发（decode gate 内解码/压缩 + call gate 内 HTTP）
 //	→ 严格截断 → Apply（sjson 局部替换）
 //
 // 请求级总 deadline 由调用方通过 ctx 传入（v0.2.2：fetch/decode/call/fallback
@@ -72,7 +72,9 @@ func (e *Engine) Enhance(ctx context.Context, raw []byte, format Format, cfg Con
 	}
 
 	// 2. prepare：**MaxImages 前置**（v0.2.2：第 MaxImages 张以后的图不下载、
-	//    不解码、不计算 digest——直接 image_limit 占位，限制前置网络与内存消耗）
+	//    不解码 base64、不计算 digest——直接 image_limit 占位）。字节获取与
+	//    digest 准备保持串行，但必须在全局 decode gate 外；该 gate 只保护后续
+	//    CompressForVision 中的图像解析、完整解码、resize 和重编码。
 	images := make([]*PatchedImage, 0, min(len(patches), MaxImages))
 	for i := range patches {
 		if i >= MaxImages {
@@ -81,16 +83,7 @@ func (e *Engine) Enhance(ctx context.Context, raw []byte, format Format, cfg Con
 			recordFailure(stats, EnumImageLimit, img)
 			continue
 		}
-		gateCh, err := globalDecodeGate.acquire(ctx)
-		if err != nil {
-			// 闸等待失败（ctx 取消/超时）→ 占位；deadline 耗尽须如实记 timeout
-			img := &PatchedImage{Patch: patches[i], Err: err}
-			images = append(images, img)
-			recordFailure(stats, gateErrEnum(err), img)
-			continue
-		}
 		img := PrepareImage(ctx, patches[i], e.Fetcher, MaxDecodedBytes)
-		globalDecodeGate.release(gateCh)
 		images = append(images, img)
 		if img.Err != nil {
 			recordFailure(stats, enumFromErr(img.Err), img)

@@ -59,7 +59,7 @@ func enumFromErr(err error) string {
 	switch {
 	case err == nil:
 		return EnumServiceUnavailable
-	case errors.Is(err, ErrTimeout):
+	case errors.Is(err, ErrTimeout) || errors.Is(err, context.DeadlineExceeded):
 		return EnumTimeout
 	case errors.Is(err, ErrAuth):
 		return EnumAuthError
