@@ -1048,8 +1048,11 @@ func (d *Dispatcher) runRetention() {
 // records the completion time whether the pass succeeded or failed.
 func (d *Dispatcher) retentionPass() {
 	start := d.clock.Now()
-	turnCutoff := start.Add(-retentionDays(d.cfg.RetentionTurnDays))
-	contentCutoff := start.Add(-retentionDays(d.cfg.RetentionContentDays))
+	// Resolve retention days through the hot-reloadable runtime snapshot so an
+	// operator can retune them via the DB option without a restart.
+	tunable := GetRuntimeTunable(d.cfg)
+	turnCutoff := start.Add(-retentionDays(tunable.RetentionTurnDays))
+	contentCutoff := start.Add(-retentionDays(tunable.RetentionContentDays))
 
 	// Segment 1/3: expired turns, bounded by the SSOT limit.
 	if err := d.retentionTurnsSegment(turnCutoff); err != nil {

@@ -712,7 +712,7 @@ func TestQuerySurfaceSeamCalledWithoutLock(t *testing.T) {
 	rt := NewRuntime()
 	rt.mu.Lock()
 	rt.state = stateEnabled
-	rt.queryTimeout = time.Second
+	rt.cfg.QueryTimeout = time.Second
 	rt.queryStore = fakeQueryStore{}
 	rt.mu.Unlock()
 

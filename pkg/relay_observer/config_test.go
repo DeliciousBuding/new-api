@@ -309,6 +309,57 @@ func TestConfigParseDoesNotAffectNeighbors(t *testing.T) {
 	assert.Equal(t, def.RetentionContentDays, cfg.RetentionContentDays)
 }
 
+// TestGetRuntimeTunableHotReload verifies the hot-reloadable runtime snapshot:
+// each field resolves from the DB option at call time, overrides the startup
+// Config fallback, falls back on empty/invalid values, and clamps to bounds.
+func TestGetRuntimeTunableHotReload(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.QueryTimeout = 800 * time.Millisecond
+	cfg.RetentionTurnDays = 30
+	cfg.RetentionContentDays = 14
+	prev := common.OptionMap
+	t.Cleanup(func() { common.OptionMap = prev })
+
+	t.Run("empty options fall back to config", func(t *testing.T) {
+		common.OptionMap = map[string]string{}
+		tunable := GetRuntimeTunable(cfg)
+		assert.Equal(t, cfg.QueryTimeout, tunable.QueryTimeout)
+		assert.Equal(t, cfg.RetentionTurnDays, tunable.RetentionTurnDays)
+		assert.Equal(t, cfg.RetentionContentDays, tunable.RetentionContentDays)
+	})
+	t.Run("valid options hot-reload", func(t *testing.T) {
+		common.OptionMap = map[string]string{
+			"relay_observer.query_timeout_ms":       "2000",
+			"relay_observer.retention_turn_days":    "7",
+			"relay_observer.retention_content_days": "3",
+		}
+		tunable := GetRuntimeTunable(cfg)
+		assert.Equal(t, 2*time.Second, tunable.QueryTimeout)
+		assert.Equal(t, 7, tunable.RetentionTurnDays)
+		assert.Equal(t, 3, tunable.RetentionContentDays)
+	})
+	t.Run("invalid options fall back", func(t *testing.T) {
+		common.OptionMap = map[string]string{
+			"relay_observer.query_timeout_ms":    "not-a-number",
+			"relay_observer.retention_turn_days": "also-bad",
+		}
+		tunable := GetRuntimeTunable(cfg)
+		assert.Equal(t, cfg.QueryTimeout, tunable.QueryTimeout)
+		assert.Equal(t, cfg.RetentionTurnDays, tunable.RetentionTurnDays)
+	})
+	t.Run("above max clamps", func(t *testing.T) {
+		common.OptionMap = map[string]string{
+			"relay_observer.query_timeout_ms":       "99999",
+			"relay_observer.retention_turn_days":    "999999",
+			"relay_observer.retention_content_days": "999999",
+		}
+		tunable := GetRuntimeTunable(cfg)
+		assert.Equal(t, MaxQueryTimeout, tunable.QueryTimeout)
+		assert.Equal(t, MaxRetentionDays, tunable.RetentionTurnDays)
+		assert.Equal(t, MaxRetentionDays, tunable.RetentionContentDays)
+	})
+}
+
 // TestConfigOutputRedactsSecrets constructs a Config holding unique sentinel
 // secrets and asserts that no serialization or formatting view leaks them:
 // common.Marshal (JSON), fmt.Sprintf("%s"/"%v"/"%+v") (Stringer), and
