@@ -83,7 +83,6 @@ Claude `system[]` 和 Responses `instructions[]` 中的图片当前会在原高�
 - 结构化输出缺少 strict quality gate，格式损坏不会触发 fallback，也可能进入缓存。
 - 图片增强发生在 token estimate/pre-consume 之后，最终计费 fallback 可能仍使用原图片请求估算；图片数量边界也晚于 token counter 的远程抓取。
 - 远程下载在获取全局 decode gate 后执行；慢 URL 会占用内存解码槽，且请求内准备当前串行。
-- PNG/JPEG passthrough 使用客户端或 HTTP 声明的 MIME，而不是 `DecodeConfig` 的实际格式；错误声明可能把正确字节发送成错误 data URL。
 - 设置页逐键保存且业务失败不会可靠 reject mutation，缺少完整 prospective snapshot 校验和明确 secret keep/set/clear 语义。
 - cache identity 未包含 provider/model/render-contract 版本，也没有 singleflight、独立开关或 TTL 配置。
 - 纯核心包的“只依赖标准库/x-image/gjson/sjson”边界与项目级“业务 JSON 一律走 `common.*`”规则存在张力；在明确例外或抽象 port 前，不应继续扩散直接 `encoding/json` 调用。

@@ -1,7 +1,6 @@
 package model_setting
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -340,7 +339,7 @@ func ValidateVisionRelayWrite(key, value string) error {
 			return nil
 		}
 		var arr []string
-		if err := json.Unmarshal(common.StringToByteSlice(value), &arr); err != nil {
+		if err := common.UnmarshalJsonStr(value, &arr); err != nil {
 			return fmt.Errorf("%s: must be a JSON array of strings: %w", key, err)
 		}
 		return nil
