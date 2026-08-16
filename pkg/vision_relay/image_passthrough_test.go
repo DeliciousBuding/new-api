@@ -49,6 +49,62 @@ func TestCompressPNGAndJPEGStillPassthrough(t *testing.T) {
 	assert.True(t, bytes.Equal(jpegOut, jpegBuf.Bytes()), "小 jpeg 应原样透传")
 }
 
+func TestCompressMismatchedPNGAndJPEGDeclarationsReencodeToJPEG(t *testing.T) {
+	sourceImage := image.NewRGBA(image.Rect(0, 0, 64, 48))
+	for rowIndex := 0; rowIndex < sourceImage.Bounds().Dy(); rowIndex++ {
+		for columnIndex := 0; columnIndex < sourceImage.Bounds().Dx(); columnIndex++ {
+			sourceImage.SetRGBA(columnIndex, rowIndex, color.RGBA{
+				R: uint8((columnIndex*5 + rowIndex*3) % 256),
+				G: uint8((columnIndex*2 + rowIndex*7) % 256),
+				B: uint8((columnIndex*11 + rowIndex) % 256),
+				A: 255,
+			})
+		}
+	}
+
+	var pngBuffer bytes.Buffer
+	require.NoError(t, png.Encode(&pngBuffer, sourceImage))
+	var jpegBuffer bytes.Buffer
+	require.NoError(t, jpeg.Encode(&jpegBuffer, sourceImage, &jpeg.Options{Quality: 90}))
+
+	testCases := []struct {
+		name              string
+		sourceBytes       []byte
+		actualFormat      string
+		declaredMediaType string
+	}{
+		{
+			name:              "PNG bytes declared as JPEG",
+			sourceBytes:       append([]byte(nil), pngBuffer.Bytes()...),
+			actualFormat:      "png",
+			declaredMediaType: "image/jpeg",
+		},
+		{
+			name:              "JPEG bytes declared as PNG",
+			sourceBytes:       append([]byte(nil), jpegBuffer.Bytes()...),
+			actualFormat:      "jpeg",
+			declaredMediaType: "image/png",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, sourceFormat, err := image.DecodeConfig(bytes.NewReader(testCase.sourceBytes))
+			require.NoError(t, err)
+			assert.Equal(t, testCase.actualFormat, sourceFormat)
+
+			outputBytes, outputMediaType, err := CompressForVision(testCase.sourceBytes, testCase.declaredMediaType)
+			require.NoError(t, err)
+			assert.Equal(t, "image/jpeg", outputMediaType)
+			assert.False(t, bytes.Equal(testCase.sourceBytes, outputBytes), "mismatched declarations must trigger JPEG re-encoding")
+
+			_, outputFormat, err := image.DecodeConfig(bytes.NewReader(outputBytes))
+			require.NoError(t, err)
+			assert.Equal(t, "jpeg", outputFormat)
+		})
+	}
+}
+
 // mediaType 带参数（如 Content-Type 的 "image/webp; charset=..."）也要能正确
 // 归一化后判定：非 png/jpeg 仍转 JPEG。
 func TestCompressMimeWithParametersConverts(t *testing.T) {

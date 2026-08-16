@@ -61,8 +61,9 @@ func PrepareImage(ctx context.Context, p Patch, fetcher ImageFetcher, maxBytes i
 		}
 		img.Data = data
 		if mediaType != "" {
-			// 回填真实 Content-Type：OpenAI URL 块默认 image/png（transform.go），
-			// 实际可能是 JPEG/WebP——小图透传分支按真实 mime 发给视觉端点。
+			// 回填上游 Content-Type：OpenAI URL 块默认 image/png（transform.go），
+			// 实际响应可能声明 JPEG/WebP。CompressForVision 会再用实际字节格式
+			// 复核，只有声明与字节一致的 PNG/JPEG 小图才原样透传。
 			// 必须写到 img.Patch（存储的副本）而非局部参数 p：p 是值拷贝，
 			// 改 p.Source 会让下游 CompressForVision 永远看到默认 image/png。
 			img.Patch.Source.MediaType = mediaType
@@ -90,9 +91,9 @@ func descriptionCacheKey(digest, instruction string) string {
 }
 
 // CompressForVision 像素校验 + 压缩（必须在解码并发闸内调用）：
-//  1. DecodeConfig 只读头校验（宽/高/像素，超限拒绝——解压炸弹防线，
+//  1. DecodeConfig 只读头校验（宽/高/像素和实际格式，超限拒绝——解压炸弹防线，
 //     不触发完整 Decode）
-//  2. 小图原样发送（≤2000px 且 ≤1.5MB；小 PNG 无损保留）
+//  2. 声明 MIME 与实际格式一致的小图原样发送（≤2000px 且 ≤1.5MB；小 PNG 无损保留）
 //  3. 大图降采样/转 JPEG（对齐客户端压缩策略 2000px/1.5MB）
 //
 // 不处理 EXIF 旋转（审核 A7：标准库不自动转正，阶段 1 明确不处理）。
@@ -101,7 +102,7 @@ func CompressForVision(data []byte, mediaType string) ([]byte, string, error) {
 		return nil, "", ErrUnsupported
 	}
 	// ① 只读头：像素/尺寸校验（完整 Decode 之前）
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	cfg, actualFormat, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
 		return nil, "", ErrUnsupported
 	}
@@ -116,16 +117,25 @@ func CompressForVision(data []byte, mediaType string) ([]byte, string, error) {
 	//    实测 Cerebras 渠道不支持 image/webp）
 	const targetPx = 2000
 	const targetEnc = 1500 * 1024
-	passthroughMime := strings.ToLower(mediaType)
-	if idx := strings.IndexByte(passthroughMime, ';'); idx >= 0 {
-		passthroughMime = strings.TrimSpace(passthroughMime[:idx])
+	declaredMediaType := strings.TrimSpace(strings.ToLower(mediaType))
+	if parameterIndex := strings.IndexByte(declaredMediaType, ';'); parameterIndex >= 0 {
+		declaredMediaType = strings.TrimSpace(declaredMediaType[:parameterIndex])
 	}
-	if (passthroughMime == "image/png" || passthroughMime == "image/jpeg") &&
+	actualMediaType := ""
+	switch actualFormat {
+	case "png":
+		actualMediaType = "image/png"
+	case "jpeg":
+		actualMediaType = "image/jpeg"
+	}
+	declarationMatchesBytes := actualMediaType != "" && declaredMediaType == actualMediaType
+	if declarationMatchesBytes &&
 		int64(cfg.Width) <= targetPx && int64(cfg.Height) <= targetPx &&
-		int64(len(data)) <= targetEnc && !(passthroughMime == "image/png" && int64(len(data)) > 300*1024) {
-		return data, passthroughMime, nil
+		int64(len(data)) <= targetEnc && !(actualMediaType == "image/png" && int64(len(data)) > 300*1024) {
+		return data, actualMediaType, nil
 	}
-	// ③ 完整解码 + 降采样 + JPEG（质量阶梯 85→30，目标 ≤1.5MB）
+	// ③ 完整解码 + 降采样 + JPEG（质量阶梯 85→30，目标 ≤1.5MB）。声明
+	// MIME 与实际字节不一致时也走此路径，确保输出 MIME 与输出字节一致。
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, "", ErrUnsupported
