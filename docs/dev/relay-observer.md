@@ -79,15 +79,12 @@ store 失败和 timeout 使用 HTTP 200 degraded envelope 表达可观测系统�
 
 以下是 2026-08-16 对当前实现确认的高优先级缺口，不属于已兑现能力：
 
-- pending content append 只有事件数上限、没有字节上限，持续失败时可能保留数 GiB 内容；重试依赖后续 metadata flush，空闲和关闭路径缺少完整核算。
-- transcript 超过 5,000 contexts 时当前查询保留最旧窗口而非最新窗口；flatten 在分页前构造全部引用，缺少 item/byte 硬上限。
-- retention 每六小时只处理一个小批次，最大清理吞吐低于普通网关流量，且没有 backlog age/count 指标。
 - Session scope 与 `DetectClientProfile` 分别解析同一组 header，分类矩阵已经发生漂移；应由请求路径 profile 统一映射 scope。
 - country/ASN 查询维度已暴露，但生产事件没有 GeoIP enrichment；per-turn client profile 已落库但尚未进入 API DTO。
 
 ## 配置所有权
 
-启动时固定配置来自 `RELAY_OBSERVER_*` 环境变量：enabled、独立 DSN、schema mode、HMAC key/current version、previous key/version、IP opt-in、队列/捕获限制、batch/flush/write/query/retention budget 和默认保留期。解析失败会禁用 Observer，不会阻止进程启动。
+启动时固定配置来自 `RELAY_OBSERVER_*` 环境变量：enabled、独立 DSN、schema mode、HMAC key/current version、previous key/version、IP opt-in、队列/捕获/pending append 限制、batch/flush/write/query/retention budget 和默认保留期。解析失败会禁用 Observer，不会阻止进程启动。`RELAY_OBSERVER_PENDING_APPEND_BYTES` 限制 worker 保留的规范化内容字节数，超限内容降级为 metadata-only。
 
 只有以下运行参数通过 options 热更新，并在每个使用点重新读取：
 

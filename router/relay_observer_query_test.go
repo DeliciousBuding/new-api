@@ -373,6 +373,32 @@ func TestRelayObserverDegradedUnavailable(t *testing.T) {
 	assert.NotContains(t, bodyText, "postgres://")
 }
 
+func TestRelayObserverTranscriptLimitDegraded(t *testing.T) {
+	engine, rootToken, _, _ := relayObserverTestEnv(t)
+	limitError := &relayobserver.QueryError{
+		Kind: relayobserver.QueryErrResultTooLarge,
+		Msg:  "transcript flatten item limit exceeded",
+	}
+	injectObserverRuntime(t, &fakeObserverRuntime{
+		qs: &fakeObserverQueryStore{
+			transcriptErr: limitError,
+		},
+		timeout: time.Second,
+		ok:      true,
+	})
+
+	rec := rootObserverRequest(t, engine, rootToken, "/api/relay-observer/sessions/00000000-0000-0000-0000-0000000000aa/transcript")
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var body map[string]any
+	require.NoError(t, common.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, true, body["success"])
+	data, ok := body["data"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, data["degraded"])
+	assert.Equal(t, "unavailable", data["reason"])
+	assert.NotContains(t, rec.Body.String(), limitError.Msg)
+}
+
 // TestRelayObserverDegradedUnavailableSurface proves an unavailable query
 // surface (disabled runtime or unwired) also produces the degraded envelope
 // with reason "unavailable", before any store call.

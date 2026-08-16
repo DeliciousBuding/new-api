@@ -26,6 +26,7 @@ func clearObserverEnv(t *testing.T) {
 		"RELAY_OBSERVER_RECORD_IP",
 		"RELAY_OBSERVER_QUEUE_SIZE",
 		"RELAY_OBSERVER_QUEUE_BYTES",
+		"RELAY_OBSERVER_PENDING_APPEND_BYTES",
 		"RELAY_OBSERVER_MAX_REQUEST_BYTES",
 		"RELAY_OBSERVER_BATCH_SIZE",
 		"RELAY_OBSERVER_FLUSH_MS",
@@ -55,6 +56,7 @@ func TestDefaultConfig(t *testing.T) {
 
 	assert.Equal(t, 512, cfg.QueueSize)
 	assert.Equal(t, int64(16*1024*1024), cfg.QueueBytes)
+	assert.Equal(t, int64(32*1024*1024), cfg.PendingAppendBytes)
 	assert.Equal(t, int64(8*1024*1024), cfg.MaxRequestBytes)
 	assert.Equal(t, 32, cfg.BatchSize)
 	assert.Equal(t, time.Second, cfg.FlushInterval)
@@ -88,6 +90,7 @@ func TestConfigFromEnvValues(t *testing.T) {
 	t.Setenv("RELAY_OBSERVER_RECORD_IP", "true")
 	t.Setenv("RELAY_OBSERVER_QUEUE_SIZE", "100")
 	t.Setenv("RELAY_OBSERVER_QUEUE_BYTES", "1048576")
+	t.Setenv("RELAY_OBSERVER_PENDING_APPEND_BYTES", "2097152")
 	t.Setenv("RELAY_OBSERVER_MAX_REQUEST_BYTES", "524288")
 	t.Setenv("RELAY_OBSERVER_MAX_CAPTURE_BYTES_PER_TURN", "262144")
 	t.Setenv("RELAY_OBSERVER_BATCH_SIZE", "16")
@@ -110,6 +113,7 @@ func TestConfigFromEnvValues(t *testing.T) {
 	assert.True(t, cfg.RecordIP)
 	assert.Equal(t, 100, cfg.QueueSize)
 	assert.Equal(t, int64(1048576), cfg.QueueBytes)
+	assert.Equal(t, int64(2097152), cfg.PendingAppendBytes)
 	assert.Equal(t, int64(524288), cfg.MaxRequestBytes)
 	assert.Equal(t, int64(262144), cfg.MaxCaptureBytesPerTurn)
 	assert.Equal(t, 16, cfg.BatchSize)
@@ -134,6 +138,9 @@ func TestConfigClampsUpper(t *testing.T) {
 		}},
 		{"queue bytes", "RELAY_OBSERVER_QUEUE_BYTES", "1073741824", func(t *testing.T, c Config) {
 			assert.Equal(t, int64(MaxQueueBytes), c.QueueBytes)
+		}},
+		{"pending append bytes", "RELAY_OBSERVER_PENDING_APPEND_BYTES", "1073741824", func(t *testing.T, c Config) {
+			assert.Equal(t, int64(MaxPendingAppendBytes), c.PendingAppendBytes)
 		}},
 		{"max request bytes", "RELAY_OBSERVER_MAX_REQUEST_BYTES", "1073741824", func(t *testing.T, c Config) {
 			assert.Equal(t, int64(MaxMaxRequestBytes), c.MaxRequestBytes)
@@ -195,6 +202,9 @@ func TestConfigClampsLower(t *testing.T) {
 		{"queue bytes", "RELAY_OBSERVER_QUEUE_BYTES", "0", func(t *testing.T, c Config) {
 			assert.Equal(t, int64(1), c.QueueBytes)
 		}},
+		{"pending append bytes", "RELAY_OBSERVER_PENDING_APPEND_BYTES", "0", func(t *testing.T, c Config) {
+			assert.Equal(t, int64(1), c.PendingAppendBytes)
+		}},
 		{"max request bytes", "RELAY_OBSERVER_MAX_REQUEST_BYTES", "0", func(t *testing.T, c Config) {
 			assert.Equal(t, int64(1), c.MaxRequestBytes)
 		}},
@@ -246,6 +256,7 @@ func TestConfigFromEnvErrors(t *testing.T) {
 		{"record ip not a bool", "RELAY_OBSERVER_RECORD_IP"},
 		{"queue size not a number", "RELAY_OBSERVER_QUEUE_SIZE"},
 		{"queue bytes overflow", "RELAY_OBSERVER_QUEUE_BYTES"},
+		{"pending append bytes overflow", "RELAY_OBSERVER_PENDING_APPEND_BYTES"},
 		{"batch size not a number", "RELAY_OBSERVER_BATCH_SIZE"},
 		{"flush interval not a number", "RELAY_OBSERVER_FLUSH_MS"},
 		{"write timeout not a number", "RELAY_OBSERVER_WRITE_TIMEOUT_MS"},
@@ -300,6 +311,7 @@ func TestConfigParseDoesNotAffectNeighbors(t *testing.T) {
 	def := DefaultConfig()
 	assert.Equal(t, MaxQueueSize, cfg.QueueSize)
 	assert.Equal(t, def.QueueBytes, cfg.QueueBytes)
+	assert.Equal(t, def.PendingAppendBytes, cfg.PendingAppendBytes)
 	assert.Equal(t, def.MaxRequestBytes, cfg.MaxRequestBytes)
 	assert.Equal(t, def.BatchSize, cfg.BatchSize)
 	assert.Equal(t, def.FlushInterval, cfg.FlushInterval)
@@ -388,6 +400,7 @@ func TestConfigOutputRedactsSecrets(t *testing.T) {
 		RecordIP:               true,
 		QueueSize:              100,
 		QueueBytes:             1048576,
+		PendingAppendBytes:     2097152,
 		MaxRequestBytes:        524288,
 		BatchSize:              16,
 		FlushInterval:          250 * time.Millisecond,
