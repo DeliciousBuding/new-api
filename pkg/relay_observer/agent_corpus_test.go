@@ -313,15 +313,16 @@ func runCorpusFixture(t *testing.T, f corpusFixture) {
 		require.NoError(t, common.Unmarshal(p, &round))
 	}
 
-	// Session identity contract: the resolved scope and the expected alias
-	// sources must match _meta. Extra auxiliary fallbacks are allowed (for
-	// example the codex prompt_cache_key chain), so the expected sources are
-	// a required subset, and the primary must be the first expected source.
+	// Session identity contract: the request path supplies the already resolved
+	// scope; this package must not re-parse the fixture headers. Extra
+	// auxiliary fallbacks are allowed (for example the codex prompt_cache_key
+	// chain), so the expected sources are a required subset, and the primary
+	// must be the first expected source.
 	headers := corpusHeaders(f.Headers)
-	scope := DetectSessionScope(headers)
-	assert.Equal(t, f.Meta.ScopeExpect, string(scope), "scope_expect must match the resolved scope")
-	idRes, err := ResolveIdentity(IdentityInput{Headers: headers, Body: bodyCompact.Bytes()}, KeyMaterial{CurrentKey: testHMACKey, CurrentVersion: 1})
+	scope := SessionScope(f.Meta.ScopeExpect)
+	idRes, err := ResolveIdentity(IdentityInput{Scope: scope, Headers: headers, Body: bodyCompact.Bytes()}, KeyMaterial{CurrentKey: testHMACKey, CurrentVersion: 1})
 	require.NoError(t, err)
+	assert.Equal(t, scope, idRes.Scope, "the supplied request-path scope must be retained")
 	if len(f.Meta.Sources) == 0 {
 		assert.Empty(t, idRes.Primary.Digest, "no expected sources, but a primary alias resolved")
 		assert.Empty(t, idRes.Auxiliary, "no expected sources, but auxiliary aliases resolved")

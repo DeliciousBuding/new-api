@@ -16,6 +16,7 @@ import (
 func TestResolveIdentityEmitsPreviousAliases(t *testing.T) {
 	km := KeyMaterial{CurrentKey: "current-key", CurrentVersion: 2, PreviousKey: "previous-key", PreviousVersion: 1}
 	in := IdentityInput{
+		Scope:   ScopeCodexCLI,
 		Headers: map[string][]string{"X-Codex-Turn-Metadata": {`{"thread_id":"thr-rotated"}`}},
 	}
 

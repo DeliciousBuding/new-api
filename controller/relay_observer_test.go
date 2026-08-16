@@ -4,10 +4,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	relayobserver "github.com/QuantumNous/new-api/pkg/relay_observer"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -69,4 +71,24 @@ func TestGetRelayObserverStatusWired(t *testing.T) {
 	assert.False(t, payload.Data.Enabled)
 	assert.Equal(t, relayobserver.ReasonStoreInitFailed, payload.Data.ReasonCode)
 	assert.Equal(t, relayobserver.IPTrustNone, payload.Data.IPTrust)
+}
+
+// TestObserverTurnsDTOExposesClientProfile locks the Root turn-list API
+// contract: the per-turn request-path profile survives the query summary and
+// is serialized under the frontend's snake_case field name.
+func TestObserverTurnsDTOExposesClientProfile(t *testing.T) {
+	turnID := uuid.MustParse("00000000-0000-4000-8000-000000000118")
+	items := observerTurnsDTO([]relayobserver.TurnSummary{{
+		TurnID:        turnID,
+		OccurredAt:    time.Unix(1, 0).UTC(),
+		ClientProfile: "claude_vscode",
+	}})
+
+	require.Len(t, items, 1)
+	assert.Equal(t, "claude_vscode", items[0].ClientProfile)
+	payload, err := common.Marshal(items[0])
+	require.NoError(t, err)
+	var fields map[string]any
+	require.NoError(t, common.Unmarshal(payload, &fields))
+	assert.Equal(t, "claude_vscode", fields["client_profile"])
 }

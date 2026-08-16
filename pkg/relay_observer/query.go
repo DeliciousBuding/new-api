@@ -151,7 +151,7 @@ type OverviewResult struct {
 
 // SessionQuery selects one page of GET /sessions. Filters are optional; the
 // page is ordered by (last_seen DESC, id DESC) with keyset pagination. The
-// turn-derived filters (Model, Success, Country, ASN, IP) are evaluated as
+// turn-derived filters (Model, Success, IP) are evaluated as
 // EXISTS subqueries over observer_turns, reusing the idx_observer_turns_*
 // index coverage, because the sessions table carries no per-turn columns.
 type SessionQuery struct {
@@ -167,12 +167,6 @@ type SessionQuery struct {
 	// Success restricts to sessions that have at least one successful (or,
 	// when false, failed) turn; nil means all.
 	Success *bool
-	// Country restricts to sessions with at least one turn from this country
-	// code; empty means all.
-	Country string
-	// ASN restricts to sessions with at least one turn from this ASN; 0 means
-	// all.
-	ASN int64
 	// IP restricts to sessions with at least one turn from this client IP;
 	// nil means all.
 	IP net.IP
@@ -566,14 +560,6 @@ func listSessionsQ(ctx context.Context, q contentQuerier, query SessionQuery) (S
 	if query.Success != nil {
 		conds = append(conds, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.success = $"+strconv.Itoa(len(args)+1)+")")
 		args = append(args, *query.Success)
-	}
-	if query.Country != "" {
-		conds = append(conds, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.country_code = $"+strconv.Itoa(len(args)+1)+")")
-		args = append(args, query.Country)
-	}
-	if query.ASN != 0 {
-		conds = append(conds, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.asn = $"+strconv.Itoa(len(args)+1)+")")
-		args = append(args, query.ASN)
 	}
 	if query.IP != nil {
 		conds = append(conds, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.client_ip = $"+strconv.Itoa(len(args)+1)+"::inet)")

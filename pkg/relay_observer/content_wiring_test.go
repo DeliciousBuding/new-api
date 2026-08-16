@@ -34,6 +34,7 @@ func contentEventPtr() *Event {
 	})
 	ev.Request = &req
 	ev.Identity = IdentityInput{
+		Scope:   ScopeCodexCLI,
 		Headers: http.Header{"X-Codex-Turn-Metadata": {`{"thread_id":"thr-1","session_id":"ses-1"}`}},
 		Body:    []byte(`{"model":"gpt-5","messages":[{"role":"user","content":"hello world"}]}`),
 	}
@@ -131,6 +132,7 @@ func TestWorkerTruncationBackfillsGapAndAppendsMarker(t *testing.T) {
 	reqIface := dto.Request(req)
 	ev.Request = &reqIface
 	ev.Identity = IdentityInput{
+		Scope:   ScopeCodexCLI,
 		Headers: http.Header{"X-Codex-Turn-Metadata": {`{"thread_id":"thr-2"}`}},
 	}
 	require.True(t, d.TryEnqueue(ev, total-1)) // admission stays the body estimate
@@ -469,6 +471,7 @@ func TestPlanContentSkipsWithoutHMACKey(t *testing.T) {
 	req := dto.Request(&dto.GeneralOpenAIRequest{Model: "gpt-5", Messages: []dto.Message{{Role: "user", Content: "hi"}}})
 	ev.Request = &req
 	ev.Identity = IdentityInput{
+		Scope:   ScopeCodexCLI,
 		Headers: http.Header{"X-Codex-Turn-Metadata": {`{"thread_id":"thr-3"}`}},
 	}
 	batch := []queuedEvent{{ev: &ev, reservation: 1 << 20}}

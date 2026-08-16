@@ -730,6 +730,7 @@ func TestListTurnsSinglePage(t *testing.T) {
 	assert.True(t, first.Success)
 	assert.Equal(t, int64(3000), first.Quota)
 	assert.Equal(t, ContentStateFull, first.ContentState)
+	assert.Equal(t, "codex", first.ClientProfile)
 	require.Len(t, first.Attempts, 1)
 	assert.Equal(t, int64(1), first.Attempts[0].ChannelID)
 }
@@ -1570,8 +1571,6 @@ func TestListSessionsExtendedFilters(t *testing.T) {
 		ClientFamily: "claude",
 		Model:        "gpt-5",
 		Success:      &success,
-		Country:      "US",
-		ASN:          15169,
 		IP:           ip,
 		PageSize:     2,
 	})
@@ -1584,10 +1583,8 @@ func TestListSessionsExtendedFilters(t *testing.T) {
 	assert.Contains(t, sqlText, "client_family = $2")
 	assert.Contains(t, sqlText, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.model = $3)")
 	assert.Contains(t, sqlText, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.success = $4)")
-	assert.Contains(t, sqlText, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.country_code = $5)")
-	assert.Contains(t, sqlText, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.asn = $6)")
-	assert.Contains(t, sqlText, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.client_ip = $7::inet)")
-	assert.Contains(t, sqlText, "LIMIT $8")
+	assert.Contains(t, sqlText, "EXISTS (SELECT 1 FROM observer_turns t WHERE t.session_id = observer_sessions.id AND t.client_ip = $5::inet)")
+	assert.Contains(t, sqlText, "LIMIT $6")
 }
 
 // TestListSessionsOptionalFiltersOmitted proves every T3.2 filter is optional:
