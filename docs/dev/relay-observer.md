@@ -83,7 +83,7 @@ store 失败和 timeout 使用 HTTP 200 degraded envelope 表达可观测系统�
 
 ## 配置所有权
 
-启动时固定配置来自 `RELAY_OBSERVER_*` 环境变量：enabled、独立 DSN、schema mode、HMAC key/current version、previous key/version、IP opt-in、队列/捕获限制、batch/flush/write/query/retention budget 和默认保留期。解析失败会禁用 Observer，不会阻止进程启动。
+启动时固定配置来自 `RELAY_OBSERVER_*` 环境变量：enabled、独立 DSN、schema mode、HMAC key/current version、previous key/version、IP opt-in、队列/捕获/pending append 限制、batch/flush/write/query/retention budget 和默认保留期。解析失败会禁用 Observer，不会阻止进程启动。`RELAY_OBSERVER_PENDING_APPEND_BYTES` 限制 worker 保留的规范化内容字节数，超限内容降级为 metadata-only。
 
 只有以下运行参数通过 options 热更新，并在每个使用点重新读取：
 

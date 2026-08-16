@@ -735,7 +735,10 @@ func TestIntegrationAppendVsRetentionEndToEndScenarioA(t *testing.T) {
 	// The retention delete must block on the session row lock held by the
 	// append.
 	retDone := make(chan error, 1)
-	go func() { retDone <- rs.DeleteSessionRetention(context.Background(), uuid.MustParse(sid), cutoff) }()
+	go func() {
+		_, err := rs.DeleteSessionRetention(context.Background(), uuid.MustParse(sid), cutoff)
+		retDone <- err
+	}()
 	select {
 	case err := <-retDone:
 		t.Fatalf("retention finished while the append held the session lock: %v", err)
@@ -796,7 +799,10 @@ func TestIntegrationAppendVsRetentionEndToEndScenarioB(t *testing.T) {
 	t.Cleanup(func() { retentionHook = nil })
 
 	retDone := make(chan error, 1)
-	go func() { retDone <- rs.DeleteSessionRetention(context.Background(), uuid.MustParse(oldSid), cutoff) }()
+	go func() {
+		_, err := rs.DeleteSessionRetention(context.Background(), uuid.MustParse(oldSid), cutoff)
+		retDone <- err
+	}()
 	<-retentionLocked
 
 	// The append must block on the alias lookup (FOR UPDATE OF s).

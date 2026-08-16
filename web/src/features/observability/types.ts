@@ -43,6 +43,8 @@ export const observerStatusSchema = z.object({
   IPTrust: z.string(),
   QueueCount: z.number(),
   QueueBytes: z.number(),
+  PendingContentCount: z.number(),
+  PendingContentBytes: z.number(),
   AcceptedTotal: z.number(),
   WrittenTotal: z.number(),
   DroppedTotal: z.number(),
@@ -50,12 +52,19 @@ export const observerStatusSchema = z.object({
   CircuitCooldown: z.number(),
   PGLatencyMS: z.number(),
   ContentGapsTotal: z.number(),
+  ContentRetriedTotal: z.number(),
+  ContentDroppedTotal: z.number(),
   RecentVolume: z.number(),
   LastRetentionPass: z.string(),
   RetentionTurnsDeleted: z.number(),
   RetentionSessionsDeleted: z.number(),
   RetentionObjectsDeleted: z.number(),
   RetentionFailures: z.number(),
+  RetentionTurnsPending: z.number(),
+  RetentionSessionsPending: z.number(),
+  RetentionObjectsPending: z.number(),
+  RetentionBacklogAge: z.number(),
+  RetentionBacklogTruncated: z.boolean(),
 })
 export type ObserverStatus = z.infer<typeof observerStatusSchema>
 

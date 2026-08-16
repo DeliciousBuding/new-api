@@ -30,7 +30,9 @@ type retentionScriptedStore struct {
 	turnRefs   []TurnRetentionRef
 	sessionIDs []uuid.UUID
 	orphans    int
+	backlog    RetentionBacklog
 
+	backlogErr       error
 	listTurnsErr     error
 	listSessionsErr  error
 	deleteTurnErr    map[uuid.UUID]error
@@ -50,6 +52,16 @@ func (s *retentionScriptedStore) Close(ctx context.Context) error               
 // exercise content appends.
 func (s *retentionScriptedStore) AppendTurns(ctx context.Context, turns []ContentInput) error {
 	return nil
+}
+
+func (s *retentionScriptedStore) InspectRetentionBacklog(ctx context.Context, turnCutoff, contentCutoff time.Time, limit int) (RetentionBacklog, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.record("inspectBacklog", ctx, turnCutoff, limit)
+	if s.backlogErr != nil {
+		return RetentionBacklog{}, s.backlogErr
+	}
+	return s.backlog, nil
 }
 
 // record captures one retention call and the timeout budget of its segment
@@ -83,24 +95,24 @@ func (s *retentionScriptedStore) ListExpiredSessions(ctx context.Context, cutoff
 	return append([]uuid.UUID(nil), s.sessionIDs...), nil
 }
 
-func (s *retentionScriptedStore) DeleteTurnRetention(ctx context.Context, turnID uuid.UUID) error {
+func (s *retentionScriptedStore) DeleteTurnRetention(ctx context.Context, turnID uuid.UUID) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.record("deleteTurn", ctx, time.Time{}, 0)
 	if err := s.deleteTurnErr[turnID]; err != nil {
-		return err
+		return false, err
 	}
-	return nil
+	return true, nil
 }
 
-func (s *retentionScriptedStore) DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID, cutoff time.Time) error {
+func (s *retentionScriptedStore) DeleteSessionRetention(ctx context.Context, sessionID uuid.UUID, cutoff time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.record("deleteSession", ctx, time.Time{}, 0)
 	if s.deleteSessionErr != nil {
-		return s.deleteSessionErr
+		return false, s.deleteSessionErr
 	}
-	return nil
+	return true, nil
 }
 
 func (s *retentionScriptedStore) DeleteOrphanContent(ctx context.Context, cutoff time.Time, limit int) (int, error) {
@@ -150,7 +162,7 @@ func newRetentionDispatcher(t *testing.T, st *retentionScriptedStore) (*Dispatch
 	return d, clk
 }
 
-// fireRetentionTimer finds the six-hour retention timer and fires it.
+// fireRetentionTimer finds the one-minute retention timer and fires it.
 func fireRetentionTimer(t *testing.T, clk *fakeClock) {
 	t.Helper()
 	var timer *fakeTimer
@@ -180,7 +192,7 @@ func TestRetentionWorkerPassOrderAndCounters(t *testing.T) {
 	}
 	d, clk := newRetentionDispatcher(t, st)
 
-	// No pass before the first six-hour interval.
+	// No pass before the first retention interval.
 	assert.True(t, d.Status().LastRetentionPass.IsZero())
 	assert.Zero(t, d.Status().RetentionTurnsDeleted)
 	assert.Zero(t, d.Status().RetentionFailures)
@@ -188,7 +200,7 @@ func TestRetentionWorkerPassOrderAndCounters(t *testing.T) {
 	clk.advance(retentionInterval)
 	fireRetentionTimer(t, clk)
 
-	want := []string{"listTurns", "deleteTurn", "deleteTurn", "listSessions", "deleteSession", "deleteOrphans"}
+	want := []string{"listTurns", "deleteTurn", "deleteTurn", "listSessions", "deleteSession", "deleteOrphans", "inspectBacklog"}
 	require.Eventually(t, func() bool {
 		calls := st.callSnapshot()
 		if len(calls) != len(want) {
@@ -219,8 +231,8 @@ func TestRetentionWorkerBounds(t *testing.T) {
 	clk.advance(retentionInterval)
 	fireRetentionTimer(t, clk)
 
-	require.Eventually(t, func() bool { return len(st.callSnapshot()) == 3 }, 2*time.Second, time.Millisecond)
-	assert.Equal(t, []int{retentionMaxTurnsPerPass, retentionMaxSessionsPerPass, retentionMaxOrphansPerPass}, st.limitSnapshot())
+	require.Eventually(t, func() bool { return len(st.callSnapshot()) == 4 }, 2*time.Second, time.Millisecond)
+	assert.Equal(t, []int{retentionMaxTurnsPerPass, retentionMaxSessionsPerPass, retentionMaxOrphansPerPass, retentionBacklogInspectLimit}, st.limitSnapshot())
 }
 
 // TestRetentionWorkerCutoffs locks the cutoff derivation: turns expire after
@@ -232,7 +244,7 @@ func TestRetentionWorkerCutoffs(t *testing.T) {
 	clk.advance(retentionInterval)
 	fireRetentionTimer(t, clk)
 
-	require.Eventually(t, func() bool { return len(st.callSnapshot()) == 3 }, 2*time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return len(st.callSnapshot()) == 4 }, 2*time.Second, time.Millisecond)
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	now := clk.Now()
@@ -251,8 +263,8 @@ func TestRetentionWorkerSegmentBudget(t *testing.T) {
 	clk.advance(retentionInterval)
 	fireRetentionTimer(t, clk)
 
-	// listTurns + deleteTurn + listSessions + deleteOrphans.
-	require.Eventually(t, func() bool { return len(st.callSnapshot()) == 4 }, 2*time.Second, time.Millisecond)
+	// listTurns + deleteTurn + listSessions + deleteOrphans + inspection.
+	require.Eventually(t, func() bool { return len(st.callSnapshot()) == 5 }, 2*time.Second, time.Millisecond)
 	before := time.Now()
 	for _, deadline := range st.deadlineSnapshot() {
 		assert.False(t, deadline.IsZero(), "every segment context must carry a timeout deadline")
@@ -273,7 +285,7 @@ func TestRetentionWorkerListFailureAborts(t *testing.T) {
 
 	require.Eventually(t, func() bool { return d.Status().RetentionFailures == 1 }, 2*time.Second, time.Millisecond)
 	calls := st.callSnapshot()
-	assert.Equal(t, []string{"listTurns"}, calls, "a failed segment must abort the pass: no later segments run")
+	assert.Equal(t, []string{"listTurns", "inspectBacklog"}, calls, "a failed delete segment must still refresh backlog signals")
 	require.Eventually(t, func() bool {
 		return !d.Status().LastRetentionPass.IsZero()
 	}, 2*time.Second, time.Millisecond)
@@ -281,7 +293,7 @@ func TestRetentionWorkerListFailureAborts(t *testing.T) {
 	// The next six-hour cycle retries the pass.
 	clk.advance(retentionInterval)
 	fireRetentionTimer(t, clk)
-	require.Eventually(t, func() bool { return len(st.callSnapshot()) == 2 }, 2*time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return len(st.callSnapshot()) == 4 }, 2*time.Second, time.Millisecond)
 	require.Eventually(t, func() bool { return d.Status().RetentionFailures == 2 }, 2*time.Second, time.Millisecond)
 }
 
@@ -303,7 +315,7 @@ func TestRetentionWorkerDeleteFailureMidSegment(t *testing.T) {
 	assert.Equal(t, int64(1), d.Status().RetentionTurnsDeleted, "deletions before the failure are counted")
 	assert.Zero(t, d.Status().RetentionSessionsDeleted)
 	calls := st.callSnapshot()
-	assert.Equal(t, []string{"listTurns", "deleteTurn", "deleteTurn"}, calls, "the pass aborts at the failed deletion")
+	assert.Equal(t, []string{"listTurns", "deleteTurn", "deleteTurn", "inspectBacklog"}, calls, "the pass aborts deletes but still refreshes backlog")
 }
 
 // TestRetentionWorkerSessionsAndOrphansFailures locks the failure contract of
@@ -317,14 +329,14 @@ func TestRetentionWorkerSessionsAndOrphansFailures(t *testing.T) {
 	clk.advance(retentionInterval)
 	fireRetentionTimer(t, clk)
 	require.Eventually(t, func() bool { return d.Status().RetentionFailures == 1 }, 2*time.Second, time.Millisecond)
-	assert.Equal(t, []string{"listTurns", "listSessions", "deleteSession"}, st.callSnapshot())
+	assert.Equal(t, []string{"listTurns", "listSessions", "deleteSession", "inspectBacklog"}, st.callSnapshot())
 
 	st2 := &retentionScriptedStore{orphanErr: sentinel}
 	d2, clk2 := newRetentionDispatcher(t, st2)
 	clk2.advance(retentionInterval)
 	fireRetentionTimer(t, clk2)
 	require.Eventually(t, func() bool { return d2.Status().RetentionFailures == 1 }, 2*time.Second, time.Millisecond)
-	assert.Equal(t, []string{"listTurns", "listSessions", "deleteOrphans"}, st2.callSnapshot())
+	assert.Equal(t, []string{"listTurns", "listSessions", "deleteOrphans", "inspectBacklog"}, st2.callSnapshot())
 }
 
 // TestRetentionWorkerStopsWithDispatcher locks the stop contract: Stop makes
@@ -336,7 +348,7 @@ func TestRetentionWorkerStopsWithDispatcher(t *testing.T) {
 
 	clk.advance(retentionInterval)
 	fireRetentionTimer(t, clk)
-	require.Eventually(t, func() bool { return len(st.callSnapshot()) == 3 }, 2*time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return len(st.callSnapshot()) == 4 }, 2*time.Second, time.Millisecond)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
