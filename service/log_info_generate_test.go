@@ -51,6 +51,20 @@ func TestDetectClientProfile(t *testing.T) {
 			want: "codex_desktop",
 		},
 		{
+			name: "codex vscode originator",
+			headers: map[string]string{
+				"Originator": "codex_vscode",
+			},
+			want: "codex_vscode",
+		},
+		{
+			name: "other codex originator stays app bucket",
+			headers: map[string]string{
+				"Originator": "codex_exec",
+			},
+			want: "codex_app",
+		},
+		{
 			name: "codex turn state header with cli ua",
 			headers: map[string]string{
 				"X-Codex-Turn-State": "abc",
