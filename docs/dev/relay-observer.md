@@ -79,9 +79,6 @@ store 失败和 timeout 使用 HTTP 200 degraded envelope 表达可观测系统�
 
 以下是 2026-08-16 对当前实现确认的高优先级缺口，不属于已兑现能力：
 
-- transcript 超过 5,000 contexts 时当前查询保留最旧窗口而非最新窗口；flatten 在分页前构造全部引用，缺少 item/byte 硬上限。
-- `verify` 接受历史 schema 前缀；v1-v3 缺少当前 alias conflict target，v4-v7 又可能缺少性能索引。verify 应验证当前可运行 schema，bootstrap 才负责升级。
-- enabled 时缺少 HMAC key 不会禁用 runtime，而会形成看似健康但没有 session/content 的 metadata-only 结果。
 - Session scope 与 `DetectClientProfile` 分别解析同一组 header，分类矩阵已经发生漂移；应由请求路径 profile 统一映射 scope。
 - country/ASN 查询维度已暴露，但生产事件没有 GeoIP enrichment；per-turn client profile 已落库但尚未进入 API DTO。
 

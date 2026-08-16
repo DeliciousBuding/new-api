@@ -310,6 +310,73 @@ func TestIntegrationQueryTurnContext(t *testing.T) {
 	assert.Equal(t, ContentErrMissingContext, code)
 }
 
+// TestIntegrationQueryTranscriptNewestBoundedWindow covers the PostgreSQL
+// query shape used for long transcripts: the bounded subquery keeps the
+// newest contexts, restores chronological order, and can reconstruct a
+// boundary predecessor whose full checkpoint sits just outside the window.
+func TestIntegrationQueryTranscriptNewestBoundedWindow(t *testing.T) {
+	dsn := integrationDSN(t)
+	store := resetObserverSchema(t, dsn)
+	defer store.Close(context.Background())
+
+	db := openFixturePool(t, dsn)
+	sessionID := uuid.MustParse("40000000-0000-0000-0000-000000000001")
+	insertQuerySession(t, db, sessionID, "t-query-transcript-window", epoch.Add(time.Hour))
+	totalContexts := maxTranscriptContextRows + 2
+	_, err := db.Exec(`INSERT INTO observer_contexts
+		(session_id, turn_id, checkpoint_id, group_ordinal, common_prefix_count, item_count, item_digests, logical_bytes)
+		SELECT $1,
+			('00000000-0000-0000-0000-' || lpad(context_number::text, 12, '0'))::uuid,
+			0, 0, 0, 1,
+			to_jsonb(ARRAY[lpad(to_hex(context_number), 64, '0')]),
+			0
+		FROM generate_series(1, $2) AS context_number`, sessionID.String(), totalContexts)
+	require.NoError(t, err)
+	_, err = db.Exec(`UPDATE observer_contexts SET checkpoint_id = id WHERE session_id = $1`, sessionID.String())
+	require.NoError(t, err)
+
+	var firstContextID, secondContextID int64
+	rows, err := db.Query(`SELECT id FROM observer_contexts WHERE session_id = $1 ORDER BY id LIMIT 2`, sessionID.String())
+	require.NoError(t, err)
+	require.True(t, rows.Next())
+	require.NoError(t, rows.Scan(&firstContextID))
+	require.True(t, rows.Next())
+	require.NoError(t, rows.Scan(&secondContextID))
+	require.NoError(t, rows.Close())
+	_, err = db.Exec(`UPDATE observer_contexts
+		SET checkpoint_id = $1, group_ordinal = 1, common_prefix_count = 1, item_count = 2
+		WHERE id = $2`, firstContextID, secondContextID)
+	require.NoError(t, err)
+
+	for contextNumber := totalContexts - 1; contextNumber <= totalContexts; contextNumber++ {
+		digest := fmt.Sprintf("%064x", contextNumber)
+		item := CanonicalItem{Kind: CanonicalKindMessage, Role: "user", LogicalBytes: 4, Hmac: digest}
+		payload, logicalBytes, encodeErr := encodeItem(item)
+		require.NoError(t, encodeErr)
+		digestBytes, digestErr := itemDigestBytes(digest)
+		require.NoError(t, digestErr)
+		_, insertErr := db.Exec(`INSERT INTO observer_content_objects
+			(session_id, item_digest, kind, role, codec, payload, logical_bytes, stored_bytes, truncated)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false)`,
+			sessionID.String(), digestBytes, item.Kind, item.Role, contentCodecZstd, payload, logicalBytes, len(payload))
+		require.NoError(t, insertErr)
+	}
+
+	queryStore, err := NewQueryStore(store)
+	require.NoError(t, err)
+	page, err := queryStore.Transcript(context.Background(), TranscriptQuery{
+		SessionID: sessionID,
+		Direction: TranscriptDirLatest,
+		PageSize:  2,
+	})
+	require.NoError(t, err)
+	require.Len(t, page.Items, 2)
+	assert.Equal(t, fmt.Sprintf("00000000-0000-0000-0000-%012d", totalContexts-1), page.Items[0].TurnID.String())
+	assert.Equal(t, fmt.Sprintf("00000000-0000-0000-0000-%012d", totalContexts), page.Items[1].TurnID.String())
+	assert.Equal(t, int64(maxTranscriptContextRows-2), page.PrevCursor)
+	assert.True(t, page.HasOlder)
+}
+
 // TestIntegrationQuerySemaphore covers the single-query semaphore on the real
 // database: a held slot makes the next query wait and then fail with the
 // timeout classification instead of queueing.
