@@ -47,6 +47,17 @@ func (o *openerRecorder) callCount() int {
 	return o.calls
 }
 
+// enableObserverEnv clears the observer environment and sets the minimal valid
+// enabled configuration — including the content HMAC key, which Init now
+// requires. Tests that exercise a specific failure past the HMAC-key check
+// layer their own variables on top.
+func enableObserverEnv(t *testing.T) {
+	t.Helper()
+	clearObserverEnv(t)
+	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	t.Setenv("RELAY_OBSERVER_HMAC_KEY", "test-hmac-key")
+}
+
 // TestRuntimeUninitializedStatusDisabled proves the runtime is
 // disabled-by-default and its status is stable before any Init.
 func TestRuntimeUninitializedStatusDisabled(t *testing.T) {
@@ -74,11 +85,28 @@ func TestRuntimeDisabledInitOpensNoStore(t *testing.T) {
 	assert.Equal(t, ReasonDisabled, st.ReasonCode)
 }
 
+// TestRuntimeMissingHMACKeyFailsClosed proves an enabled observer without a
+// content HMAC key self-disables with ReasonHMACKeyMissing and never opens a
+// store, instead of running in a misleading metadata-only-but-healthy state.
+func TestRuntimeMissingHMACKeyFailsClosed(t *testing.T) {
+	clearObserverEnv(t)
+	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	rec := &openerRecorder{store: &scriptedStore{}}
+	rt := NewRuntime()
+	rt.openStore = rec.open
+	rt.Init()
+	assert.Equal(t, 0, rec.callCount())
+	st := rt.Status()
+	assert.False(t, st.Enabled)
+	assert.Equal(t, ReasonHMACKeyMissing, st.ReasonCode)
+	assert.Equal(t, IPTrustNone, st.IPTrust)
+	assert.False(t, rt.CanPublish())
+}
+
 // TestRuntimeConfigInvalidFailsOpen proves that an unparsable configuration
 // disables the observer with ReasonConfigInvalid and never opens a store.
 func TestRuntimeConfigInvalidFailsOpen(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	t.Setenv("RELAY_OBSERVER_QUEUE_SIZE", "not-a-number")
 	rec := &openerRecorder{store: &scriptedStore{}}
 	rt := NewRuntime()
@@ -94,8 +122,7 @@ func TestRuntimeConfigInvalidFailsOpen(t *testing.T) {
 // DSN is rejected before any connection is attempted and the observer is
 // disabled with ReasonStoreInitFailed.
 func TestRuntimeNonPGDSNFailsOpen(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	t.Setenv("RELAY_OBSERVER_SQL_DSN", "mysql://user:pass@127.0.0.1:3306/obs")
 	rt := NewRuntime()
 	rt.Init()
@@ -108,8 +135,7 @@ func TestRuntimeNonPGDSNFailsOpen(t *testing.T) {
 // TestRuntimeStoreOpenErrorFailsOpen proves a generic store open failure
 // (unreachable database, pool error) disables the observer fail-open.
 func TestRuntimeStoreOpenErrorFailsOpen(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	rec := &openerRecorder{
 		err: errors.New("relayobserver: ping PostgreSQL pool: dial tcp 127.0.0.1:5432: connect: connection refused"),
 	}
@@ -125,8 +151,7 @@ func TestRuntimeStoreOpenErrorFailsOpen(t *testing.T) {
 // TestRuntimeSchemaErrorFailsOpen proves a schema verify/bootstrap failure
 // disables the observer with the dedicated ReasonSchemaMismatch code.
 func TestRuntimeSchemaErrorFailsOpen(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	rec := &openerRecorder{
 		err: errors.New("relayobserver: schema verify: version mismatch: have [2], want [1]"),
 	}
@@ -144,8 +169,7 @@ func TestRuntimeSchemaErrorFailsOpen(t *testing.T) {
 // store (no SQL on the status path). TRUSTED_PROXIES=none pins the strict
 // direct-connect tier so the assertion is deterministic.
 func TestRuntimeEnabledStatus(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	t.Setenv("RELAY_OBSERVER_RECORD_IP", "true")
 	t.Setenv("TRUSTED_PROXIES", "none")
 	store := &scriptedStore{}
@@ -178,8 +202,7 @@ func TestRuntimeEnabledStatus(t *testing.T) {
 // reports publishable, and disabling or closing the runtime flips it off, so
 // the fail-open disabled path allocates nothing in the hooks.
 func TestRuntimeCanPublishTracksEnabledState(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	store := &scriptedStore{}
 	rec := &openerRecorder{store: store}
 	rt := NewRuntime()
@@ -211,8 +234,7 @@ func TestRuntimeCanPublishDisabledConfig(t *testing.T) {
 // successful init only degrades the observer (circuit open) — the runtime
 // stays alive and readable, never panicking or disabling the process.
 func TestRuntimeEnabledStoreFailureFailsOpen(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	t.Setenv("RELAY_OBSERVER_BATCH_SIZE", "1")
 	store := &scriptedStore{err: errBoom}
 	store.writeNotify = make(chan struct{}, 16)
@@ -236,8 +258,7 @@ func TestRuntimeEnabledStoreFailureFailsOpen(t *testing.T) {
 // TestRuntimeInitIdempotent proves repeated Init calls have no effect: the
 // opener runs exactly once.
 func TestRuntimeInitIdempotent(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	store := &scriptedStore{}
 	rec := &openerRecorder{store: store}
 	rt := NewRuntime()
@@ -252,8 +273,7 @@ func TestRuntimeInitIdempotent(t *testing.T) {
 // TestRuntimeCloseIdempotent proves Close is idempotent and that a closed
 // runtime reports disabled.
 func TestRuntimeCloseIdempotent(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	store := &scriptedStore{}
 	rec := &openerRecorder{store: store}
 	rt := NewRuntime()
@@ -282,8 +302,7 @@ func TestRuntimeCloseBeforeInit(t *testing.T) {
 // a store whose Close blocks until the context expires never holds shutdown
 // past the budget.
 func TestRuntimeCloseBoundedByContext(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	store := &blockingCloseStore{scriptedStore: scriptedStore{}}
 	rec := &openerRecorder{store: store}
 	rt := NewRuntime()
@@ -316,8 +335,7 @@ func (s *blockingCloseStore) Close(ctx context.Context) error {
 // status that contains neither the DSN nor the HMAC keys, even when the raw
 // store error echoed the DSN.
 func TestRuntimeStatusHidesSecrets(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	t.Setenv("RELAY_OBSERVER_SQL_DSN", "postgres://alice:topsecretpw@127.0.0.1:5432/obs")
 	t.Setenv("RELAY_OBSERVER_HMAC_KEY", "hushhush")
 	rec := &openerRecorder{
@@ -347,8 +365,7 @@ func TestRuntimeStatusHidesSecrets(t *testing.T) {
 // concurrency-safe: concurrent Init calls open the store exactly once and
 // concurrent status reads stay stable, including under -race.
 func TestRuntimeConcurrentInitCloseStatus(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	store := &scriptedStore{}
 	rec := &openerRecorder{store: store}
 	rt := NewRuntime()
@@ -381,8 +398,7 @@ func TestRuntimeConcurrentInitCloseStatus(t *testing.T) {
 // only matches schema-class errors; other store errors stay store_init_failed
 // even when their text mentions schema-adjacent words.
 func TestRuntimeSchemaClassificationBoundary(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	rec := &openerRecorder{err: errors.New("relayobserver: open PostgreSQL pool: schema is unreachable")}
 	rt := NewRuntime()
 	rt.openStore = rec.open
@@ -408,8 +424,7 @@ func TestRuntimeStatusJSONShape(t *testing.T) {
 // observer instead of crashing the process (SSOT: all observer entry points
 // recover panics; the observer never panics).
 func TestRuntimeInitPanicFailsOpen(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	rt := NewRuntime()
 	rt.openStore = func(ctx context.Context, cfg Config) (Store, error) {
 		panic("scripted opener panic")
@@ -424,8 +439,7 @@ func TestRuntimeInitPanicFailsOpen(t *testing.T) {
 // disables the observer: a nil store would panic the shutdown path (a nil
 // interface method call on Store.Close inside Dispatcher.Stop).
 func TestRuntimeNilStoreFailsOpen(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	rt := NewRuntime()
 	rt.openStore = func(ctx context.Context, cfg Config) (Store, error) {
 		return nil, nil
@@ -451,8 +465,7 @@ func (s *panicCloseStore) Close(ctx context.Context) error {
 // absorbed by the runtime: the main shutdown outcome never changes (SSOT:
 // "an observer Stop failure never changes the main shutdown outcome").
 func TestRuntimeClosePanicAbsorbed(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	rt := NewRuntime()
 	rt.openStore = func(ctx context.Context, cfg Config) (Store, error) {
 		return &panicCloseStore{}, nil
@@ -469,8 +482,7 @@ func TestRuntimeClosePanicAbsorbed(t *testing.T) {
 // unless both opt-ins are on: the NewAPI system setting (LogRecordIpEnabled)
 // and RELAY_OBSERVER_RECORD_IP (SSOT IP section).
 func TestRuntimeIPTrustRequiresDualOptIn(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	t.Setenv("RELAY_OBSERVER_RECORD_IP", "true")
 	orig := common.LogRecordIpEnabled
 	common.LogRecordIpEnabled = false
@@ -488,8 +500,7 @@ func TestRuntimeIPTrustRequiresDualOptIn(t *testing.T) {
 // gin.ClientIP() may then derive the peer from X-Forwarded-For (SSOT: peers on
 // trusted-proxy networks may supply X-Forwarded-For).
 func TestRuntimeIPTrustProxyUnderDefaultTrust(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	t.Setenv("RELAY_OBSERVER_RECORD_IP", "true")
 	t.Setenv("TRUSTED_PROXIES", "")
 	rt := NewRuntime()
@@ -503,8 +514,7 @@ func TestRuntimeIPTrustProxyUnderDefaultTrust(t *testing.T) {
 // TestRuntimeIPTrustDirectStrictConnect proves the tier is "direct" only under
 // TRUSTED_PROXIES=none, where ClientIP() is the RemoteAddr origin.
 func TestRuntimeIPTrustDirectStrictConnect(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	t.Setenv("RELAY_OBSERVER_RECORD_IP", "true")
 	t.Setenv("TRUSTED_PROXIES", "none")
 	rt := NewRuntime()
@@ -520,8 +530,7 @@ func TestRuntimeIPTrustDirectStrictConnect(t *testing.T) {
 // store_pg.go returns without the "schema verify:" wrapper: they are schema
 // check failures, not store init failures.
 func TestRuntimeSchemaSubpathClassifiedMismatch(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	rec := &openerRecorder{err: errors.New("relayobserver: list observer tables: permission denied for table information_schema")}
 	rt := NewRuntime()
 	rt.openStore = rec.open
@@ -535,8 +544,7 @@ func TestRuntimeSchemaSubpathClassifiedMismatch(t *testing.T) {
 // open budget. The opener sees a cancellable context and the runtime ends up
 // disabled fail-open.
 func TestRuntimeInitStoreOpenBounded(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	rt := NewRuntime()
 	rt.openTimeout = 50 * time.Millisecond
 	rt.openStore = func(ctx context.Context, cfg Config) (Store, error) {
@@ -617,8 +625,7 @@ func TestRuntimeQuerySurfaceDisabled(t *testing.T) {
 // surface unavailable: the wrapper is created lazily and a wrap failure is
 // fail-open, never a panic.
 func TestRuntimeQuerySurfaceNonPGStore(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	rt := NewRuntime()
 	rt.openStore = (&openerRecorder{store: &scriptedStore{}}).open
 	rt.Init()
@@ -635,8 +642,7 @@ func TestRuntimeQuerySurfaceNonPGStore(t *testing.T) {
 // stored query timeout from the configuration is passed through. The pool is
 // never dialed: sql.Open is lazy and the wrapper never queries.
 func TestRuntimeQuerySurfaceWrapsPGStore(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	t.Setenv("RELAY_OBSERVER_QUERY_TIMEOUT_MS", "250")
 	db, err := sql.Open("pgx", "postgres://observer:observer@127.0.0.1:55433/relay_observer")
 	require.NoError(t, err)
@@ -694,8 +700,7 @@ func TestRuntimeHMACKeyEmptyByDefault(t *testing.T) {
 // key and the runtime hands it back verbatim (the Root turn-context handler
 // uses it for the T2.3 digest re-verification).
 func TestRuntimeHMACKeyStoredFromConfig(t *testing.T) {
-	clearObserverEnv(t)
-	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	enableObserverEnv(t)
 	t.Setenv("RELAY_OBSERVER_HMAC_KEY", "test-hmac-key-material")
 	rt := NewRuntime()
 	rt.openStore = (&openerRecorder{store: &scriptedStore{}}).open
