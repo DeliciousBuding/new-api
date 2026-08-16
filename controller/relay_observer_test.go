@@ -45,6 +45,7 @@ func TestGetRelayObserverStatusUnwired(t *testing.T) {
 func TestGetRelayObserverStatusWired(t *testing.T) {
 	t.Cleanup(func() { SetRelayObserverRuntime(nil) })
 	t.Setenv("RELAY_OBSERVER_ENABLED", "true")
+	t.Setenv("RELAY_OBSERVER_HMAC_KEY", "controller-test-hmac-key")
 	t.Setenv("RELAY_OBSERVER_SQL_DSN", "mysql://user:pass@127.0.0.1:3306/obs")
 	rt := relayobserver.NewRuntime()
 	rt.Init()
