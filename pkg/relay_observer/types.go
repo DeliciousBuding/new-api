@@ -180,8 +180,18 @@ type Status struct {
 	// same IPTrust values as the per-turn field, "none" while capture is off.
 	IPTrust IPTrust
 
+	// QueueCount and QueueBytes cover only request-path events still waiting
+	// in the admission queue. Content appends already owned by the worker use
+	// the separate PendingContent counters below.
 	QueueCount int
 	QueueBytes int64
+
+	// PendingContentCount and PendingContentBytes cover canonical append
+	// inputs currently being persisted or retained for a failure retry. The
+	// byte value is measured from the complete serialized ContentInput and is
+	// bounded by Config.PendingAppendBytes.
+	PendingContentCount int
+	PendingContentBytes int64
 
 	AcceptedTotal int64
 	WrittenTotal  int64
@@ -198,6 +208,11 @@ type Status struct {
 	// ContentGapsTotal counts turns whose content capture ended with a gap
 	// marker or metadata-only state.
 	ContentGapsTotal int64
+	// ContentRetriedTotal counts append inputs persisted after at least one
+	// failed content write. ContentDroppedTotal counts append inputs degraded
+	// or discarded by the pending budget, deterministic failures, or shutdown.
+	ContentRetriedTotal int64
+	ContentDroppedTotal int64
 
 	// RecentVolume counts events accepted in the current wall-clock second.
 	// The packed runtime bucket expires by timestamp, independent of flushing.
@@ -214,6 +229,15 @@ type Status struct {
 	// RetentionFailures counts retention passes aborted by an error; the
 	// next scheduled pass retries.
 	RetentionFailures int64
+	// Retention*Pending are bounded lower-bound counts observed after the most
+	// recent pass. RetentionBacklogTruncated means at least one count reached
+	// the inspection cap; RetentionBacklogAge is the age of the oldest sampled
+	// expired row across turns, sessions, and orphan content.
+	RetentionTurnsPending     int64
+	RetentionSessionsPending  int64
+	RetentionObjectsPending   int64
+	RetentionBacklogAge       time.Duration
+	RetentionBacklogTruncated bool
 }
 
 // Store is the writer-facing persistence port of the observer. Only the

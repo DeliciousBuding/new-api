@@ -50,11 +50,14 @@ type Config struct {
 	RecordIP bool
 
 	// QueueSize bounds queued events; QueueBytes bounds the reserved request
-	// bytes of queued events. A request larger than MaxRequestBytes becomes
-	// metadata-only instead of entering the content path.
-	QueueSize       int
-	QueueBytes      int64
-	MaxRequestBytes int64
+	// bytes of queued events. PendingAppendBytes separately bounds canonical
+	// content waiting for or actively using the content persistence path. A
+	// request larger than MaxRequestBytes becomes metadata-only instead of
+	// entering the content path.
+	QueueSize          int
+	QueueBytes         int64
+	PendingAppendBytes int64
+	MaxRequestBytes    int64
 
 	// MaxCaptureBytesPerTurn bounds the canonical content a worker may
 	// produce for one turn — the capture budget, decoupled from the queue
@@ -120,12 +123,14 @@ func (c Config) GoString() string {
 // Defaults and hard maximums. Keep in sync with the architecture SSOT:
 // Runtime Limits table and Configuration section.
 const (
-	DefaultQueueSize       = 512
-	MaxQueueSize           = 4096
-	DefaultQueueBytes      = 16 * 1024 * 1024 // 16 MiB reserved request bytes
-	MaxQueueBytes          = 64 * 1024 * 1024 // 64 MiB
-	DefaultMaxRequestBytes = 8 * 1024 * 1024  // 8 MiB one request content
-	MaxMaxRequestBytes     = 16 * 1024 * 1024 // 16 MiB
+	DefaultQueueSize          = 512
+	MaxQueueSize              = 4096
+	DefaultQueueBytes         = 16 * 1024 * 1024 // 16 MiB reserved request bytes
+	MaxQueueBytes             = 64 * 1024 * 1024 // 64 MiB
+	DefaultPendingAppendBytes = 32 * 1024 * 1024 // 32 MiB retained canonical content
+	MaxPendingAppendBytes     = 64 * 1024 * 1024 // 64 MiB
+	DefaultMaxRequestBytes    = 8 * 1024 * 1024  // 8 MiB one request content
+	MaxMaxRequestBytes        = 16 * 1024 * 1024 // 16 MiB
 	// DefaultMaxCaptureBytesPerTurn equals the request cap: the capture
 	// budget decouples from the queue admission, so ordinary requests
 	// capture fully (canonical overhead included) and only the request cap
@@ -231,6 +236,7 @@ func DefaultConfig() Config {
 		HMACKeyVersion:         1,
 		QueueSize:              DefaultQueueSize,
 		QueueBytes:             DefaultQueueBytes,
+		PendingAppendBytes:     DefaultPendingAppendBytes,
 		MaxRequestBytes:        DefaultMaxRequestBytes,
 		MaxCaptureBytesPerTurn: DefaultMaxCaptureBytesPerTurn,
 		BatchSize:              DefaultBatchSize,
@@ -279,6 +285,9 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.QueueBytes, err = envInt64("RELAY_OBSERVER_QUEUE_BYTES", cfg.QueueBytes, 1, MaxQueueBytes); err != nil {
+		return Config{}, err
+	}
+	if cfg.PendingAppendBytes, err = envInt64("RELAY_OBSERVER_PENDING_APPEND_BYTES", cfg.PendingAppendBytes, 1, MaxPendingAppendBytes); err != nil {
 		return Config{}, err
 	}
 	if cfg.MaxRequestBytes, err = envInt64("RELAY_OBSERVER_MAX_REQUEST_BYTES", cfg.MaxRequestBytes, 1, MaxMaxRequestBytes); err != nil {

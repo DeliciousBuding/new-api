@@ -25,15 +25,17 @@ import (
 // retentionFakeTx records every statement and routes by the table the SQL
 // touches, mirroring how the other phases test their seams.
 type retentionFakeTx struct {
-	sqls             []string
-	args             [][]any
-	turnRows         []*fakeRow // rows for "FROM observer_turns" queries
-	sessionRow       []*fakeRow // rows for "FROM observer_sessions" queries
-	sessionLastSeen  time.Time  // value of the session retention lock query
-	checkpointRefs   bool       // EXISTS result of the checkpoint-reference check
-	execErr          error
-	queryErr         error
-	orphans          int64 // rows affected by the orphan delete
+	sqls            []string
+	args            [][]any
+	turnRows        []*fakeRow // rows for "FROM observer_turns" queries
+	sessionRow      []*fakeRow // rows for "FROM observer_sessions" queries
+	sessionLastSeen time.Time  // value of the session retention lock query
+	checkpointRefs  bool       // EXISTS result of the checkpoint-reference check
+	execErr         error
+	queryErr        error
+	orphans         int64 // rows affected by the orphan delete
+	backlogCount    int64
+	backlogOldest   time.Time
 }
 
 func (f *retentionFakeTx) Query(ctx context.Context, query string, args ...any) (rowIter, error) {
@@ -57,6 +59,8 @@ func (f *retentionFakeTx) QueryRow(ctx context.Context, query string, args ...an
 	switch {
 	case strings.Contains(query, "checkpoint_id IN"):
 		return &fakeRow{values: []any{f.checkpointRefs}}
+	case strings.Contains(query, "retention_backlog"):
+		return &fakeRow{values: []any{f.backlogCount, f.backlogOldest}}
 	case strings.Contains(query, "last_seen FROM observer_sessions"):
 		return &fakeRow{values: []any{f.sessionLastSeen}}
 	}
@@ -164,6 +168,35 @@ func TestRetentionListRejectsNonPositiveLimit(t *testing.T) {
 	assert.Empty(t, fx.sqls, "no statement may run for a non-positive limit")
 }
 
+// TestInspectRetentionBacklogIsBoundedAndPayloadFree locks the progress
+// signal contract: each class is sampled with limit+1, counts are reported as
+// capped lower bounds, the oldest timestamp is retained, and no payload query
+// is issued.
+func TestInspectRetentionBacklogIsBoundedAndPayloadFree(t *testing.T) {
+	oldest := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	fx := &retentionFakeTx{backlogCount: int64(retentionBacklogInspectLimit + 1), backlogOldest: oldest}
+	turnCutoff := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	contentCutoff := time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC)
+
+	backlog, err := inspectRetentionBacklogQ(context.Background(), fx, turnCutoff, contentCutoff, retentionBacklogInspectLimit)
+	require.NoError(t, err)
+	assert.Equal(t, int64(retentionBacklogInspectLimit), backlog.Turns)
+	assert.Equal(t, int64(retentionBacklogInspectLimit), backlog.Sessions)
+	assert.Equal(t, int64(retentionBacklogInspectLimit), backlog.Objects)
+	assert.Equal(t, oldest, backlog.Oldest)
+	assert.True(t, backlog.Truncated)
+
+	require.Len(t, fx.sqls, 3)
+	for _, query := range fx.sqls {
+		assert.Contains(t, query, "LIMIT $2")
+		assert.NotContains(t, query, "payload")
+		assert.NotContains(t, query, "item_digests, logical_bytes")
+	}
+	assert.Equal(t, turnCutoff, fx.args[0][0])
+	assert.Equal(t, contentCutoff, fx.args[2][0])
+	assert.Equal(t, retentionBacklogInspectLimit+1, fx.args[0][1])
+}
+
 // TestDeleteTurnRetentionShapeAndOrder locks the turn retention deletion: one
 // transaction-shaped sequence that checks the checkpoint is unreferenced
 // (excluding the row's own self-reference), clears a pointing head, deletes
@@ -171,7 +204,9 @@ func TestRetentionListRejectsNonPositiveLimit(t *testing.T) {
 // and never reading payload columns.
 func TestDeleteTurnRetentionShapeAndOrder(t *testing.T) {
 	fx := &retentionFakeTx{}
-	require.NoError(t, deleteTurnRetentionTx(context.Background(), fx, turnA))
+	deleted, err := deleteTurnRetentionTx(context.Background(), fx, turnA)
+	require.NoError(t, err)
+	assert.True(t, deleted)
 
 	require.Len(t, fx.sqls, 4)
 	assert.Contains(t, fx.sqls[0], "SELECT EXISTS (SELECT 1 FROM observer_contexts d")
@@ -197,7 +232,9 @@ func TestDeleteTurnRetentionShapeAndOrder(t *testing.T) {
 // deleted — the turn survives for a later pass and no delete statement runs.
 func TestDeleteTurnRetentionSkipsReferencedCheckpoint(t *testing.T) {
 	fx := &retentionFakeTx{checkpointRefs: true}
-	require.NoError(t, deleteTurnRetentionTx(context.Background(), fx, turnA))
+	deleted, err := deleteTurnRetentionTx(context.Background(), fx, turnA)
+	require.NoError(t, err)
+	assert.False(t, deleted)
 	require.Len(t, fx.sqls, 1, "only the reference check may run")
 	assert.Contains(t, fx.sqls[0], "SELECT EXISTS")
 	require.Len(t, fx.args, 1)
@@ -212,7 +249,9 @@ func TestDeleteTurnRetentionSkipsReferencedCheckpoint(t *testing.T) {
 func TestDeleteSessionRetentionShapeAndOrder(t *testing.T) {
 	fx := &retentionFakeTx{sessionLastSeen: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)}
 	cutoff := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-	require.NoError(t, deleteSessionRetentionTx(context.Background(), fx, sidB, cutoff))
+	deleted, err := deleteSessionRetentionTx(context.Background(), fx, sidB, cutoff)
+	require.NoError(t, err)
+	assert.True(t, deleted)
 
 	// The lock query is the first statement; the session id travels as a
 	// bound parameter and the cutoff as the second.
@@ -250,7 +289,9 @@ func TestDeleteSessionRetentionShapeAndOrder(t *testing.T) {
 func TestDeleteSessionRetentionSkipsReactivated(t *testing.T) {
 	fx := &retentionFakeTx{sessionLastSeen: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)}
 	cutoff := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-	require.NoError(t, deleteSessionRetentionTx(context.Background(), fx, sidB, cutoff))
+	deleted, err := deleteSessionRetentionTx(context.Background(), fx, sidB, cutoff)
+	require.NoError(t, err)
+	assert.False(t, deleted)
 
 	// Only the lock+re-check statement ran; no delete was issued.
 	require.Len(t, fx.sqls, 1)
@@ -304,8 +345,10 @@ func TestRetentionErrorsPropagate(t *testing.T) {
 	assert.ErrorIs(t, err, sentinel)
 
 	fx2 := &retentionFakeTx{execErr: sentinel, sessionLastSeen: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)}
-	require.ErrorIs(t, deleteTurnRetentionTx(context.Background(), fx2, turnA), sentinel)
-	require.ErrorIs(t, deleteSessionRetentionTx(context.Background(), fx2, sidA, time.Now()), sentinel)
+	_, err = deleteTurnRetentionTx(context.Background(), fx2, turnA)
+	require.ErrorIs(t, err, sentinel)
+	_, err = deleteSessionRetentionTx(context.Background(), fx2, sidA, time.Now())
+	require.ErrorIs(t, err, sentinel)
 	_, err = deleteOrphanContentQ(context.Background(), fx2, time.Now(), 10)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, sentinel)

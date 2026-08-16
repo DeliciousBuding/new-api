@@ -30,6 +30,20 @@ const (
 	digestBHex = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
 
+func requireTurnDeleted(t *testing.T, store RetentionStore, ctx context.Context, turnID uuid.UUID) {
+	t.Helper()
+	deleted, err := store.DeleteTurnRetention(ctx, turnID)
+	require.NoError(t, err)
+	assert.True(t, deleted)
+}
+
+func requireSessionDeleted(t *testing.T, store RetentionStore, ctx context.Context, sessionID uuid.UUID, cutoff time.Time) {
+	t.Helper()
+	deleted, err := store.DeleteSessionRetention(ctx, sessionID, cutoff)
+	require.NoError(t, err)
+	assert.True(t, deleted)
+}
+
 // digestA is the raw bytes of digestAHex.
 var digestA = func() []byte {
 	b, err := hex.DecodeString(digestAHex)
@@ -330,7 +344,7 @@ func TestIntegrationRetentionExpiredTurnDeletes(t *testing.T) {
 	require.NotNil(t, refs[0].SessionID)
 	assert.Equal(t, sid, refs[0].SessionID.String())
 
-	require.NoError(t, store.DeleteTurnRetention(ctx, uuid.MustParse(oldTurn)))
+	requireTurnDeleted(t, store, ctx, uuid.MustParse(oldTurn))
 
 	var count int
 	require.NoError(t, db.QueryRow("SELECT count(*) FROM observer_turns WHERE id = $1", oldTurn).Scan(&count))
@@ -371,7 +385,7 @@ func TestIntegrationRetentionSessionDeletion(t *testing.T) {
 	require.Len(t, ids, 1)
 	assert.Equal(t, sid, ids[0].String())
 
-	require.NoError(t, store.DeleteSessionRetention(ctx, uuid.MustParse(sid), cutoff))
+	requireSessionDeleted(t, store, ctx, uuid.MustParse(sid), cutoff)
 
 	for _, q := range []string{
 		"SELECT count(*) FROM observer_sessions WHERE id = $1",
@@ -434,7 +448,7 @@ func TestIntegrationRetentionOrphanGraceAndReferenceSafety(t *testing.T) {
 	assert.Equal(t, 1, count, "fresh content must survive its grace period regardless of references")
 
 	// Once the retained context goes, the old object becomes deletable.
-	require.NoError(t, store.DeleteTurnRetention(ctx, uuid.MustParse(turnA)))
+	requireTurnDeleted(t, store, ctx, uuid.MustParse(turnA))
 	n, err = store.DeleteOrphanContent(ctx, cutoff, 1000)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "content becomes an orphan once its last retained context is gone")
@@ -462,12 +476,12 @@ func TestIntegrationRetentionSharedDigestAcrossContexts(t *testing.T) {
 	insertContextRow(t, db, sid, turn1, digestsJSON(digestAHex))
 	insertContextRow(t, db, sid, turn2, digestsJSON(digestAHex))
 
-	require.NoError(t, store.DeleteTurnRetention(ctx, uuid.MustParse(turn1)))
+	requireTurnDeleted(t, store, ctx, uuid.MustParse(turn1))
 	n, err := store.DeleteOrphanContent(ctx, cutoff, 1000)
 	require.NoError(t, err)
 	assert.Zero(t, n, "the shared object must survive while a second context still references it")
 
-	require.NoError(t, store.DeleteTurnRetention(ctx, uuid.MustParse(turn2)))
+	requireTurnDeleted(t, store, ctx, uuid.MustParse(turn2))
 	n, err = store.DeleteOrphanContent(ctx, cutoff, 1000)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "the shared object is deleted only after its last reference is gone")
@@ -500,26 +514,26 @@ func TestIntegrationRetentionBoundsAndIdempotence(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, refs, retentionMaxTurnsPerPass, "the turn list must cap at the per-pass limit")
 	for _, ref := range refs {
-		require.NoError(t, store.DeleteTurnRetention(ctx, ref.TurnID))
+		requireTurnDeleted(t, store, ctx, ref.TurnID)
 	}
 	refs, err = store.ListExpiredTurns(ctx, cutoff, retentionMaxTurnsPerPass)
 	require.NoError(t, err)
 	assert.Len(t, refs, 5, "the remaining expired turns are picked up by the next pass")
 	for _, ref := range refs {
-		require.NoError(t, store.DeleteTurnRetention(ctx, ref.TurnID))
+		requireTurnDeleted(t, store, ctx, ref.TurnID)
 	}
 
 	ids, err := store.ListExpiredSessions(ctx, cutoff, retentionMaxSessionsPerPass)
 	require.NoError(t, err)
 	assert.Len(t, ids, retentionMaxSessionsPerPass, "the session list must cap at the per-pass limit")
 	for _, id := range ids {
-		require.NoError(t, store.DeleteSessionRetention(ctx, id, cutoff))
+		requireSessionDeleted(t, store, ctx, id, cutoff)
 	}
 	ids, err = store.ListExpiredSessions(ctx, cutoff, retentionMaxSessionsPerPass)
 	require.NoError(t, err)
 	assert.Len(t, ids, 5, "the remaining expired sessions are picked up by the next pass")
 	for _, id := range ids {
-		require.NoError(t, store.DeleteSessionRetention(ctx, id, cutoff))
+		requireSessionDeleted(t, store, ctx, id, cutoff)
 	}
 
 	// Idempotence: a repeated pass over the cleaned data deletes nothing.
@@ -636,7 +650,7 @@ func TestIntegrationRetentionFullCheckpointKeepsDeltaAlive(t *testing.T) {
 		VALUES ($1, $2, $3, 1, 1, 2, $4::jsonb, 10)`, sid, deltaTurn, fullCtxID, digestsJSON(digestBHex))
 	require.NoError(t, err)
 
-	require.NoError(t, store.DeleteTurnRetention(ctx, uuid.MustParse(fullTurn)))
+	requireTurnDeleted(t, store, ctx, uuid.MustParse(fullTurn))
 
 	var count int
 	require.NoError(t, db.QueryRow("SELECT count(*) FROM observer_turns WHERE id = $1", fullTurn).Scan(&count))
@@ -653,8 +667,8 @@ func TestIntegrationRetentionFullCheckpointKeepsDeltaAlive(t *testing.T) {
 
 	// Once the delta expires too, its own turn deletion frees the full turn
 	// for the next pass.
-	require.NoError(t, store.DeleteTurnRetention(ctx, uuid.MustParse(deltaTurn)))
-	require.NoError(t, store.DeleteTurnRetention(ctx, uuid.MustParse(fullTurn)))
+	requireTurnDeleted(t, store, ctx, uuid.MustParse(deltaTurn))
+	requireTurnDeleted(t, store, ctx, uuid.MustParse(fullTurn))
 	require.NoError(t, db.QueryRow("SELECT count(*) FROM observer_turns WHERE id = $1", fullTurn).Scan(&count))
 	assert.Zero(t, count, "the full turn is deleted once nothing references its checkpoint")
 	require.NoError(t, db.QueryRow("SELECT count(*) FROM observer_contexts WHERE id = $1", fullCtxID).Scan(&count))
