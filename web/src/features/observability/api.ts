@@ -65,8 +65,6 @@ export interface SessionQueryParams {
   client_family?: string
   model?: string
   success?: boolean
-  country?: string
-  asn?: number
   ip?: string
   ip_trust?: 'direct' | 'proxy' | 'none'
   from?: string // RFC3339

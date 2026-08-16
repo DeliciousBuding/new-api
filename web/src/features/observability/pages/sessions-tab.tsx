@@ -107,10 +107,8 @@ interface SessionFilterDraft {
   node_scope: string
   client_family: string
   model: string
-  country: string
   ip: string
   user_id: string
-  asn: string
   success: SuccessFilter
   ip_trust: IpTrustFilter
   from: string // RFC3339
@@ -121,10 +119,8 @@ const EMPTY_DRAFT: SessionFilterDraft = {
   node_scope: '',
   client_family: '',
   model: '',
-  country: '',
   ip: '',
   user_id: '',
-  asn: '',
   success: 'all',
   ip_trust: 'all',
   from: '',
@@ -138,7 +134,6 @@ function buildFilterParams(draft: SessionFilterDraft): SessionQueryParams {
   if (draft.node_scope) params.node_scope = draft.node_scope
   if (draft.client_family) params.client_family = draft.client_family
   if (draft.model) params.model = draft.model
-  if (draft.country) params.country = draft.country
   if (draft.ip) params.ip = draft.ip
   if (draft.success === 'true') params.success = true
   if (draft.success === 'false') params.success = false
@@ -148,10 +143,6 @@ function buildFilterParams(draft: SessionFilterDraft): SessionQueryParams {
   const userId = Number(draft.user_id)
   if (draft.user_id !== '' && Number.isFinite(userId)) {
     params.user_id = userId
-  }
-  const asn = Number(draft.asn)
-  if (draft.asn !== '' && Number.isFinite(asn)) {
-    params.asn = asn
   }
   return params
 }
@@ -388,8 +379,6 @@ export function SessionsTab(props: SessionsTabProps) {
 
   const advancedActiveCount = [
     draft.user_id,
-    draft.country,
-    draft.asn,
     draft.ip,
     draft.from,
     draft.to,
@@ -450,20 +439,6 @@ export function SessionsTab(props: SessionsTabProps) {
           placeholder={t('User ID')}
           value={draft.user_id}
           onChange={(e) => handleDraftChange('user_id', e.target.value)}
-        />
-      </FilterField>
-      <FilterField>
-        <FilterInput
-          placeholder={t('Country')}
-          value={draft.country}
-          onChange={(e) => handleDraftChange('country', e.target.value)}
-        />
-      </FilterField>
-      <FilterField>
-        <FilterInput
-          placeholder={t('ASN')}
-          value={draft.asn}
-          onChange={(e) => handleDraftChange('asn', e.target.value)}
         />
       </FilterField>
       <FilterField>

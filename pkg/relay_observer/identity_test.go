@@ -63,6 +63,7 @@ func TestGoldenDigestLocksHMACSHA256(t *testing.T) {
 func TestResolveCodexTurnMetadataThreadPrimary(t *testing.T) {
 	km := testKM("observer-test-key", 1)
 	in := IdentityInput{
+		Scope:   ScopeCodexCLI,
 		Headers: codexHeaders(`{"thread_id":"t-1","session_id":"s-1"}`),
 	}
 	res, err := ResolveIdentity(in, km)
@@ -81,7 +82,7 @@ func TestResolveCodexTurnMetadataThreadPrimary(t *testing.T) {
 // only session_id: it becomes the primary alias.
 func TestResolveCodexTurnMetadataSessionOnly(t *testing.T) {
 	km := testKM("observer-test-key", 1)
-	res, err := ResolveIdentity(IdentityInput{Headers: codexHeaders(`{"session_id":"s-only"}`)}, km)
+	res, err := ResolveIdentity(IdentityInput{Scope: ScopeCodexCLI, Headers: codexHeaders(`{"session_id":"s-only"}`)}, km)
 	require.NoError(t, err)
 	assert.Equal(t, SourceTurnSession, res.Primary.Source)
 	assert.Equal(t, hmacHex("observer-test-key", "s-only"), res.Primary.Digest)
@@ -93,6 +94,7 @@ func TestResolveCodexTurnMetadataSessionOnly(t *testing.T) {
 func TestResolveClaudeHeaderPrimary(t *testing.T) {
 	km := testKM("observer-test-key", 1)
 	res, err := ResolveIdentity(IdentityInput{
+		Scope:   ScopeClaudeCLI,
 		Headers: claudeHeaders("c-1"),
 		Body:    []byte(`{"metadata":{"user_id":{"session_id":"u-1"},"session_id":"m-1"}}`),
 	}, km)
@@ -112,6 +114,7 @@ func TestResolveClaudeHeaderPrimary(t *testing.T) {
 func TestResolveClaudeMetadataChainPriority(t *testing.T) {
 	km := testKM("observer-test-key", 1)
 	res, err := ResolveIdentity(IdentityInput{
+		Scope:   ScopeClaudeCLI,
 		Headers: claudeHeaders(""),
 		Body:    []byte(`{"metadata":{"user_id":{"session_id":"u-1"},"session_id":"m-1"}}`),
 	}, km)
@@ -121,6 +124,7 @@ func TestResolveClaudeMetadataChainPriority(t *testing.T) {
 	assert.Equal(t, SourceClaudeMetaSession, res.Auxiliary[0].Source)
 
 	res, err = ResolveIdentity(IdentityInput{
+		Scope:   ScopeClaudeCLI,
 		Headers: claudeHeaders(""),
 		Body:    []byte(`{"metadata":{"session_id":"m-1"}}`),
 	}, km)
@@ -136,7 +140,7 @@ func TestResolveCodexHeaderSources(t *testing.T) {
 	h := codexHeaders("")
 	h.Set("Thread_id", "ht-1")
 	h.Set("Session_id", "hs-1")
-	res, err := ResolveIdentity(IdentityInput{Headers: h}, km)
+	res, err := ResolveIdentity(IdentityInput{Scope: ScopeCodexCLI, Headers: h}, km)
 	require.NoError(t, err)
 	assert.Equal(t, SourceHeaderThread, res.Primary.Source)
 	require.Len(t, res.Auxiliary, 1)
@@ -144,7 +148,7 @@ func TestResolveCodexHeaderSources(t *testing.T) {
 
 	h = codexHeaders("")
 	h.Set("Session-Id", "hs-2")
-	res, err = ResolveIdentity(IdentityInput{Headers: h}, km)
+	res, err = ResolveIdentity(IdentityInput{Scope: ScopeCodexCLI, Headers: h}, km)
 	require.NoError(t, err)
 	assert.Equal(t, SourceHeaderSession, res.Primary.Source)
 	assert.Equal(t, hmacHex("observer-test-key", "hs-2"), res.Primary.Digest)
@@ -157,6 +161,7 @@ func TestResolveCacheKeyFallbackPriority(t *testing.T) {
 
 	// Fallback only: no explicit thread/session, cache key becomes primary.
 	res, err := ResolveIdentity(IdentityInput{
+		Scope:   ScopeCodexCLI,
 		Headers: codexHeaders(""),
 		Body:    []byte(`{"prompt_cache_key":"ck-1"}`),
 	}, km)
@@ -166,6 +171,7 @@ func TestResolveCacheKeyFallbackPriority(t *testing.T) {
 
 	// Explicit thread present: cache key stays auxiliary and never overrides.
 	res, err = ResolveIdentity(IdentityInput{
+		Scope:   ScopeCodexCLI,
 		Headers: codexHeaders(`{"thread_id":"t-1"}`),
 		Body:    []byte(`{"prompt_cache_key":"ck-1"}`),
 	}, km)
@@ -183,13 +189,13 @@ func TestResolveCacheKeyScopeRules(t *testing.T) {
 
 	// Unknown profile: cache key is the auxiliary key of SSOT's "unknown
 	// clients" rule; with no other source it becomes the primary alias.
-	res, err := ResolveIdentity(IdentityInput{Body: body}, km)
+	res, err := ResolveIdentity(IdentityInput{Scope: ScopeUnknown, Body: body}, km)
 	require.NoError(t, err)
 	assert.Equal(t, ScopeUnknown, res.Scope)
 	assert.Equal(t, SourceCacheKey, res.Primary.Source)
 
 	// Claude profile: cache key produces no alias.
-	res, err = ResolveIdentity(IdentityInput{Headers: claudeHeaders("c-1"), Body: body}, km)
+	res, err = ResolveIdentity(IdentityInput{Scope: ScopeClaudeCLI, Headers: claudeHeaders("c-1"), Body: body}, km)
 	require.NoError(t, err)
 	assert.Equal(t, ScopeClaudeCLI, res.Scope)
 	assert.Equal(t, SourceClaudeHeader, res.Primary.Source)
@@ -203,6 +209,7 @@ func TestResolveCacheKeyScopeRules(t *testing.T) {
 func TestResolveCacheKeyNonStringSkipped(t *testing.T) {
 	km := testKM("observer-test-key", 1)
 	res, err := ResolveIdentity(IdentityInput{
+		Scope:   ScopeCodexCLI,
 		Headers: codexHeaders(""),
 		Body:    []byte(`{"prompt_cache_key":{"a":1}}`),
 	}, km)
@@ -256,9 +263,9 @@ func TestVerifyRejectsUnknownVersionAndEmptyKeys(t *testing.T) {
 func TestResolveNoCrossScopeMerge(t *testing.T) {
 	km := testKM("observer-test-key", 1)
 
-	codexRes, err := ResolveIdentity(IdentityInput{Headers: codexHeaders(`{"thread_id":"same-id"}`)}, km)
+	codexRes, err := ResolveIdentity(IdentityInput{Scope: ScopeCodexCLI, Headers: codexHeaders(`{"thread_id":"same-id"}`)}, km)
 	require.NoError(t, err)
-	claudeRes, err := ResolveIdentity(IdentityInput{Headers: claudeHeaders("same-id")}, km)
+	claudeRes, err := ResolveIdentity(IdentityInput{Scope: ScopeClaudeCLI, Headers: claudeHeaders("same-id")}, km)
 	require.NoError(t, err)
 
 	assert.Equal(t, codexRes.Primary.Scope, ScopeCodexCLI)
@@ -270,7 +277,7 @@ func TestResolveNoCrossScopeMerge(t *testing.T) {
 	mixed := codexHeaders(`{"thread_id":"t-1"}`)
 	mixed.Set("X-App", "claude-cli/1.0")
 	mixed.Set("X-Claude-Code-Session-Id", "c-1")
-	res, err := ResolveIdentity(IdentityInput{Headers: mixed}, km)
+	res, err := ResolveIdentity(IdentityInput{Scope: ScopeCodexCLI, Headers: mixed}, km)
 	require.NoError(t, err)
 	assert.Equal(t, ScopeCodexCLI, res.Scope)
 	for _, a := range res.Auxiliary {
@@ -278,54 +285,33 @@ func TestResolveNoCrossScopeMerge(t *testing.T) {
 	}
 }
 
-// TestResolveScopeDetection covers DetectSessionScope directly, including
-// profiles without a session identity chain.
-func TestResolveScopeDetection(t *testing.T) {
-	h := http.Header{}
-	assert.Equal(t, ScopeUnknown, DetectSessionScope(h))
-
-	h = http.Header{}
-	h.Set("Originator", "codex_cli/0.1")
-	assert.Equal(t, ScopeCodexCLI, DetectSessionScope(h))
-
-	h = http.Header{}
-	h.Set("Originator", "codex-tui/0.1")
-	assert.Equal(t, ScopeCodexCLI, DetectSessionScope(h))
-
-	h = http.Header{}
-	h.Set("Originator", "codex_desktop/0.1")
-	assert.Equal(t, ScopeCodexDesktop, DetectSessionScope(h))
-
-	h = http.Header{}
-	h.Set("Originator", "codex_app/0.1")
-	assert.Equal(t, ScopeUnknown, DetectSessionScope(h), "unlisted variants have no chain")
-
-	h = http.Header{}
-	h.Set("X-Codex-Window-Id", "w-1")
-	h.Set("User-Agent", "codex-desktop/0.2")
-	assert.Equal(t, ScopeCodexDesktop, DetectSessionScope(h))
-
-	h = http.Header{}
-	h.Set("X-OpenAI-Subagent", "1")
-	assert.Equal(t, ScopeCodexCLI, DetectSessionScope(h))
-
-	h = http.Header{}
-	h.Set("X-App", "claude-cli/1.2.3")
-	assert.Equal(t, ScopeClaudeCLI, DetectSessionScope(h))
-
-	h = http.Header{}
-	h.Set("X-App", "claude-desktop/1.0")
-	assert.Equal(t, ScopeUnknown, DetectSessionScope(h))
-
-	// Claude CLI carries a non-codex Originator (curl/8.0) plus the X-App
-	// chain: the non-codex Originator must fall through to X-App, not return
-	// ScopeUnknown and silently drop the session. Mirrors
-	// service.DetectClientProfile's own corpus.
-	h = http.Header{}
-	h.Set("Originator", "curl/8.0")
-	h.Set("X-App", "claude-cli/1.0")
-	h.Set("X-Claude-Code-Session-Id", "c-1")
-	assert.Equal(t, ScopeClaudeCLI, DetectSessionScope(h))
+// TestSessionScopeForClientProfile locks the value-only bridge between the
+// request-path profile detector and observer identity families. Variant
+// labels share a scope when they share the same protocol session chain;
+// unknown labels remain fail-open and do not gain header parsing here.
+func TestSessionScopeForClientProfile(t *testing.T) {
+	cases := []struct {
+		profile string
+		want    SessionScope
+	}{
+		{profile: "codex_cli", want: ScopeCodexCLI},
+		{profile: "codex_app", want: ScopeCodexCLI},
+		{profile: "codex_vscode", want: ScopeCodexCLI},
+		{profile: "codex_browser", want: ScopeCodexCLI},
+		{profile: "codex_desktop", want: ScopeCodexDesktop},
+		{profile: "claude_cli", want: ScopeClaudeCLI},
+		{profile: "claude_vscode", want: ScopeClaudeCLI},
+		{profile: "claude_desktop_3p", want: ScopeClaudeCLI},
+		{profile: "claude_plugin", want: ScopeUnknown},
+		{profile: "chat", want: ScopeUnknown},
+		{profile: "", want: ScopeUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.profile, func(t *testing.T) {
+			assert.Equal(t, tc.want, SessionScopeForClientProfile(tc.profile))
+		})
+	}
+	assert.Equal(t, ScopeCodexCLI, SessionScopeForClientProfile(" CODEX_VSCODE "))
 }
 
 // TestResolveDesktopScopeHasChain covers the codex_desktop scope resolving
@@ -335,7 +321,7 @@ func TestResolveDesktopScopeHasChain(t *testing.T) {
 	h := http.Header{}
 	h.Set("X-Codex-Turn-Metadata", `{"thread_id":"dt-1"}`)
 	h.Set("User-Agent", "codex-desktop/0.2")
-	res, err := ResolveIdentity(IdentityInput{Headers: h}, km)
+	res, err := ResolveIdentity(IdentityInput{Scope: ScopeCodexDesktop, Headers: h}, km)
 	require.NoError(t, err)
 	assert.Equal(t, ScopeCodexDesktop, res.Scope)
 	assert.Equal(t, SourceTurnThread, res.Primary.Source)
@@ -346,6 +332,7 @@ func TestResolveDesktopScopeHasChain(t *testing.T) {
 func TestRawIDsNeverInOutput(t *testing.T) {
 	km := testKM("observer-test-key", 1)
 	in := IdentityInput{
+		Scope:   ScopeCodexCLI,
 		Headers: codexHeaders(`{"thread_id":"t-1","session_id":"s-1"}`),
 		Body:    []byte(`{"prompt_cache_key":"ck-1"}`),
 	}
@@ -374,6 +361,7 @@ func TestResolveMalformedOrMissingDeterministic(t *testing.T) {
 
 	// Bad JSON in Turn-Metadata: skipped, header thread still resolves.
 	res, err := ResolveIdentity(IdentityInput{
+		Scope:   ScopeCodexCLI,
 		Headers: codexHeaders(`{"thread_id":`),
 	}, km)
 	require.NoError(t, err)
@@ -381,6 +369,7 @@ func TestResolveMalformedOrMissingDeterministic(t *testing.T) {
 	assert.Empty(t, res.Auxiliary)
 
 	res, err = ResolveIdentity(IdentityInput{
+		Scope:   ScopeCodexCLI,
 		Headers: func() http.Header {
 			h := codexHeaders(`{"thread_id":`)
 			h.Set("Thread_id", "ht-1")
@@ -392,6 +381,7 @@ func TestResolveMalformedOrMissingDeterministic(t *testing.T) {
 
 	// Non-string thread_id: skipped.
 	res, err = ResolveIdentity(IdentityInput{
+		Scope:   ScopeCodexCLI,
 		Headers: codexHeaders(`{"thread_id":{"x":1}}`),
 	}, km)
 	require.NoError(t, err)
@@ -405,12 +395,12 @@ func TestResolveMalformedOrMissingDeterministic(t *testing.T) {
 	assert.Empty(t, res.Auxiliary)
 
 	// Empty metadata header value: skipped.
-	res, err = ResolveIdentity(IdentityInput{Headers: codexHeaders("")}, km)
+	res, err = ResolveIdentity(IdentityInput{Scope: ScopeCodexCLI, Headers: codexHeaders("")}, km)
 	require.NoError(t, err)
 	assert.Empty(t, res.Primary)
 
 	// Missing HMAC key: an error, and the raw identifiers stay out of it.
-	_, err = ResolveIdentity(IdentityInput{Headers: codexHeaders(`{"thread_id":"t-1"}`)}, KeyMaterial{})
+	_, err = ResolveIdentity(IdentityInput{Scope: ScopeCodexCLI, Headers: codexHeaders(`{"thread_id":"t-1"}`)}, KeyMaterial{})
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "t-1")
 }
@@ -422,21 +412,21 @@ func TestResolveOversizedSourcesSkipped(t *testing.T) {
 	km := testKM("observer-test-key", 1)
 
 	big := `{"thread_id":"t-1"}` + strings.Repeat("x", MaxTurnMetadataHeaderBytes)
-	res, err := ResolveIdentity(IdentityInput{Headers: codexHeaders(big)}, km)
+	res, err := ResolveIdentity(IdentityInput{Scope: ScopeCodexCLI, Headers: codexHeaders(big)}, km)
 	require.NoError(t, err)
 	assert.Empty(t, res.Primary, "oversized Turn-Metadata must be skipped whole")
 
 	// Same oversized header, but the standalone header thread resolves.
 	h := codexHeaders(big)
 	h.Set("Thread_id", "ht-1")
-	res, err = ResolveIdentity(IdentityInput{Headers: h}, km)
+	res, err = ResolveIdentity(IdentityInput{Scope: ScopeCodexCLI, Headers: h}, km)
 	require.NoError(t, err)
 	assert.Equal(t, SourceHeaderThread, res.Primary.Source)
 
 	// Oversized extracted value: skipped.
 	h = codexHeaders("")
 	h.Set("Thread_id", strings.Repeat("y", MaxAliasValueBytes+1))
-	res, err = ResolveIdentity(IdentityInput{Headers: h}, km)
+	res, err = ResolveIdentity(IdentityInput{Scope: ScopeCodexCLI, Headers: h}, km)
 	require.NoError(t, err)
 	assert.Empty(t, res.Primary)
 }
@@ -446,6 +436,7 @@ func TestResolveOversizedSourcesSkipped(t *testing.T) {
 func TestResolveInstallationIDNotSessionKey(t *testing.T) {
 	km := testKM("observer-test-key", 1)
 	res, err := ResolveIdentity(IdentityInput{
+		Scope:   ScopeCodexCLI,
 		Headers: codexHeaders(`{"installation_id":"inst-1","window_id":"w-1"}`),
 	}, km)
 	require.NoError(t, err)
@@ -461,7 +452,7 @@ func TestResolveConflictsBounded(t *testing.T) {
 	h := codexHeaders(`{"thread_id":"t-1","session_id":"s-1"}`)
 	h.Set("Thread_id", "ht-1")
 	h.Set("Session_id", "hs-1")
-	res, err := ResolveIdentity(IdentityInput{Headers: h, Body: []byte(`{"prompt_cache_key":"ck-1"}`)}, km)
+	res, err := ResolveIdentity(IdentityInput{Scope: ScopeCodexCLI, Headers: h, Body: []byte(`{"prompt_cache_key":"ck-1"}`)}, km)
 	require.NoError(t, err)
 	assert.Equal(t, SourceTurnThread, res.Primary.Source)
 	require.Len(t, res.Auxiliary, 4)
@@ -473,7 +464,7 @@ func TestResolveConflictsBounded(t *testing.T) {
 	// Duplicate raw value across sources dedupes to a single alias.
 	h = codexHeaders(`{"thread_id":"dup-1"}`)
 	h.Set("Thread_id", "dup-1")
-	res, err = ResolveIdentity(IdentityInput{Headers: h}, km)
+	res, err = ResolveIdentity(IdentityInput{Scope: ScopeCodexCLI, Headers: h}, km)
 	require.NoError(t, err)
 	assert.Equal(t, SourceTurnThread, res.Primary.Source)
 	assert.Empty(t, res.Auxiliary, "duplicate values must not create duplicate aliases")

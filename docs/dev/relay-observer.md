@@ -79,8 +79,7 @@ store 失败和 timeout 使用 HTTP 200 degraded envelope 表达可观测系统�
 
 以下是 2026-08-16 对当前实现确认的高优先级缺口，不属于已兑现能力：
 
-- Session scope 与 `DetectClientProfile` 分别解析同一组 header，分类矩阵已经发生漂移；应由请求路径 profile 统一映射 scope。
-- country/ASN 查询维度已暴露，但生产事件没有 GeoIP enrichment；per-turn client profile 已落库但尚未进入 API DTO。
+- GeoIP enrichment 尚未接入生产事件，因此 Observer 只提供受信任等级和原始 IP（在双重 opt-in 开启时）；country/ASN 不属于当前查询或 UI 过滤维度。
 
 ## 配置所有权
 

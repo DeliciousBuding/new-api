@@ -132,6 +132,7 @@ func TestBuildTurnEventAttachesRequestAndIdentity(t *testing.T) {
 	ev := buildTurnEvent(ctx, info, TurnUsage{}, true)
 	require.NotNil(t, ev.Request)
 	assert.Same(t, req, *ev.Request) // the exact parsed reference, zero-copy
+	assert.Equal(t, relayobserver.ScopeCodexCLI, ev.Identity.Scope)
 	// Identity carries the raw header map (worker-side alias resolution reads
 	// it) and the body bytes snapshot.
 	assert.Equal(t, `{"thread_id":"thr-9"}`, ev.Identity.Headers.Get("X-Codex-Turn-Metadata"))
@@ -156,6 +157,8 @@ func TestBuildTurnEventKeepsOriginalCaptureFormatAcrossConversion(t *testing.T) 
 
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ctx.Request = httptest.NewRequest("POST", "/v1/messages", nil)
+	ctx.Request.Header.Set("X-App", "cli")
+	ctx.Request.Header.Set("User-Agent", "claude-cli/1.0 (external, claude-vscode)")
 	req := dto.Request(&dto.ClaudeRequest{
 		Model:    "claude-test",
 		Messages: []dto.ClaudeMessage{{Role: "user", Content: "hello"}},
@@ -171,6 +174,8 @@ func TestBuildTurnEventKeepsOriginalCaptureFormatAcrossConversion(t *testing.T) 
 	ev := buildTurnEvent(ctx, info, TurnUsage{}, true)
 	assert.Equal(t, string(types.RelayFormatOpenAI), ev.RelayFormat)
 	assert.Equal(t, string(types.RelayFormatClaude), ev.CaptureRelayFormat)
+	assert.Equal(t, "claude_vscode", ev.ClientProfile)
+	assert.Equal(t, relayobserver.ScopeClaudeCLI, ev.Identity.Scope)
 	require.NotNil(t, ev.Request)
 	assert.Same(t, req, *ev.Request)
 }
