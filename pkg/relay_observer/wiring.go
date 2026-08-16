@@ -92,8 +92,9 @@ type Runtime struct {
 	cfg Config
 	// hmacKey is the content HMAC key of the running configuration; it is a
 	// secret and must never appear in status output, logs, or API responses.
-	// An empty key skips the per-item digest re-verification of the turn
-	// context reconstruction (T2.3 semantics).
+	// Init fails closed when the enabled config has no key, so a non-empty
+	// value is the runtime invariant; the empty value is only reachable in
+	// tests that set the field directly.
 	hmacKey string
 	// queryStore lazily caches the bounded query surface wrapper created from
 	// the enabled store on first QuerySurface call.
@@ -145,6 +146,15 @@ func (r *Runtime) Init() {
 	}
 	if !cfg.Enabled {
 		r.disableLocked(ReasonDisabled)
+		return
+	}
+	if cfg.HMACKey == "" {
+		// An enabled observer without a content HMAC key cannot derive
+		// session identity digests or verify reconstructed content, so it
+		// would only ever produce metadata-only rows while reporting healthy.
+		// Fail closed on this misconfiguration instead (NewAPI still starts;
+		// the observer disables itself).
+		r.disableLocked(ReasonHMACKeyMissing)
 		return
 	}
 	timeout := r.openTimeout
@@ -260,10 +270,10 @@ func (r *Runtime) QuerySurface() (QueryStore, time.Duration, bool) {
 	return seam()
 }
 
-// HMACKey returns the content HMAC key of the running configuration. An empty
-// key skips the per-item digest re-verification of the turn context
-// reconstruction (T3.1 semantics); the value is a secret and must never cross
-// the status, API, or log boundary.
+// HMACKey returns the content HMAC key of the running configuration. Init
+// fails closed when an enabled config has no key, so a healthy enabled
+// runtime always has one; the value is a secret and must never cross the
+// status, API, or log boundary.
 func (r *Runtime) HMACKey() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
