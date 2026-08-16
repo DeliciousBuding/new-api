@@ -160,3 +160,125 @@ func TestDiscoverResponsesDataURIPrefix(t *testing.T) {
 		t.Fatal("data URI prefix form and plain base64 form should share digest")
 	}
 }
+
+// Responses 规范形态：input_image.image_url 为裸字符串（http URL），
+// 而非对象 {url:...}。修复前 imageSourceFromResponsesBlock 按对象读取 .url
+// 会得到空串，最终退化为 unsupported_format。字符串 http URL 应解析为
+// 可下载的 URL 源（无 fetcher 时由 PrepareImage 报 ErrDownload，而非空源）。
+func TestDiscoverResponsesImageURLString(t *testing.T) {
+	raw := `{
+		"model":"deepseek-v4-flash",
+		"input":[
+			{"role":"user","content":[
+				{"type":"input_image","image_url":"https://example.com/a.png"}
+			]}
+		]
+	}`
+	patches, err := Discover([]byte(raw), FormatResponses)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(patches) != 1 {
+		t.Fatalf("expected 1 patch, got %d", len(patches))
+	}
+	if patches[0].Source.URL != "https://example.com/a.png" {
+		t.Fatalf("expected URL source, got %+v", patches[0].Source)
+	}
+	if patches[0].Source.Data != "" {
+		t.Fatalf("string image_url should not be parsed as data, got data=%q", patches[0].Source.Data)
+	}
+	// 无 fetcher 时 URL 源应在 PrepareImage 报 ErrDownload（不是空源 ErrExtract）
+	img := PrepareImage(t.Context(), patches[0], nil, MaxDecodedBytes)
+	if img.Err == nil {
+		t.Fatal("URL image without fetcher should fail")
+	}
+	if enumFromErr(img.Err) == EnumUnsupportedFormat {
+		t.Fatalf("string URL should map to download/service error, not unsupported_format; got %q", enumFromErr(img.Err))
+	}
+}
+
+// Responses 规范形态：input_image.image_url 为裸 data URL 字符串
+// （data:image/png;base64,...）。应解码为 base64 data 源，与对象形态 digest 一致。
+func TestDiscoverResponsesImageURLDataString(t *testing.T) {
+	raw := `{
+		"model":"deepseek-v4-flash",
+		"input":[
+			{"role":"user","content":[
+				{"type":"input_image","image_url":"data:image/png;base64,QUJD"}
+			]}
+		]
+	}`
+	patches, err := Discover([]byte(raw), FormatResponses)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(patches) != 1 {
+		t.Fatalf("expected 1 patch, got %d", len(patches))
+	}
+	if patches[0].Source.Data != "QUJD" {
+		t.Fatalf("expected base64 data, got %+v", patches[0].Source)
+	}
+	img := PrepareImage(t.Context(), patches[0], nil, MaxDecodedBytes)
+	if img.Err != nil {
+		t.Fatalf("data URL string should decode, got %v", img.Err)
+	}
+	// 与对象形态 {url:"data:..."} digest 一致
+	rawObj := `{
+		"model":"deepseek-v4-flash",
+		"input":[
+			{"role":"user","content":[
+				{"type":"input_image","image_url":{"url":"data:image/png;base64,QUJD"}}
+			]}
+		]
+	}`
+	patchesObj, err := Discover([]byte(rawObj), FormatResponses)
+	if err != nil {
+		t.Fatalf("discover obj: %v", err)
+	}
+	imgObj := PrepareImage(t.Context(), patchesObj[0], nil, MaxDecodedBytes)
+	if img.Digest != imgObj.Digest {
+		t.Fatal("string data-URL form and object form should share digest")
+	}
+}
+
+// Responses file_id 形态：input_image.file_id（OpenAI 托管文件）无下载能力，
+// 应被识别为图片块并在 Apply 时替换为 unsupported_format 占位，
+// 且替换后的文本块不残留 file_id 字段。
+func TestDiscoverResponsesFileID(t *testing.T) {
+	raw := `{
+		"model":"deepseek-v4-flash",
+		"input":[
+			{"role":"user","content":[
+				{"type":"input_image","file_id":"file-abc123"}
+			]}
+		]
+	}`
+	patches, err := Discover([]byte(raw), FormatResponses)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(patches) != 1 {
+		t.Fatalf("expected 1 patch for file_id block, got %d", len(patches))
+	}
+	img := PrepareImage(t.Context(), patches[0], nil, MaxDecodedBytes)
+	if img.Err == nil {
+		t.Fatal("file_id block should fail (no download capability)")
+	}
+	if enumFromErr(img.Err) != EnumUnsupportedFormat {
+		t.Fatalf("file_id should map to unsupported_format, got %q", enumFromErr(img.Err))
+	}
+	enhanced, err := Apply([]byte(raw), []*PatchedImage{img}, map[string]string{})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	out := string(enhanced)
+	if strings.Contains(out, `"type":"input_image"`) {
+		t.Error("input_image block remains")
+	}
+	if strings.Contains(out, "file-abc123") || strings.Contains(out, `"file_id"`) {
+		t.Error("file_id leaked into replacement block (should be dropped)")
+	}
+	if !strings.Contains(out, "unavailable:") {
+		t.Error("placeholder missing for file_id block")
+	}
+}

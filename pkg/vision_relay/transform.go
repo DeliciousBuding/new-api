@@ -218,7 +218,7 @@ func isOpenAIImageBlock(block gjson.Result) bool {
 
 func isResponsesImageBlock(block gjson.Result) bool {
 	return block.Get("type").String() == "input_image" &&
-		(block.Get("image_url").Exists() || block.Get("data").Exists())
+		(block.Get("image_url").Exists() || block.Get("data").Exists() || block.Get("file_id").Exists())
 }
 
 func imageSourceFromClaudeBlock(block gjson.Result) ImageSource {
@@ -245,16 +245,32 @@ func imageSourceFromOpenAIBlock(block gjson.Result) ImageSource {
 	return ImageSource{URL: url, MediaType: "image/png"}
 }
 
-// imageSourceFromResponsesBlock 支持两种 input_image 形态：
-// image_url.url（http 或 data:）与 data+mime_type（原生 base64）。
+// imageSourceFromResponsesBlock 支持 OpenAI Responses input_image 的三种形态：
+// 1. image_url 为字符串（规范形态）：fully qualified URL 或 data URL（裸字符串，非对象）
+// 2. image_url 为对象 {url: "..."}：兼容旧/非标客户端（codex_cli 实测形态）
+// 3. data + mime_type：原生 base64（codex_cli 在 data 字段塞完整 data URI 也容错）
+// file_id 形态（OpenAI 托管文件）无下载能力，由 isResponsesImageBlock 识别但
+// 此函数返回空 ImageSource，由调用方走 unsupported_format 占位。
 func imageSourceFromResponsesBlock(block gjson.Result) ImageSource {
 	if iu := block.Get("image_url"); iu.Exists() {
-		url := iu.Get("url").String()
-		if len(url) > 5 && url[:5] == "data:" {
-			mime, data, _ := parseDataURL(url)
-			return ImageSource{Data: data, MediaType: mime}
+		// 规范形态：image_url 是裸字符串
+		if iu.Type == gjson.String {
+			url := iu.String()
+			if len(url) > 5 && url[:5] == "data:" {
+				mime, data, _ := parseDataURL(url)
+				return ImageSource{Data: data, MediaType: mime}
+			}
+			return ImageSource{URL: url, MediaType: "image/png"}
 		}
-		return ImageSource{URL: url, MediaType: "image/png"}
+		// 兼容形态：image_url 是对象 {url: "..."}
+		if iu.IsObject() {
+			url := iu.Get("url").String()
+			if len(url) > 5 && url[:5] == "data:" {
+				mime, data, _ := parseDataURL(url)
+				return ImageSource{Data: data, MediaType: mime}
+			}
+			return ImageSource{URL: url, MediaType: "image/png"}
+		}
 	}
 	data := block.Get("data").String()
 	if strings.HasPrefix(data, "data:") {
@@ -339,8 +355,8 @@ func replacementBlock(body []byte, patch Patch, desc string) ([]byte, error) {
 	block.ForEach(func(key, value gjson.Result) bool {
 		k := key.String()
 		switch k {
-		case "type", "text", "source", "image_url", "detail", "data", "mime_type":
-			return true // 被替换/删除的字段
+		case "type", "text", "source", "image_url", "detail", "data", "mime_type", "file_id":
+			return true // 被替换/删除的字段（file_id 仅对 input_image 有意义，替换为文本块后不保留）
 		}
 		keyJSON, err := json.Marshal(k)
 		if err != nil {
