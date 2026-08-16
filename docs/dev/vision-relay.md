@@ -79,7 +79,6 @@ Claude `system[]` 和 Responses `instructions[]` 中的图片当前会在原高�
 
 以下是 2026-08-16 对当前实现确认的高优先级缺口：
 
-- ~~OpenAI Responses 标准 `image_url` 字符串会被发现，但提取器按对象读取 `.url`，最终退化为 `unsupported_format`；字符串、兼容对象和 `file_id` 必须分别定义契约。~~ **已修复（fix/vision-responses-image-url，issue #113）**：`imageSourceFromResponsesBlock` 现在分别处理裸字符串 URL、data URL 字符串、对象 `{url}` 兼容形态；`file_id` 形态被识别并在替换时降级为 `unsupported_format` 占位且不残留 `file_id` 字段。
 - 结构化输出缺少 strict quality gate，格式损坏不会触发 fallback，也可能进入缓存。
 - 图片增强发生在 token estimate/pre-consume 之后，最终计费 fallback 可能仍使用原图片请求估算；图片数量边界也晚于 token counter 的远程抓取。
 - 远程下载在获取全局 decode gate 后执行；慢 URL 会占用内存解码槽，且请求内准备当前串行。
