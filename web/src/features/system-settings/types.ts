@@ -39,6 +39,25 @@ export type UpdateOptionResponse = {
   message: string
 }
 
+export type UpdateVisionRelayOptionsRequest = {
+  enabled: string
+  structured: string
+  structured_prompt: string
+  target_models: string
+  models: string
+  base_url: string
+  api_key: string
+  prompt: string
+  timeout_sec: string
+  sidecall_secret: string
+  disable_proxy_fetch: string
+}
+
+export type UpdateVisionRelayOptionsResponse = {
+  success: boolean
+  message: string
+}
+
 export type ConfirmPaymentComplianceResponse = {
   success: boolean
   message: string
@@ -216,6 +235,7 @@ export type ModelSettings = {
   'vision_relay.prompt': string
   'vision_relay.timeout_sec': number
   'vision_relay.sidecall_secret': string
+  'vision_relay.disable_proxy_fetch': boolean
   ModelPrice: string
   ModelRatio: string
   CacheRatio: string

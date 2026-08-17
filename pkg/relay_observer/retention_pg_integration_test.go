@@ -675,6 +675,120 @@ func TestIntegrationRetentionFullCheckpointKeepsDeltaAlive(t *testing.T) {
 	assert.Zero(t, count, "the checkpoint context row is deleted once unreferenced")
 }
 
+// TestIntegrationRetentionTurnLockClosesTOCTOU locks the TOCTOU fix for the
+// turn retention path: the head row lock taken before the delta-reference
+// check serializes against a concurrent append whose lockHeadTx locks the
+// same row. Without the lock, the append would commit a delta referencing the
+// full checkpoint between the reference check and the delete, leaving the
+// delta's checkpoint_id pointing at a deleted context (dangling). With the
+// lock, the append blocks until the delete commits; the cleared head then
+// makes the append start a fresh full checkpoint instead of a delta, so no
+// context is ever left dangling.
+//
+// The interleave is driven through the production methods on two real
+// connections: DeleteTurnRetention pauses inside its transaction (the
+// retentionHook fires after the head lock and reference check, while the head
+// row lock is still held), AppendTurns then tries to claim the same session
+// and must block on the head row lock. Once retention commits (deleting the
+// full checkpoint and clearing the head), the append unblocks and observes
+// the cleared head.
+func TestIntegrationRetentionTurnLockClosesTOCTOU(t *testing.T) {
+	dsn := integrationDSN(t)
+	store := resetObserverSchema(t, dsn)
+	defer store.Close(context.Background())
+	cp, ok := store.(ContentPersistence)
+	require.True(t, ok, "the pg adapter must implement ContentPersistence")
+	rs, ok := store.(RetentionStore)
+	require.True(t, ok, "the pg adapter must implement RetentionStore")
+	db := openFixturePool(t, dsn)
+	ctx := context.Background()
+
+	scope := uniqueScope("t51-toctou")
+	// A session whose last activity is long past, so the full turn T1 is
+	// expired and deletable, and a concurrent append for T2 is fresh.
+	sid := insertSessionRow(t, db, scope, time.Now().Add(-40*24*time.Hour))
+	// The alias binding mirrors the append-side lookup parameters so an
+	// append for the same scope/user/key/digest resolves to this session.
+	_, err := db.Exec(`INSERT INTO observer_session_aliases (node_scope, user_id, key_version, provider, source, alias_digest, session_id, first_seen, last_seen)
+		VALUES ($1, 1, 1, 'codex_cli', 'turn_thread', $2, $3, now(), now())`, scope, digestA, sid)
+	require.NoError(t, err)
+
+	// Turn T1 is expired and carries the full checkpoint C1 the head points
+	// at. A concurrent append for T2 would, without the fix, insert a delta
+	// referencing C1 between the retention reference check and the delete.
+	fullTurn := insertTurnRow(t, db, scope, "full", time.Now().Add(-31*24*time.Hour), &sid)
+	insertObjectRow(t, db, sid, digestAHex, time.Now().Add(-31*24*time.Hour))
+	var fullCtxID int64
+	require.NoError(t, db.QueryRow(`INSERT INTO observer_contexts (session_id, turn_id, checkpoint_id, group_ordinal, common_prefix_count, item_count, item_digests, logical_bytes)
+		VALUES ($1, $2, 0, 0, 0, 1, $3::jsonb, 10) RETURNING id`, sid, fullTurn, digestsJSON(digestAHex)).Scan(&fullCtxID))
+	_, err = db.Exec(`UPDATE observer_contexts SET checkpoint_id = $1 WHERE id = $1`, fullCtxID)
+	require.NoError(t, err)
+	insertHeadRow(t, db, sid, fullCtxID)
+
+	// Turn T2 is the pending append: an unbound turn row plus the content
+	// item that would produce a delta against C1 if the head still pointed
+	// at it when the append reads the head.
+	deltaTurn := uuid.New()
+	_, err = db.Exec(`INSERT INTO observer_turns (id, node_scope, event_id, occurred_at) VALUES ($1, $2, $3, now())`,
+		deltaTurn.String(), scope, "delta-append")
+	require.NoError(t, err)
+	in := exactlyOnceInput(scope, deltaTurn, ContentStateFull, []CanonicalItem{contentItemWith(t, "delta-body")})
+
+	// Hold the turn retention inside its transaction, after the head lock
+	// and the reference check, before any delete. The head row lock stays
+	// held for the whole pause.
+	retentionLocked := make(chan struct{})
+	release := make(chan struct{})
+	retentionHook = func() {
+		close(retentionLocked)
+		<-release
+	}
+	t.Cleanup(func() { retentionHook = nil })
+
+	retDone := make(chan error, 1)
+	go func() {
+		_, err := rs.DeleteTurnRetention(ctx, uuid.MustParse(fullTurn))
+		retDone <- err
+	}()
+	<-retentionLocked
+
+	// The append must block on the head row lock the retention holds. It
+	// must not finish, and it must not have written any delta context
+	// referencing C1, while retention is paused.
+	appendDone := make(chan error, 1)
+	go func() { appendDone <- cp.AppendTurns(ctx, []ContentInput{in}) }()
+	select {
+	case err := <-appendDone:
+		t.Fatalf("append finished while retention held the head lock: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	var dangling int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_contexts WHERE checkpoint_id = $1 AND id <> checkpoint_id`, fullCtxID).Scan(&dangling))
+	assert.Zero(t, dangling, "no delta referencing C1 may exist while retention holds the head lock")
+
+	// Release retention: it deletes C1, clears the head, deletes T1, and
+	// commits. The append unblocks, observes the cleared head (context_id
+	// NULL), and starts a fresh full checkpoint instead of a delta.
+	close(release)
+	require.NoError(t, <-retDone, "retention must complete after release")
+	require.NoError(t, <-appendDone, "the append must complete once the head lock is free")
+
+	// C1 is gone and no surviving context references it: the delta was never
+	// written, and the append's new context is a self-referenced full.
+	require.NoError(t, db.QueryRow("SELECT count(*) FROM observer_contexts WHERE id = $1", fullCtxID).Scan(&dangling))
+	assert.Zero(t, dangling, "the deleted full checkpoint C1 must not survive")
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_contexts WHERE checkpoint_id = $1 AND id <> checkpoint_id`, fullCtxID).Scan(&dangling))
+	assert.Zero(t, dangling, "no delta may reference the deleted C1 (no dangling checkpoint_id)")
+
+	// The append's turn is bound to the session and its context is a full
+	// checkpoint (group_ordinal 0, self-referenced), never a delta.
+	var bound, fullCount int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_turns WHERE id = $1 AND session_id = $2`, deltaTurn.String(), sid).Scan(&bound))
+	assert.Equal(t, 1, bound, "the append must bind T2 to the same session")
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_contexts WHERE turn_id = $1 AND group_ordinal = 0 AND checkpoint_id = id`, deltaTurn.String()).Scan(&fullCount))
+	assert.Equal(t, 1, fullCount, "the append must write a self-referenced full checkpoint once the head was cleared")
+}
+
 // TestIntegrationRetentionWriteBumpsSessionLastSeen locks the session recency
 // invariant the session retention path relies on: writing any turn bound to a
 // session — including a metadata-only turn that persists no content — must

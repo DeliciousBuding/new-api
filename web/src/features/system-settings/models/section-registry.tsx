@@ -162,6 +162,7 @@ const MODELS_SECTIONS = [
           prompt: settings['vision_relay.prompt'],
           timeout_sec: settings['vision_relay.timeout_sec'],
           sidecall_secret: settings['vision_relay.sidecall_secret'],
+          disable_proxy_fetch: settings['vision_relay.disable_proxy_fetch'],
         }}
       />
     ),

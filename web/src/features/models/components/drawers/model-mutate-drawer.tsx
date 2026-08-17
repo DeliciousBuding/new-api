@@ -335,6 +335,7 @@ export function ModelMutateDrawer({
       'vision_relay.prompt': '',
       'vision_relay.timeout_sec': 15,
       'vision_relay.sidecall_secret': '',
+      'vision_relay.disable_proxy_fetch': false,
       RetryTimes: 0,
       ChannelDisableThreshold: '',
       AutomaticDisableChannelEnabled: false,
