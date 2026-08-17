@@ -21,6 +21,8 @@ import (
 	"github.com/QuantumNous/new-api/setting/system_setting"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // ---- 测试夹具 ----
@@ -390,4 +392,99 @@ func TestPrepareVisionRelayOutboundMarker(t *testing.T) {
 	if strings.Contains(string(body), `"type":"image"`) {
 		t.Fatal("enhanced body must not contain image block")
 	}
+}
+
+// Vision Relay 增强后必须重估 prompt tokens，使 settle no-usage fallback
+// 与 channel-handler 自建 usage 路径按增强后 prompt 计费（audit-2026-08 #50）。
+// 验证：
+//  1. 增强前 EstimateRequestToken 设置的 estimatePromptTokens 在
+//     PrepareVisionRelayRequest 成功后被刷新为增强后值。
+//  2. 刷新后的值与对增强后 DTO 独立调用 EstimateRequestToken 一致。
+//  3. 增强后 body 不再含 image 块（图被转写文本替换）。
+func TestPrepareVisionRelayReestimatesPromptTokens(t *testing.T) {
+	enableTokenCounting(t)
+	ts := visionMockServer(t, nil)
+	defer ts.Close()
+	c, relayInfo, raw := setupVisionRelayEnv(t, ts.URL, true)
+
+	// Parse the raw body into a ClaudeRequest so GetTokenCountMeta works
+	// (controller does this before calling EstimateRequestToken).
+	var originalReq dto.ClaudeRequest
+	require.NoError(t, common.Unmarshal(raw, &originalReq))
+	relayInfo.Request = &originalReq
+
+	// Pre-augmentation estimate (controller path).
+	preMeta := relayInfo.Request.GetTokenCountMeta()
+	require.NotNil(t, preMeta)
+	preEstimate, err := EstimateRequestToken(c, preMeta, relayInfo)
+	require.NoError(t, err)
+	relayInfo.SetEstimatePromptTokens(preEstimate)
+	require.Equal(t, preEstimate, relayInfo.GetEstimatePromptTokens())
+	// 非OpenAI文本模型：image 占位贡献 520。
+	require.GreaterOrEqual(t, preEstimate, 520, "pre-augmentation estimate must include image placeholder")
+
+	// PrepareVisionRelayRequest augments and re-estimates.
+	apiErr := PrepareVisionRelayRequest(c, relayInfo)
+	require.Nil(t, apiErr, "PrepareVisionRelayRequest must succeed")
+
+	postEstimate := relayInfo.GetEstimatePromptTokens()
+	require.NotEqual(t, preEstimate, postEstimate, "estimate must be refreshed after augmentation")
+
+	// The re-estimate must match a fresh EstimateRequestToken call on the
+	// augmented DTO (idempotent, no images to fetch).
+	augmentedMeta := relayInfo.Request.GetTokenCountMeta()
+	require.NotNil(t, augmentedMeta)
+	// Augmented body has no image FileMeta — the transcription replaced them.
+	for _, file := range augmentedMeta.Files {
+		require.NotEqual(t, types.FileTypeImage, file.FileType, "augmented meta must not contain image files")
+	}
+	freshEstimate, err := EstimateRequestToken(c, augmentedMeta, relayInfo)
+	require.NoError(t, err)
+	require.Equal(t, freshEstimate, postEstimate, "stored estimate must match fresh re-estimate of augmented DTO")
+
+	// Augmented body no longer carries image blocks; the description text
+	// replaced them. Settle's no-usage fallback would now charge for the
+	// transcription text instead of the pre-augmentation 520 placeholder.
+	require.False(t, strings.Contains(string(storageContent(t, c)), `"type":"image"`),
+		"augmented body must not contain image blocks")
+}
+
+// VisionRelayWillEngageForEstimate 必须与 PrepareVisionRelayRequest 的命中
+// 条件对齐（enabled + target match + 支持的 relay format），但不能在 disabled
+// 或未命中模型时误截断合法多图请求。表驱动覆盖四个分支。
+func TestVisionRelayWillEngageForEstimate(t *testing.T) {
+	ts := visionMockServer(t, nil)
+	defer ts.Close()
+
+	cases := []struct {
+		name       string
+		enabled    bool
+		model      string
+		format     types.RelayFormat
+		wantEngage bool
+	}{
+		{"enabled + matched model + Claude", true, "deepseek-v4-flash", types.RelayFormatClaude, true},
+		{"enabled + matched model + OpenAI", true, "deepseek-chat", types.RelayFormatOpenAI, true},
+		{"disabled + matched model", false, "deepseek-v4-flash", types.RelayFormatClaude, false},
+		{"enabled + unmatched model", true, "gpt-4o", types.RelayFormatClaude, false},
+		{"enabled + matched model + unsupported Gemini format", true, "deepseek-v4-flash", types.RelayFormatGemini, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _ = setupVisionRelayEnv(t, ts.URL, tc.enabled)
+			info := &relaycommon.RelayInfo{
+				OriginModelName: tc.model,
+				RelayFormat:     tc.format,
+			}
+			got := VisionRelayWillEngageForEstimate(info)
+			assert.Equal(t, tc.wantEngage, got)
+		})
+	}
+}
+
+// nil RelayInfo must not panic — helper is called from estimate path where
+// a partial RelayInfo could exist in edge cases.
+func TestVisionRelayWillEngageForEstimateNilInfo(t *testing.T) {
+	require.False(t, VisionRelayWillEngageForEstimate(nil))
 }

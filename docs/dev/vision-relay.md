@@ -80,7 +80,6 @@ Claude `system[]` 和 Responses `instructions[]` 中的图片当前会在原高�
 以下是 2026-08-16 对当前实现确认的高优先级缺口：
 
 - 结构化输出缺少 strict quality gate，格式损坏不会触发 fallback，也可能进入缓存。
-- 图片增强发生在 token estimate/pre-consume 之后，最终计费 fallback 可能仍使用原图片请求估算；图片数量边界也晚于 token counter 的远程抓取。
 - 请求内图片准备当前串行，慢 URL 仍会阻塞同一请求内后续图片的准备。
 - 设置页逐键保存且业务失败不会可靠 reject mutation，缺少完整 prospective snapshot 校验和明确 secret keep/set/clear 语义。
 - cache identity 未包含 provider/model/render-contract 版本，也没有 singleflight、独立开关或 TTL 配置。
