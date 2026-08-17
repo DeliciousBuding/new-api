@@ -100,7 +100,9 @@ func (f visionRelayFetcher) Fetch(ctx context.Context, url string, maxBytes int6
 //  9. 创建新 BodyStorage
 //  10. 最后一次性原子提交：relayInfo.Request / Gin BodyStorage / Request.Body / ContentLength
 //  11. 关闭旧 BodyStorage（防 fd/临时文件泄漏）
-//  12. 记录 Stats
+//  12. 重估 prompt tokens（刷新 relayInfo.estimatePromptTokens 为增强后值，
+//     修正 settle no-usage fallback 与 channel-handler 自建 usage 路径计费）
+//  13. 记录 Stats
 //
 // 允许 no-op：enabled=false / target_models 空 / 模型未命中 / 协议不支持 /
 // 请求无图片 / 递归保护头。以下必须 5xx：命中后端点配置非法、内部 JSON 变换失败、
@@ -224,7 +226,23 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 		_ = originalStorage.Close()
 	}
 
-	// 12. 结构化统计日志（A12）
+	// 12. 重估 prompt tokens：增强后的 body 把图片替换为转写文本，settle 阶段
+	//     若上游不返回 usage（service/text_quota.go calculateTextQuotaSummary 的
+	//     nil-usage fallback），原本会回退到 pre-augmentation 估算（含 520 图像
+	//     占位或对已删除 URL 图的远程抓取），导致注入的 description/sidecall
+	//     成本完全不收费。用增强后的 DTO 重估并刷新 relayInfo.estimatePromptTokens，
+	//     使 no-usage fallback 与 channel-handler 自建 usage 路径都按增强后 prompt
+	//     计费。pre-consume 已锁住原估算，settle 按新估算补差或返还。
+	//     重估失败非致命：保留旧估算，等同修复前行为。
+	if augmentedMeta := enhancedRequest.GetTokenCountMeta(); augmentedMeta != nil {
+		if reestimated, err := EstimateRequestToken(c, augmentedMeta, relayInfo); err == nil {
+			relayInfo.SetEstimatePromptTokens(reestimated)
+		} else {
+			logger.LogWarn(c, fmt.Sprintf("vision relay re-estimate prompt tokens failed: %v", err))
+		}
+	}
+
+	// 13. 结构化统计日志（A12）
 	logger.LogInfo(c, fmt.Sprintf(
 		"vision: target_model=%s images_total=%d images_success=%d images_failed=%d unique=%d cache_hits=%d cache_served=%d vision_calls=%d fallback_count=%d elapsed_ms=%d models_used=%s description_bytes=%d failed_reasons=%s attempts=%s",
 		relayInfo.OriginModelName, stats.Total, stats.Success, stats.Failed, stats.UniqueImages,
@@ -277,6 +295,34 @@ func visionRelayAttempts(stats *vision_relay.Stats) string {
 		return ""
 	}
 	return string(b)
+}
+
+// VisionRelayWillEngageForEstimate reports whether PrepareVisionRelayRequest
+// will actually transform this request, as seen from the pre-augmentation
+// estimate path. It mirrors the engagement checks (enabled + target model
+// match + supported relay format) but deliberately omits the recursion-header
+// bypass: estimate-phase requests are originals, not authenticated sidecalls,
+// so the header check is irrelevant for bounding decisions.
+//
+// token_counter.go uses this to pre-bound image fetches to
+// vision_relay.MaxImages when Vision Relay would truncate the surplus anyway,
+// avoiding needless remote fetches for URL images that never reach upstream.
+func VisionRelayWillEngageForEstimate(info *relaycommon.RelayInfo) bool {
+	if info == nil {
+		return false
+	}
+	cfg, err := model_setting.GetVisionRelaySnapshot()
+	if err != nil || !cfg.Enabled {
+		return false
+	}
+	patterns, err := cfg.TargetModelPatterns()
+	if err != nil || !visionRelayMatchPatterns(patterns, info.OriginModelName) {
+		return false
+	}
+	if _, ok := visionRelayFormat(info.RelayFormat); !ok {
+		return false
+	}
+	return true
 }
 
 // visionRelayFormat 协议格式映射（未知格式返回 ok=false）
