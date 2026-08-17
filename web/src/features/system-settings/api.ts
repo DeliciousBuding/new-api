@@ -27,6 +27,8 @@ import type {
   SystemTaskResponse,
   UpdateOptionRequest,
   UpdateOptionResponse,
+  UpdateVisionRelayOptionsRequest,
+  UpdateVisionRelayOptionsResponse,
   UpstreamChannelsResponse,
   UpstreamRatiosResponse,
 } from './types'
@@ -38,6 +40,16 @@ export async function getSystemOptions() {
 
 export async function updateSystemOption(request: UpdateOptionRequest) {
   const res = await api.put<UpdateOptionResponse>('/api/option/', request)
+  return res.data
+}
+
+export async function updateVisionRelayOptions(
+  request: UpdateVisionRelayOptionsRequest
+) {
+  const res = await api.put<UpdateVisionRelayOptionsResponse>(
+    '/api/option/vision_relay',
+    request
+  )
   return res.data
 }
 

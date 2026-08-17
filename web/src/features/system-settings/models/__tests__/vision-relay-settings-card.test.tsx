@@ -47,6 +47,7 @@ function defaultValues() {
     prompt: '',
     timeout_sec: 15,
     sidecall_secret: '',
+    disable_proxy_fetch: false,
   }
 }
 
@@ -78,14 +79,13 @@ describe('vision relay settings card', () => {
     return button as HTMLButtonElement
   }
 
-  test('renders switch, JSON editors and sensitive inputs', async () => {
+  test('renders switches, JSON editors and sensitive inputs', async () => {
     const { container, actionsContainer, queryClient, unmount } =
       await renderCard(defaultValues())
 
-    const enabledSwitch = container.querySelector<HTMLElement>(
-      'span[role="switch"]'
-    )
-    expect(enabledSwitch, 'enabled switch must render').toBeTruthy()
+    const switches =
+      container.querySelectorAll<HTMLElement>('span[role="switch"]')
+    expect(switches.length).toBe(3)
 
     const textareas =
       container.querySelectorAll<HTMLTextAreaElement>('textarea')

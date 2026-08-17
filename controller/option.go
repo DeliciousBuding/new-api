@@ -256,7 +256,9 @@ func UpdateOption(c *gin.Context) {
 		}
 	case "vision_relay.enabled", "vision_relay.target_models", "vision_relay.models",
 		"vision_relay.timeout_sec", "vision_relay.base_url",
-		"vision_relay.api_key", "vision_relay.sidecall_secret":
+		"vision_relay.api_key", "vision_relay.sidecall_secret",
+		"vision_relay.prompt", "vision_relay.structured",
+		"vision_relay.structured_prompt", "vision_relay.disable_proxy_fetch":
 		err = model_setting.ValidateVisionRelayWrite(option.Key, option.Value.(string))
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
@@ -383,6 +385,150 @@ func UpdateOption(c *gin.Context) {
 	recordManageAudit(c, "option.update", map[string]interface{}{
 		"key": option.Key,
 	})
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+	})
+}
+
+// VisionRelayOptionUpdateRequest carries the full set of vision_relay.* option
+// values in a single request body so the settings card can save them atomically.
+// All fields are strings to match the DB option format. For api_key and
+// sidecall_secret, an empty string means "keep the existing value" — the
+// backend enforces this contract, so a direct API caller submitting an empty
+// string for a secret cannot accidentally clear it.
+type VisionRelayOptionUpdateRequest struct {
+	Enabled           string `json:"enabled"`
+	Structured        string `json:"structured"`
+	StructuredPrompt  string `json:"structured_prompt"`
+	TargetModels      string `json:"target_models"`
+	Models            string `json:"models"`
+	BaseURL           string `json:"base_url"`
+	APIKey            string `json:"api_key"`
+	Prompt            string `json:"prompt"`
+	TimeoutSec        string `json:"timeout_sec"`
+	SidecallSecret    string `json:"sidecall_secret"`
+	DisableProxyFetch string `json:"disable_proxy_fetch"`
+}
+
+// UpdateVisionRelayOptions saves the full vision relay configuration in a single
+// atomic transaction. It resolves secret keep-semantics (empty = keep existing),
+// validates each key's format, validates the full prospective snapshot for
+// cross-field consistency (e.g. enabled requires a complete endpoint), then
+// writes only the changed keys via UpdateOptionsBulk. If any validation or DB
+// write fails, no in-memory state is touched (transaction rollback).
+func UpdateVisionRelayOptions(c *gin.Context) {
+	var req VisionRelayOptionUpdateRequest
+	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "无效的参数",
+		})
+		return
+	}
+
+	updates := map[string]string{
+		"vision_relay.enabled":             req.Enabled,
+		"vision_relay.structured":          req.Structured,
+		"vision_relay.structured_prompt":   req.StructuredPrompt,
+		"vision_relay.target_models":       req.TargetModels,
+		"vision_relay.models":              req.Models,
+		"vision_relay.base_url":            req.BaseURL,
+		"vision_relay.api_key":             req.APIKey,
+		"vision_relay.prompt":              req.Prompt,
+		"vision_relay.timeout_sec":         req.TimeoutSec,
+		"vision_relay.sidecall_secret":     req.SidecallSecret,
+		"vision_relay.disable_proxy_fetch": req.DisableProxyFetch,
+	}
+
+	// Read current OptionMap values for secret keep-semantics and change
+	// detection. The snapshot reads happen under RLock to avoid racing with
+	// concurrent option updates.
+	common.OptionMapRWMutex.RLock()
+	currentValues := make(map[string]string, len(model_setting.VisionRelayOptionKeys))
+	for _, key := range model_setting.VisionRelayOptionKeys {
+		currentValues[key] = common.OptionMap[key]
+	}
+	common.OptionMapRWMutex.RUnlock()
+
+	// Resolve secret keep-semantics: empty api_key/sidecall_secret means "keep
+	// the existing value", not "clear". This is the backend-enforced contract —
+	// a direct API caller cannot clear a secret by submitting an empty string.
+	resolved := make(map[string]string, len(updates))
+	for key, value := range updates {
+		if model_setting.IsVisionRelaySecretKey(key) && strings.TrimSpace(value) == "" {
+			resolved[key] = currentValues[key]
+		} else {
+			resolved[key] = value
+		}
+	}
+
+	// Per-key format validation. Skip enabled — it has cross-field dependencies
+	// that the prospective snapshot validates against the resolved values, not
+	// the stale OptionMap that ValidateVisionRelayWrite.enabled would read.
+	for key, value := range updates {
+		if key == "vision_relay.enabled" {
+			continue
+		}
+		if model_setting.IsVisionRelaySecretKey(key) && strings.TrimSpace(value) == "" {
+			continue
+		}
+		if err := model_setting.ValidateVisionRelayWrite(key, value); err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	}
+
+	// Full prospective snapshot validation: the resulting state after applying
+	// all updates together. This catches consistency errors that per-key
+	// validation cannot — e.g. enabling vision relay in the same transaction
+	// that sets base_url, where per-key enabled validation would read the old
+	// (empty) base_url from OptionMap and reject the enable.
+	if err := model_setting.ValidateVisionRelayBulkSnapshot(resolved); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	// Build the write map: only keys whose value actually changed, and never
+	// include empty secrets (keep = no write). This keeps the DB write minimal
+	// and the audit log meaningful.
+	writeMap := make(map[string]string)
+	for key, value := range updates {
+		if model_setting.IsVisionRelaySecretKey(key) && strings.TrimSpace(value) == "" {
+			continue
+		}
+		if value != currentValues[key] {
+			writeMap[key] = value
+		}
+	}
+
+	if len(writeMap) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "",
+		})
+		return
+	}
+
+	if err := model.UpdateOptionsBulk(writeMap); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	changedKeys := make([]string, 0, len(writeMap))
+	for key := range writeMap {
+		changedKeys = append(changedKeys, key)
+	}
+	recordManageAudit(c, "option.update_vision_relay", map[string]interface{}{
+		"keys": changedKeys,
+	})
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",

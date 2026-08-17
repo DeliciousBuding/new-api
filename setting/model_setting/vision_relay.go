@@ -366,15 +366,22 @@ func ValidateVisionRelayWrite(key, value string) error {
 			return fmt.Errorf("vision_relay.base_url: must be an absolute http(s) URL, got %q", value)
 		}
 		return nil
+	case "vision_relay.prompt", "vision_relay.structured_prompt":
+		if utf8.RuneCountInString(value) > maxVisionRelayPromptLength {
+			return fmt.Errorf("%s: exceeds maximum length of %d characters", key, maxVisionRelayPromptLength)
+		}
+		return nil
 	default:
 		return nil
 	}
 }
 
 // 敏感字段写时校验的最小长度（audit-2026-08 #48：防手滑的最小集）。
+// prompt/structured_prompt 的最大长度上限（防超长指令注入或误粘贴整段文档）。
 const (
-	minVisionRelayAPIKeyLength         = 8  // 常见 key 均远长于此；仅拦明显截断/占位符
-	minVisionRelaySidecallSecretLength = 16 // HMAC 认证 marker 密钥，弱密钥可被暴力枚举伪造
+	minVisionRelayAPIKeyLength         = 8    // 常见 key 均远长于此；仅拦明显截断/占位符
+	minVisionRelaySidecallSecretLength = 16   // HMAC 认证 marker 密钥，弱密钥可被暴力枚举伪造
+	maxVisionRelayPromptLength         = 8192 // 识图指令模板上限；正常使用远低于此值
 )
 
 // validateVisionRelaySensitiveValue api_key/sidecall_secret 写时最小格式校验
@@ -395,6 +402,81 @@ func validateVisionRelaySensitiveValue(key, value string) error {
 	}
 	if utf8.RuneCountInString(value) < minLen {
 		return fmt.Errorf("%s: must be at least %d characters when set", key, minLen)
+	}
+	return nil
+}
+
+// VisionRelayOptionKeys is the full set of vision_relay.* DB option keys, in
+// the order the settings card renders them. The controller bulk endpoint uses
+// this to map request fields to option keys and to know which keys belong to
+// the vision relay feature.
+var VisionRelayOptionKeys = []string{
+	"vision_relay.enabled",
+	"vision_relay.structured",
+	"vision_relay.structured_prompt",
+	"vision_relay.target_models",
+	"vision_relay.models",
+	"vision_relay.base_url",
+	"vision_relay.api_key",
+	"vision_relay.prompt",
+	"vision_relay.timeout_sec",
+	"vision_relay.sidecall_secret",
+	"vision_relay.disable_proxy_fetch",
+}
+
+// IsVisionRelaySecretKey reports whether the given option key is a write-only
+// sensitive field (api_key / sidecall_secret). The bulk endpoint treats an
+// empty string for these keys as "keep existing value" rather than "clear".
+func IsVisionRelaySecretKey(key string) bool {
+	return key == "vision_relay.api_key" || key == "vision_relay.sidecall_secret"
+}
+
+// ValidateVisionRelayBulkSnapshot validates the full prospective state that
+// results from applying a bulk update. The caller must resolve secret
+// keep-semantics first: for api_key/sidecall_secret, an empty string in the
+// update means "keep existing" — the caller must fill in the current OptionMap
+// value before calling this function so the snapshot reflects what the DB will
+// actually contain after the write.
+//
+// This replaces per-key ValidateVisionRelayWrite for the bulk path because
+// per-key validation of vision_relay.enabled reads the OLD OptionMap state,
+// which is stale when multiple keys change in the same transaction (e.g.
+// enabling and setting base_url together). The snapshot validates the
+// resulting state directly, including format checks delegated to
+// parseVisionRelayFields and consistency checks via ValidateEndpoint.
+func ValidateVisionRelayBulkSnapshot(resolved map[string]string) error {
+	enabledRaw, ok := resolved["vision_relay.enabled"]
+	if !ok {
+		return fmt.Errorf("vision_relay.enabled: missing from bulk update")
+	}
+	enabled, err := strconv.ParseBool(enabledRaw)
+	if err != nil {
+		return fmt.Errorf("vision_relay.enabled: %w", err)
+	}
+	snap := defaultVisionRelaySettings
+	snap.Enabled = enabled
+	if !enabled {
+		return nil
+	}
+	if err := parseVisionRelayFields(&snap,
+		resolved["vision_relay.target_models"],
+		resolved["vision_relay.models"],
+		resolved["vision_relay.base_url"],
+		resolved["vision_relay.api_key"],
+		resolved["vision_relay.prompt"],
+		resolved["vision_relay.timeout_sec"],
+		resolved["vision_relay.structured"],
+		resolved["vision_relay.structured_prompt"],
+		resolved["vision_relay.sidecall_secret"],
+		resolved["vision_relay.disable_proxy_fetch"],
+	); err != nil {
+		return err
+	}
+	if err := snap.ValidateEndpoint(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(snap.SidecallSecret) == "" {
+		return fmt.Errorf("vision_relay.sidecall_secret is required when enabled (recursion protection)")
 	}
 	return nil
 }

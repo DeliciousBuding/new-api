@@ -45,7 +45,7 @@ import {
 } from '../components/settings-form-layout'
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
-import { useUpdateOption } from '../hooks/use-update-option'
+import { useUpdateVisionRelayOptions } from '../hooks/use-update-vision-relay-options'
 import { formatJsonForTextarea, normalizeJsonString, validateJsonString } from './utils'
 
 const arrayOfStrings = (message: string) =>
@@ -78,6 +78,7 @@ const schema = z.object({
     .int({ message: 'Must be an integer' })
     .min(1, { message: 'Must be at least 1' }),
   sidecall_secret: z.string().optional(),
+  disable_proxy_fetch: z.boolean(),
 })
 
 type VisionRelaySettingsFormValues = z.output<typeof schema>
@@ -94,6 +95,7 @@ type FlatVisionRelaySettings = {
   'vision_relay.prompt': string
   'vision_relay.timeout_sec': number
   'vision_relay.sidecall_secret': string
+  'vision_relay.disable_proxy_fetch': boolean
 }
 
 type VisionRelaySettingsCardProps = {
@@ -104,7 +106,7 @@ export function VisionRelaySettingsCard({
   defaultValues,
 }: VisionRelaySettingsCardProps) {
   const { t } = useTranslation()
-  const updateOption = useUpdateOption()
+  const updateVisionRelay = useUpdateVisionRelayOptions()
   const normalizedDefaultsRef = useRef<FlatVisionRelaySettings>({
     'vision_relay.enabled': Boolean(defaultValues.enabled),
     'vision_relay.structured': Boolean(defaultValues.structured),
@@ -118,6 +120,9 @@ export function VisionRelaySettingsCard({
     'vision_relay.prompt': defaultValues.prompt ?? '',
     'vision_relay.timeout_sec': Number(defaultValues.timeout_sec ?? 15),
     'vision_relay.sidecall_secret': '',
+    'vision_relay.disable_proxy_fetch': Boolean(
+      defaultValues.disable_proxy_fetch
+    ),
   })
 
   const buildFormDefaults = (
@@ -133,6 +138,7 @@ export function VisionRelaySettingsCard({
     prompt: values.prompt ?? '',
     timeout_sec: Number(values.timeout_sec ?? 15),
     sidecall_secret: '',
+    disable_proxy_fetch: Boolean(values.disable_proxy_fetch),
   })
 
   const form = useForm<
@@ -158,6 +164,9 @@ export function VisionRelaySettingsCard({
       'vision_relay.prompt': defaultValues.prompt ?? '',
       'vision_relay.timeout_sec': Number(defaultValues.timeout_sec ?? 15),
       'vision_relay.sidecall_secret': '',
+      'vision_relay.disable_proxy_fetch': Boolean(
+        defaultValues.disable_proxy_fetch
+      ),
     }
     form.reset(buildFormDefaults(defaultValues))
   }, [defaultValues, form])
@@ -176,42 +185,59 @@ export function VisionRelaySettingsCard({
       'vision_relay.prompt': values.prompt ?? '',
       'vision_relay.timeout_sec': values.timeout_sec,
       'vision_relay.sidecall_secret': (values.sidecall_secret ?? '').trim(),
+      'vision_relay.disable_proxy_fetch': values.disable_proxy_fetch,
     }
 
-    const updates = (
+    const hasChanges = (
       Object.keys(normalized) as Array<keyof FlatVisionRelaySettings>
-    )
-      .filter((key) => normalized[key] !== normalizedDefaultsRef.current[key])
-      // enabled 最后提交：后端 enabled=true 守卫校验已存端点配置
-      // （base_url/api_key/models/sidecall_secret）完整性，先写字段再开开关
-      .sort((a) => (a === 'vision_relay.enabled' ? 1 : -1))
+    ).some((key) => normalized[key] !== normalizedDefaultsRef.current[key])
 
-    if (updates.length === 0) {
+    if (!hasChanges) {
       toast.info(t('No changes to save'))
       return
     }
 
-    for (const key of updates) {
-      await updateOption.mutateAsync({ key, value: String(normalized[key]) })
-    }
+    // Single atomic bulk request: the backend validates the full prospective
+    // snapshot (all fields together) and writes changed keys in one DB
+    // transaction. Empty api_key/sidecall_secret means "keep existing" — the
+    // backend enforces this contract, so partial failures cannot leave secrets
+    // cleared or half-saved state behind.
+    const result = await updateVisionRelay.mutateAsync({
+      enabled: String(normalized['vision_relay.enabled']),
+      structured: String(normalized['vision_relay.structured']),
+      structured_prompt: normalized['vision_relay.structured_prompt'],
+      target_models: normalized['vision_relay.target_models'],
+      models: normalized['vision_relay.models'],
+      base_url: normalized['vision_relay.base_url'],
+      api_key: normalized['vision_relay.api_key'],
+      prompt: normalized['vision_relay.prompt'],
+      timeout_sec: String(normalized['vision_relay.timeout_sec']),
+      sidecall_secret: normalized['vision_relay.sidecall_secret'],
+      disable_proxy_fetch: String(
+        normalized['vision_relay.disable_proxy_fetch']
+      ),
+    })
 
-    // 保存成功后同步 baseline（对齐 grok 卡收尾）：连点保存不重复提交已存键；
-    // 敏感键保持空（后端不回显现有值，空=不修改）
-    normalizedDefaultsRef.current = normalized
-    form.reset(
-      buildFormDefaults({
-        enabled: normalized['vision_relay.enabled'],
-        structured: normalized['vision_relay.structured'],
-        structured_prompt: normalized['vision_relay.structured_prompt'],
-        target_models: normalized['vision_relay.target_models'],
-        models: normalized['vision_relay.models'],
-        base_url: normalized['vision_relay.base_url'],
-        api_key: '',
-        prompt: normalized['vision_relay.prompt'],
-        timeout_sec: normalized['vision_relay.timeout_sec'],
-        sidecall_secret: '',
-      })
-    )
+    if (result.success) {
+      // Sync baseline so consecutive saves don't re-submit unchanged keys;
+      // secrets reset to empty (backend doesn't return existing values).
+      normalizedDefaultsRef.current = normalized
+      form.reset(
+        buildFormDefaults({
+          enabled: normalized['vision_relay.enabled'],
+          structured: normalized['vision_relay.structured'],
+          structured_prompt: normalized['vision_relay.structured_prompt'],
+          target_models: normalized['vision_relay.target_models'],
+          models: normalized['vision_relay.models'],
+          base_url: normalized['vision_relay.base_url'],
+          api_key: '',
+          prompt: normalized['vision_relay.prompt'],
+          timeout_sec: normalized['vision_relay.timeout_sec'],
+          sidecall_secret: '',
+          disable_proxy_fetch: normalized['vision_relay.disable_proxy_fetch'],
+        })
+      )
+    }
   }
 
   return (
@@ -221,7 +247,7 @@ export function VisionRelaySettingsCard({
         <SettingsForm onSubmit={form.handleSubmit(onSubmit)}>
           <SettingsPageFormActions
             onSave={form.handleSubmit(onSubmit)}
-            isSaving={updateOption.isPending}
+            isSaving={updateVisionRelay.isPending}
           />
 
           <SettingsControlGroup>
@@ -258,6 +284,29 @@ export function VisionRelaySettingsCard({
                     <FormDescription>
                       {t(
                         'Output structured evidence sections (SUMMARY / TRANSCRIPTION / LAYOUT / UNCERTAINTY) instead of prose. Applies only when the prompt is left empty.'
+                      )}
+                    </FormDescription>
+                  </SettingsSwitchContent>
+                  <FormControl>
+                    <Switch
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  </FormControl>
+                </SettingsSwitchItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name='disable_proxy_fetch'
+              render={({ field }) => (
+                <SettingsSwitchItem>
+                  <SettingsSwitchContent>
+                    <FormLabel>{t('Disable Proxy Fetch')}</FormLabel>
+                    <FormDescription>
+                      {t(
+                        'Bypass the environment proxy when fetching user-supplied image URLs. Enable only for deployments with a proxy-only egress that cannot resolve direct peer targets.'
                       )}
                     </FormDescription>
                   </SettingsSwitchContent>
