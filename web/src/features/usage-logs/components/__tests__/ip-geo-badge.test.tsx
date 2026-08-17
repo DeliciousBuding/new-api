@@ -88,4 +88,32 @@ describe('IpGeoBadge', () => {
     const { container } = renderBadge({ ip: '1.2.3.4' })
     expect(container.querySelector('button')).toBeNull()
   })
+
+  test('abbreviates long IPv6 addresses to keep the chip compact', () => {
+    const longIpv6 = '2001:0db8:85a3:0000:0000:8a2e:0370:7334'
+    const { container } = renderBadge({ ip: longIpv6 })
+    const text = container.textContent ?? ''
+    // The chip keeps the network prefix and host suffix, joined by an ellipsis.
+    expect(text).toContain('…')
+    expect(text).toContain('2001:0db8')
+    expect(text).toContain('0370:7334')
+    // The dropped middle groups are not rendered inline.
+    expect(text).not.toContain('85a3:0000:0000:8a2e')
+  })
+
+  test('leaves short IPv4 addresses untouched', () => {
+    const { container } = renderBadge({ ip: '192.168.1.1' })
+    const text = container.textContent ?? ''
+    expect(text).toContain('192.168.1.1')
+    expect(text).not.toContain('…')
+  })
+
+  test('keeps the geo hover trigger when the IP is abbreviated', () => {
+    const { container } = renderBadge({
+      ip: '2001:0db8:85a3:0000:0000:8a2e:0370:7334',
+      geo: { country_code: 'CN', country: 'China', city: 'Shenzhen', asn: 4134 },
+    })
+    expect(container.querySelector('button')).not.toBeNull()
+    expect(container.textContent ?? '').toContain('…')
+  })
 })
