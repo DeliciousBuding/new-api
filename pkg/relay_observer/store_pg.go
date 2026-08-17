@@ -1103,7 +1103,31 @@ func (s *pgStore) DeleteTurnRetention(ctx context.Context, turnID uuid.UUID) (bo
 // excludes the row's own checkpoint self-reference (SSOT: a full row stores
 // checkpoint_id = id), so a full checkpoint that no retained delta references
 // is deletable instead of blocking its own turn forever.
+//
+// The turn's session head row is locked with FOR UPDATE before the reference
+// check runs. lockHeadTx takes the same row before an append reads the
+// current checkpoint and inserts a delta referencing it, so locking here
+// serializes the two paths: a concurrent append that would reference this
+// turn's checkpoint as a delta base blocks until the delete commits, then
+// observes the cleared head and starts a fresh full checkpoint instead of
+// leaving a delta pointing at a deleted context. A turn without a session
+// has no contexts and no head pointing at them, so it skips the lock. A
+// session whose head row has not been written yet is also safe without the
+// lock: an append that finds no head starts a full checkpoint, never a delta
+// referencing the turn's checkpoint.
 func deleteTurnRetentionTx(ctx context.Context, tx contentTx, turnID uuid.UUID) (bool, error) {
+	var sessionID sql.NullString
+	if err := tx.QueryRow(ctx, `SELECT session_id::text FROM observer_turns WHERE id = $1`, turnID.String()).Scan(&sessionID); err != nil {
+		return false, fmt.Errorf("relayobserver: delete turn retention: resolve session: %w", err)
+	}
+	if sessionID.Valid {
+		var headContextID sql.NullInt64
+		if err := tx.QueryRow(ctx, `SELECT context_id FROM observer_session_heads WHERE session_id = $1 FOR UPDATE`, sessionID.String).Scan(&headContextID); err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				return false, fmt.Errorf("relayobserver: delete turn retention: lock head: %w", err)
+			}
+		}
+	}
 	var referenced bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM observer_contexts d WHERE d.checkpoint_id IN (SELECT id FROM observer_contexts WHERE turn_id = $1) AND d.id <> d.checkpoint_id)`, turnID.String()).Scan(&referenced); err != nil {
 		return false, fmt.Errorf("relayobserver: delete turn retention: check checkpoint references: %w", err)
@@ -1111,6 +1135,7 @@ func deleteTurnRetentionTx(ctx context.Context, tx contentTx, turnID uuid.UUID) 
 	if referenced {
 		return false, nil
 	}
+	runRetentionHook()
 	if _, err := tx.Exec(ctx, `UPDATE observer_session_heads SET context_id = NULL, checkpoint_id = NULL, group_ordinal = NULL WHERE context_id IN (SELECT id FROM observer_contexts WHERE turn_id = $1)`, turnID.String()); err != nil {
 		return false, fmt.Errorf("relayobserver: delete turn retention: clear head: %w", err)
 	}
