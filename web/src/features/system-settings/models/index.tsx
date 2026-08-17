@@ -53,6 +53,7 @@ const defaultModelSettings: ModelSettings = {
   'vision_relay.prompt': '',
   'vision_relay.timeout_sec': 15,
   'vision_relay.sidecall_secret': '',
+  'vision_relay.disable_proxy_fetch': false,
   ModelPrice: '',
   ModelRatio: '',
   CacheRatio: '',
