@@ -211,6 +211,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		addUsedChannel(c, channel.Id)
+		retryParam.IncreaseAttempts()
 		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
 			newAPIError = billingErr
 			break
@@ -251,6 +252,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
 		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+			break
+		}
+		// Global cap, checked after shouldRetry so a request that would not retry
+		// anyway is unaffected. Unlike RetryTimes this survives auto-group
+		// switches, which reset RetryParam.Retry and would otherwise let a single
+		// request walk every auto group with a fresh retry budget each time.
+		if retryParam.UpstreamBudgetExhausted() {
+			logger.LogInfo(c, fmt.Sprintf("upstream attempt budget exhausted (%d attempts, cap %d); stopping retries", retryParam.Attempts(), common.MaxUpstreamAttempts))
 			break
 		}
 	}

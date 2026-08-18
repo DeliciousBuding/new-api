@@ -135,6 +135,16 @@ var PreConsumedQuota = 500
 
 var RetryTimes = 0
 
+// MaxUpstreamAttempts caps the total number of upstream attempts a single
+// request may spend, including the first one. 0 disables the cap and preserves
+// the historical behaviour.
+//
+// RetryTimes alone cannot express this: it doubles as the per-group priority
+// tier index handed to GetRandomSatisfiedChannel, so switching AutoGroups group
+// legitimately resets it — which also resets the only bound on total attempts,
+// multiplying the real budget by the number of auto groups.
+var MaxUpstreamAttempts = 0
+
 //var RootUserEmail = ""
 
 var IsMasterNode bool

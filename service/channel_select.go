@@ -17,6 +17,32 @@ type RetryParam struct {
 	RequestPath  string
 	Retry        *int
 	resetNextTry bool
+	attempts     int
+}
+
+// IncreaseAttempts records one real upstream attempt.
+//
+// Kept separate from Retry on purpose. Retry doubles as the per-group priority
+// tier index passed to GetRandomSatisfiedChannel, so it is reset when the auto
+// group changes — correct for tier selection, but it also wipes the only bound
+// on how many upstreams a single request may touch. attempts is monotonic for
+// the whole request and is never reset by a group switch.
+func (p *RetryParam) IncreaseAttempts() {
+	p.attempts++
+}
+
+// Attempts returns how many upstream attempts this request has already spent.
+func (p *RetryParam) Attempts() int {
+	return p.attempts
+}
+
+// UpstreamBudgetExhausted reports whether the request has reached the global
+// upstream attempt cap. A cap of 0 means unlimited (historical behaviour).
+func (p *RetryParam) UpstreamBudgetExhausted() bool {
+	if common.MaxUpstreamAttempts <= 0 {
+		return false
+	}
+	return p.attempts >= common.MaxUpstreamAttempts
 }
 
 func (p *RetryParam) GetRetry() int {
