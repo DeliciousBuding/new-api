@@ -406,6 +406,12 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		other["error_type"] = err.GetErrorType()
 		other["error_code"] = err.GetErrorCode()
 		other["status_code"] = err.StatusCode
+		if upstreamStatus := err.GetUpstreamStatusCode(); upstreamStatus != 0 {
+			// A channel status_code_mapping rewrote the status. Keep the upstream
+			// value so error attribution can tell a rate limit from a genuine
+			// upstream failure; status_code above stays the client-visible one.
+			other["upstream_status_code"] = upstreamStatus
+		}
 		other["channel_id"] = channelId
 		other["channel_name"] = c.GetString("channel_name")
 		other["channel_type"] = c.GetInt("channel_type")

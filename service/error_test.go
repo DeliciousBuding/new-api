@@ -24,30 +24,63 @@ func TestResetStatusCode(t *testing.T) {
 		statusCode       int
 		statusCodeConfig string
 		expectedCode     int
+		expectedUpstream int
 	}{
 		{
 			name:             "map string value",
 			statusCode:       429,
 			statusCodeConfig: `{"429":"503"}`,
 			expectedCode:     503,
+			expectedUpstream: 429,
 		},
 		{
 			name:             "map int value",
 			statusCode:       429,
 			statusCodeConfig: `{"429":503}`,
 			expectedCode:     503,
+			expectedUpstream: 429,
 		},
 		{
 			name:             "skip invalid string value",
 			statusCode:       429,
 			statusCodeConfig: `{"429":"bad-code"}`,
 			expectedCode:     429,
+			expectedUpstream: 0,
 		},
 		{
 			name:             "skip status code 200",
 			statusCode:       200,
 			statusCodeConfig: `{"200":503}`,
 			expectedCode:     200,
+			expectedUpstream: 0,
+		},
+		{
+			name:             "no mapping configured leaves upstream unset",
+			statusCode:       429,
+			statusCodeConfig: "",
+			expectedCode:     429,
+			expectedUpstream: 0,
+		},
+		{
+			name:             "empty mapping object leaves upstream unset",
+			statusCode:       429,
+			statusCodeConfig: `{}`,
+			expectedCode:     429,
+			expectedUpstream: 0,
+		},
+		{
+			name:             "unrelated mapping key leaves upstream unset",
+			statusCode:       429,
+			statusCodeConfig: `{"500":"503"}`,
+			expectedCode:     429,
+			expectedUpstream: 0,
+		},
+		{
+			name:             "identity mapping is not recorded as a rewrite",
+			statusCode:       429,
+			statusCodeConfig: `{"429":429}`,
+			expectedCode:     429,
+			expectedUpstream: 0,
 		},
 	}
 
@@ -61,8 +94,19 @@ func TestResetStatusCode(t *testing.T) {
 			}
 			ResetStatusCode(newAPIError, tc.statusCodeConfig)
 			require.Equal(t, tc.expectedCode, newAPIError.StatusCode)
+			// Zero must unambiguously mean "StatusCode is the upstream value",
+			// otherwise attribution cannot tell a mapped 503 from a real one.
+			require.Equal(t, tc.expectedUpstream, newAPIError.GetUpstreamStatusCode())
 		})
 	}
+}
+
+func TestUpstreamStatusCodeAccessorsAreNilSafe(t *testing.T) {
+	t.Parallel()
+
+	var nilErr *types.NewAPIError
+	require.Equal(t, 0, nilErr.GetUpstreamStatusCode())
+	require.NotPanics(t, func() { nilErr.SetUpstreamStatusCode(429) })
 }
 
 func TestRelayErrorHandlerTruncatesInvalidJSONBodyInLog(t *testing.T) {

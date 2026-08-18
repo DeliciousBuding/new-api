@@ -88,15 +88,43 @@ const (
 )
 
 type NewAPIError struct {
-	Err            error
-	RelayError     any
-	skipRetry      bool
-	recordErrorLog *bool
-	errorType      ErrorType
-	errorCode      ErrorCode
-	StatusCode     int
-	Metadata       json.RawMessage
-	upstreamDetail *UpstreamErrorDetail
+	Err                error
+	RelayError         any
+	skipRetry          bool
+	recordErrorLog     *bool
+	errorType          ErrorType
+	errorCode          ErrorCode
+	StatusCode         int
+	upstreamStatusCode int
+	Metadata           json.RawMessage
+	upstreamDetail     *UpstreamErrorDetail
+}
+
+// SetUpstreamStatusCode records the status code the upstream actually returned,
+// before a channel's status_code_mapping rewrote StatusCode. Callers should only
+// set it when a rewrite really happens, so a zero value unambiguously means
+// "StatusCode is the upstream value".
+func (e *NewAPIError) SetUpstreamStatusCode(code int) {
+	if e == nil {
+		return
+	}
+	e.upstreamStatusCode = code
+}
+
+// GetUpstreamStatusCode returns the pre-mapping upstream status code, or 0 when
+// no status_code_mapping rewrite occurred.
+//
+// Needed because status_code_mapping is applied inside the relay handlers before
+// the error reaches the retry loop and the error logger, so every downstream
+// consumer — shouldRetry, ShouldDisableChannel, RecordErrorLog and the
+// client-visible response — observes the mapped value only. With the fleet-wide
+// {"429":"503"} convention that erases every upstream 429 from the logs, which
+// makes rate-limit pressure indistinguishable from genuine upstream 503s.
+func (e *NewAPIError) GetUpstreamStatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.upstreamStatusCode
 }
 
 // UpstreamErrorDetail carries structured diagnostics recovered from a non-2xx

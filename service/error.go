@@ -170,6 +170,12 @@ func ResetStatusCode(newApiErr *types.NewAPIError, statusCodeMappingStr string) 
 		if !ok {
 			return
 		}
+		if intCode != newApiErr.StatusCode {
+			// Preserve the upstream value for attribution before it is erased.
+			// This is the only place status_code_mapping rewrites StatusCode, so
+			// it is also the only place that can still see the original.
+			newApiErr.SetUpstreamStatusCode(newApiErr.StatusCode)
+		}
 		newApiErr.StatusCode = intCode
 	}
 }
