@@ -104,10 +104,22 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 
 	err = common.Unmarshal(responseBody, &errResponse)
 	if err != nil {
+		// Some upstreams (e.g. DashScope/Bailian on streaming requests) return
+		// non-2xx failures as SSE error events instead of a standalone JSON
+		// object. Recover structured diagnostics for admin-facing logs; the
+		// client-visible error below is intentionally left unchanged.
+		upstreamDetail := ExtractUpstreamErrorFromSSE(responseBody)
+		if upstreamDetail != nil {
+			newApiErr.SetUpstreamErrorDetail(upstreamDetail)
+		}
 		if showBodyWhenFail {
 			newApiErr.Err = buildErrWithBody("")
 		} else {
-			logger.LogError(ctx, fmt.Sprintf("bad response status code %d, body: %s", resp.StatusCode, responseBodyPreview))
+			logMessage := fmt.Sprintf("bad response status code %d, body: %s", resp.StatusCode, responseBodyPreview)
+			if upstreamDetail != nil {
+				logMessage = fmt.Sprintf("%s, upstream error detail: %s", logMessage, common.LocalLogPreview(upstreamDetail.String()))
+			}
+			logger.LogError(ctx, logMessage)
 			newApiErr.Err = fmt.Errorf("bad response status code %d", resp.StatusCode)
 		}
 		return

@@ -414,6 +414,15 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 			adminInfo["multi_key_index"] = common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
 		}
 		service.AppendChannelAffinityAdminInfo(c, adminInfo)
+		if upstreamDetail := err.GetUpstreamErrorDetail(); upstreamDetail != nil {
+			adminInfo["upstream_error"] = upstreamDetail
+			// The upstream request id may only exist inside the error body
+			// (e.g. DashScope SSE errors); surface it through the existing
+			// logs.upstream_request_id column when no header carried one.
+			if upstreamDetail.RequestID != "" && c.GetString(common.UpstreamRequestIdKey) == "" {
+				c.Set(common.UpstreamRequestIdKey, upstreamDetail.RequestID)
+			}
+		}
 		other["admin_info"] = adminInfo
 		startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
 		if startTime.IsZero() {

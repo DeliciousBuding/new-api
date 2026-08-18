@@ -605,21 +605,14 @@ func detectErrorFromTestResponseBody(respBody []byte) error {
 		return fmt.Errorf("upstream error: %s", message)
 	}
 
-	for _, line := range bytes.Split(b, []byte{'\n'}) {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
+	// SSE error bodies (e.g. DashScope returning event:error + data:{...} with
+	// a non-2xx status) share one extractor with the relay error path so both
+	// surfaces understand the same provider formats.
+	if detail := service.ExtractUpstreamErrorFromSSE(b); detail != nil {
+		if detail.Message != "" {
+			return fmt.Errorf("upstream error: %s", detail.Message)
 		}
-		if !bytes.HasPrefix(line, []byte("data:")) {
-			continue
-		}
-		payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
-		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
-			continue
-		}
-		if message := detectErrorMessageFromJSONBytes(payload); message != "" {
-			return fmt.Errorf("upstream error: %s", message)
-		}
+		return fmt.Errorf("upstream error: %s", detail.String())
 	}
 
 	return nil

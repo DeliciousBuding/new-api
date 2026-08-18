@@ -120,6 +120,48 @@ func TestResponsesCompactChannelSupport(t *testing.T) {
 	}
 }
 
+func TestDetectErrorFromTestResponseBodySSEAndJSON(t *testing.T) {
+	testCases := []struct {
+		name          string
+		body          string
+		expectedError string
+	}{
+		{
+			name:          "JSON error body keeps existing detection",
+			body:          `{"error":{"message":"upstream exploded","type":"server_error"}}`,
+			expectedError: "upstream error: upstream exploded",
+		},
+		{
+			name: "DashScope SSE error body is detected",
+			body: "id:1\nevent:error\n:HTTP_STATUS/400\n" +
+				`data:{"request_id":"req-1","code":"Arrearage","message":"Access denied"}` + "\n\n",
+			expectedError: "upstream error: Access denied",
+		},
+		{
+			name:          "normal stream body has no error",
+			body:          "event:message_start\ndata:{\"type\":\"message_start\",\"message\":{\"id\":\"m1\"}}\n\ndata:[DONE]\n\n",
+			expectedError: "",
+		},
+		{
+			name:          "empty body has no error",
+			body:          "",
+			expectedError: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			detectedErr := detectErrorFromTestResponseBody([]byte(tc.body))
+			if tc.expectedError == "" {
+				require.NoError(t, detectedErr)
+				return
+			}
+			require.EqualError(t, detectedErr, tc.expectedError)
+		})
+	}
+}
+
 func TestMultiprotocolGatewayEndpointTypes(t *testing.T) {
 	want := []constant.EndpointType{
 		constant.EndpointTypeOpenAI,
