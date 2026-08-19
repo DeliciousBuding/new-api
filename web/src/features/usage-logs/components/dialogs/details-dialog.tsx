@@ -774,6 +774,38 @@ export function DetailsDialog(props: DetailsDialogProps) {
           )}
         </div>
 
+        {/* Upstream error diagnostics (admin only; populated when the upstream
+            error body carried structured info, e.g. SSE error frames) */}
+        {props.isAdmin && adminInfo?.upstream_error && (
+          <DetailSection
+            icon={<AlertTriangle className='size-3.5' aria-hidden='true' />}
+            label={t('Upstream Error')}
+            variant='danger'
+          >
+            {adminInfo.upstream_error.code && (
+              <DetailRow
+                label={t('Error Code')}
+                value={adminInfo.upstream_error.code}
+                mono
+              />
+            )}
+            {adminInfo.upstream_error.type &&
+              adminInfo.upstream_error.type !== adminInfo.upstream_error.code && (
+                <DetailRow
+                  label={t('Error Type')}
+                  value={adminInfo.upstream_error.type}
+                  mono
+                />
+              )}
+            {adminInfo.upstream_error.message && (
+              <DetailRow
+                label={t('Message')}
+                value={adminInfo.upstream_error.message}
+              />
+            )}
+          </DetailSection>
+        )}
+
         {/* Request conversion (admin only, not for refund) */}
         {showConversion && (
           <DetailSection label={t('Request Conversion')}>

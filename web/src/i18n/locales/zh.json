@@ -5435,6 +5435,10 @@
     "ASN": "ASN",
     "Queue": "队列",
     "Turns": "轮次",
-    "Retention": "保留"
+    "Retention": "保留",
+    "Upstream Error": "上游错误",
+    "Error Code": "错误码",
+    "Error Type": "错误类型",
+    "Message": "消息"
   }
 }
