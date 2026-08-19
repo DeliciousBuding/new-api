@@ -145,7 +145,6 @@ func TestRelayErrorHandlerAttachesSSEDetailWithoutChangingClientError(t *testing
 	assert.Equal(t, "Arrearage", detail.Code)
 	assert.Equal(t, message, detail.Message)
 	assert.Equal(t, "req-1", detail.RequestID)
-	assert.Equal(t, UpstreamErrorPayloadFormatSSE, detail.PayloadFormat)
 }
 
 func TestRelayErrorHandlerLogsSSEDetailForAdmins(t *testing.T) {

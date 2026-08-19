@@ -5412,6 +5412,10 @@
     "ASN": "ASN",
     "Queue": "Queue",
     "Turns": "Turns",
-    "Retention": "Retention"
+    "Retention": "Retention",
+    "Upstream Error": "上游錯誤",
+    "Error Code": "錯誤碼",
+    "Error Type": "錯誤類型",
+    "Message": "訊息"
   }
 }

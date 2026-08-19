@@ -5435,6 +5435,10 @@
     "ASN": "ASN",
     "Queue": "Queue",
     "Turns": "Turns",
-    "Retention": "Retention"
+    "Retention": "Retention",
+    "Upstream Error": "Upstream Error",
+    "Error Code": "Error Code",
+    "Error Type": "Error Type",
+    "Message": "Message"
   }
 }

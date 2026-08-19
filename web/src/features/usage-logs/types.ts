@@ -226,6 +226,15 @@ export interface LogOtherData {
     // Raw User-Agent string the profile was derived from. Admin-only, same
     // visibility rules as client_profile.
     client_ua?: string
+    // Structured upstream error diagnostics recovered from a non-2xx upstream
+    // error body (e.g. SSE error frames). Admin-only, nested under admin_info
+    // so user-facing paths strip it with the whole object.
+    upstream_error?: {
+      code?: string
+      type?: string
+      message?: string
+      request_id?: string
+    }
   }
   // Language-independent operation descriptor (audit/login logs).
   // Frontend renders localized content from action + params via i18n templates.

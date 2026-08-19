@@ -110,31 +110,6 @@ type UpstreamErrorDetail struct {
 	Code      string `json:"code,omitempty"`
 	Type      string `json:"type,omitempty"`
 	RequestID string `json:"request_id,omitempty"`
-	// PayloadFormat is the upstream error body format this detail was
-	// extracted from: "json" or "sse".
-	PayloadFormat string `json:"payload_format,omitempty"`
-}
-
-// String renders the detail as a single log-friendly line, e.g.
-// "code=Arrearage, request_id=..., message=...".
-func (d *UpstreamErrorDetail) String() string {
-	if d == nil {
-		return ""
-	}
-	parts := make([]string, 0, 4)
-	if d.Code != "" {
-		parts = append(parts, "code="+d.Code)
-	}
-	if d.Type != "" && d.Type != d.Code {
-		parts = append(parts, "type="+d.Type)
-	}
-	if d.RequestID != "" {
-		parts = append(parts, "request_id="+d.RequestID)
-	}
-	if d.Message != "" {
-		parts = append(parts, "message="+d.Message)
-	}
-	return strings.Join(parts, ", ")
 }
 
 // GetUpstreamErrorDetail returns admin-facing diagnostics recovered from the
