@@ -86,13 +86,13 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 
 > 曾改动 `relaykit/relayconvert/internal/oai_chat/to_claude_messages_req.go`（不注入空 tools，`04fc5c49b`）；上游 #6862 已合入等价修复，现该文件与 upstream **零差异**，不再计入台账。relaykit 其余文件与 upstream 一致。
 
-### 上游错误诊断（SSE，本次事故修复 #143）
+### 上游错误诊断（SSE，事故修复 #143 + 加固 #152）
 
 | 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
 |---|---|---|---|---|
-| `service/error.go` | `RelayErrorHandler` 钩子：JSON 解析失败时提取 SSE 错误诊断（不改客户端语义） | `ac6944e27` | — | 中 |
+| `service/error.go` | `RelayErrorHandler` 钩子：JSON 解析失败时提取 SSE 错误诊断（不改客户端语义）；#152 换用 `FormatUpstreamErrorDetail` 格式化并清洗换行 | `ac6944e27` `8fdbbff9e` | — | 中 |
 | `service/error_test.go` | RelayErrorHandler SSE 诊断契约测试 | `ac6944e27` | — | 低 |
-| `relaykit/types/error.go` | 新增 `UpstreamErrorDetail` 结构化诊断类型 | `ac6944e27` | `relaykit/README.md` | 中 |
+| `relaykit/types/error.go` | 新增 `UpstreamErrorDetail` 结构化诊断类型（#152 删 `PayloadFormat`/`String()`，transport/日志关切归 host） | `ac6944e27` `8fdbbff9e` | `relaykit/README.md` | 中 |
 
 > 提取器本体是 fork-owned 新文件 `service/upstream_error_extract.go`（上游不存在，永不冲突），不在本表。
 
@@ -100,7 +100,7 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 
 | 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
 |---|---|---|---|---|
-| `controller/channel-test.go` | 渠道测试 body 错误探测复用统一 SSE 提取器（#143） | `ac6944e27` | — | **高** |
+| `controller/channel-test.go` | 渠道测试 body 错误探测复用统一 SSE 提取器（#143）；#152 改为「保留上游 gjson 检测器 + 追加提取器兜底」，不再有损替换 | `ac6944e27` `8fdbbff9e` | — | **高** |
 | `controller/channel_test_internal_test.go` | SSE 探测测试（#143） | `ac6944e27` | — | 中 |
 | `relay/channel/api_request_test.go` | header override 锁定进渠道校验（测试） | `1f0aca0a1` | — | 低 |
 
@@ -109,7 +109,7 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 | 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
 |---|---|---|---|---|
 | `main.go` | observer runtime init（fail-open）+ geoip 引入 + embed 基线 | `847829bca` | `docs/dev/relay-observer.md` | **高** |
-| `controller/relay.go` | vision relay 钩子 + observer 观测 + channel affinity 软失败解绑 | `847829bca` | `docs/dev/vision-relay.md`、`docs/dev/relay-observer.md` | 中 |
+| `controller/relay.go` | vision relay 钩子 + observer 观测 + channel affinity 软失败解绑 + SSE 诊断落库（#152：message 脱敏 + request_id 截断 + 每轮重试清 key） | `847829bca` `8fdbbff9e` | `docs/dev/vision-relay.md`、`docs/dev/relay-observer.md` | 中 |
 | `controller/log.go` | 缓存用量聚合统计 + 90 天窗口限制 | `847829bca` | — | 中 |
 | `model/log.go` | 日志 locality 提示（`attachGeoInfoToOther`/geoip）+ 品牌注释 scrub | `847829bca` `c178e645e` | — | **高** |
 | `model/option.go` | `LogRecordIpEnabled` 选项接入 | `847829bca` | — | 中 |
