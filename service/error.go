@@ -117,7 +117,7 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		} else {
 			logMessage := fmt.Sprintf("bad response status code %d, body: %s", resp.StatusCode, responseBodyPreview)
 			if upstreamDetail != nil {
-				logMessage = fmt.Sprintf("%s, upstream error detail: %s", logMessage, common.LocalLogPreview(upstreamDetail.String()))
+				logMessage = fmt.Sprintf("%s, upstream error detail: %s", logMessage, common.LocalLogPreview(FormatUpstreamErrorDetail(upstreamDetail)))
 			}
 			logger.LogError(ctx, logMessage)
 			newApiErr.Err = fmt.Errorf("bad response status code %d", resp.StatusCode)

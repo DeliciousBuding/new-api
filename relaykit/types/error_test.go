@@ -8,45 +8,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestUpstreamErrorDetailStringFormatsDiagnostics(t *testing.T) {
-	testCases := []struct {
-		name     string
-		detail   *UpstreamErrorDetail
-		expected string
-	}{
-		{
-			name:     "nil detail renders empty",
-			detail:   nil,
-			expected: "",
-		},
-		{
-			name: "code and type deduplicated when equal",
-			detail: &UpstreamErrorDetail{
-				Code:      "Arrearage",
-				Type:      "Arrearage",
-				RequestID: "req-1",
-				Message:   "Access denied",
-			},
-			expected: "code=Arrearage, request_id=req-1, message=Access denied",
-		},
-		{
-			name: "distinct type is kept",
-			detail: &UpstreamErrorDetail{
-				Message: "Overloaded",
-				Type:    "overloaded_error",
-			},
-			expected: "type=overloaded_error, message=Overloaded",
-		},
-	}
-
-	for _, tc := range testCases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.expected, tc.detail.String())
-		})
-	}
-}
-
 func TestNewAPIErrorUpstreamDetailRoundTrip(t *testing.T) {
 	newAPIError := NewError(errors.New("boom"), ErrorCodeBadResponseStatusCode)
 	require.Nil(t, newAPIError.GetUpstreamErrorDetail())
