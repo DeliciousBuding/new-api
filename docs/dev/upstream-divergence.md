@@ -130,6 +130,45 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 
 > `relaykit/` 上游存在同名独立 go module（上游 #6369 抽出），不算 fork-owned；当前 fork 对其 **零差异**（曾有一处改动已被上游 #6862 吸收），见上表 relaykit 条目。
 
+## 上游收敛计划（过渡方案 → 上游合入 → 退役/吸收）
+
+> 以下 fork 实现是**过渡方案**：上游正在同一问题域推进（流错误分类/日志），其 PR 合入后应评估收敛，避免两套并存。**每次 sync 上游后对照此节复查。**
+
+### 过渡方案清单
+
+| fork 实现 | 位置 | 上游对应物（2026-08-20 均 open） | 收敛动作 |
+|---|---|---|---|
+| SSE 错误体提取器（#143/#152） | `service/upstream_error_extract.go`（fork-owned） | #6523 `isOpenAITextStreamErrorChunk`、#6446 流内 429 重试 | #6523 合入后：评估直接用上游检测结果喂 `admin_info.upstream_error`，退役 fork 提取器 |
+| channel-test 追加探测 | `controller/channel-test.go`（上游文件内 additive 6 行） | 上游 #6917 gjson 检测器（已合，我们保留原样） | 冲突时优先保留上游；fork 探测保持 additive 不变 |
+| `UpstreamErrorDetail` 类型 | `relaykit/types/error.go` | —（上游暂无同概念） | 上游若在 relaykit 引入同概念：fork 侧回退 `Metadata`；host 格式化/transport 关切**永不回迁 relaykit**（#152 已删 PayloadFormat/String） |
+| 异常流中断追踪缺口 | 无（现仅靠 `stream_status.end_reason`，如 `client_gone`） | #6927（type=5 `stream_incomplete` transport 错误日志） | #6927 合入后吸收：核对它的字段（`error_type=transport` 等）与 `admin_info` 不打架，补上 `client_gone` 场景的独立 transport 错误记录 |
+
+### 上游同域追踪
+
+| 上游 | 状态 | fork 侧影响 |
+|---|---|---|
+| #5222 流错误分类 issue | open | 上游总纲，与 #152 方向一致 |
+| #6446 pre-stream 429 重试 | open | 与 #143/#152 相邻，无冲突 |
+| #6523 流错误检测 + 渠道回退 | open | **收敛主目标**（见上表第一行） |
+| #6580 exclude-driven failover | open | 我们的 #145 直接采用，勿自造 |
+| #6927 异常流中断日志 | open | 补 `stream_incomplete` transport 错误，吸收时核对字段 |
+| #6938 xAI 流内错误转发 | open | xAI 专用，与我们的非 2xx SSE 提取**互补**（不同机制） |
+
+### sync 后复查（体检命令）
+
+```bash
+# 1. 分歧体检：fork 改动的上游 .go 文件（每个都应能在本台账找到理由）
+git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}' | \
+  while read -r f; do n=$(git log official/main..dev --oneline -- "$f" | wc -l | tr -d ' '); \
+  [ "$n" -gt 0 ] && printf "%s\t%s\n" "$n" "$f"; done | sort -rn
+
+# 2. relaykit 独立可构建（host 依赖漏入 = 设计 bug）
+cd relaykit && GOWORK=off go build ./... && GOWORK=off go test ./types/ -count=1
+
+# 3. 上游落后度（应为 0；>0 立即评估 merge）
+git rev-list --count dev..official/main
+```
+
 ## 维护流程
 
 1. **改上游文件前**：先确认能否用 fork-owned 文件实现（`docs/dev/`、`pkg/*/`、`model/*_fallback.go`、`service/*_fallback.go`）。能就不用改上游文件。
