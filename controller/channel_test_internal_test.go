@@ -2,9 +2,11 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -114,6 +116,48 @@ func TestResponsesCompactChannelSupport(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			assert.Equal(t, test.want, common.SupportsResponsesCompact(test.channelType, test.apiType))
+		})
+	}
+}
+
+func TestDetectErrorFromTestResponseBodySSEAndJSON(t *testing.T) {
+	testCases := []struct {
+		name          string
+		body          string
+		expectedError string
+	}{
+		{
+			name:          "JSON error body keeps existing detection",
+			body:          `{"error":{"message":"upstream exploded","type":"server_error"}}`,
+			expectedError: "upstream error: upstream exploded",
+		},
+		{
+			name: "DashScope SSE error body is detected",
+			body: "id:1\nevent:error\n:HTTP_STATUS/400\n" +
+				`data:{"request_id":"req-1","code":"Arrearage","message":"Access denied"}` + "\n\n",
+			expectedError: "upstream error: Access denied",
+		},
+		{
+			name:          "normal stream body has no error",
+			body:          "event:message_start\ndata:{\"type\":\"message_start\",\"message\":{\"id\":\"m1\"}}\n\ndata:[DONE]\n\n",
+			expectedError: "",
+		},
+		{
+			name:          "empty body has no error",
+			body:          "",
+			expectedError: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			detectedErr := detectErrorFromTestResponseBody([]byte(tc.body))
+			if tc.expectedError == "" {
+				require.NoError(t, detectedErr)
+				return
+			}
+			require.EqualError(t, detectedErr, tc.expectedError)
 		})
 	}
 }
@@ -337,6 +381,111 @@ func TestSelectChannelsForAutomaticTestAutoBanOnlyUsesEligibleChannels(t *testin
 	require.Len(t, selected, 2)
 	require.Equal(t, 1, selected[0].Id)
 	require.Equal(t, 3, selected[1].Id)
+}
+
+func TestRunChannelTestWorkersHonorsConfiguredConcurrency(t *testing.T) {
+	originalInterval := common.RequestInterval
+	common.RequestInterval = 0
+	t.Cleanup(func() { common.RequestInterval = originalInterval })
+
+	channels := []*model.Channel{
+		{Id: 1, Status: common.ChannelStatusEnabled},
+		{Id: 2, Status: common.ChannelStatusEnabled},
+		{Id: 3, Status: common.ChannelStatusEnabled},
+		{Id: 4, Status: common.ChannelStatusEnabled},
+	}
+	started := make(chan struct{}, len(channels))
+	release := make(chan struct{})
+	var active atomic.Int32
+	var maxActive atomic.Int32
+	progress := make([]int, 0, len(channels)+1)
+	summaryResult := make(chan channelTestSummary, 1)
+
+	go func() {
+		summaryResult <- runChannelTestWorkers(
+			context.Background(),
+			channels,
+			2,
+			func(_ context.Context, _ *model.Channel) channelTestSummary {
+				current := active.Add(1)
+				defer active.Add(-1)
+				for {
+					observed := maxActive.Load()
+					if current <= observed || maxActive.CompareAndSwap(observed, current) {
+						break
+					}
+				}
+				started <- struct{}{}
+				<-release
+				return channelTestSummary{Tested: 1, Succeeded: 1}
+			},
+			func(processed, _ int) {
+				progress = append(progress, processed)
+			},
+		)
+	}()
+
+	<-started
+	<-started
+	select {
+	case <-started:
+		t.Fatal("started more channel tests than the configured concurrency")
+	default:
+	}
+	close(release)
+
+	summary := <-summaryResult
+
+	assert.Equal(t, int32(2), maxActive.Load())
+	assert.Equal(t, channelTestSummary{Tested: 4, Succeeded: 4}, summary)
+	assert.Equal(t, []int{0, 1, 2, 3, 4}, progress)
+}
+
+func TestRunChannelTestWorkersStopsAfterCancellation(t *testing.T) {
+	originalInterval := common.RequestInterval
+	common.RequestInterval = 0
+	t.Cleanup(func() { common.RequestInterval = originalInterval })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	channels := []*model.Channel{
+		{Id: 1, Status: common.ChannelStatusEnabled},
+		{Id: 2, Status: common.ChannelStatusEnabled},
+		{Id: 3, Status: common.ChannelStatusEnabled},
+		{Id: 4, Status: common.ChannelStatusEnabled},
+	}
+	started := make(chan struct{}, len(channels))
+	progress := make([]int, 0, 1)
+	summaryResult := make(chan channelTestSummary, 1)
+
+	go func() {
+		summaryResult <- runChannelTestWorkers(
+			ctx,
+			channels,
+			2,
+			func(ctx context.Context, _ *model.Channel) channelTestSummary {
+				started <- struct{}{}
+				<-ctx.Done()
+				return channelTestSummary{Tested: 1, Succeeded: 1}
+			},
+			func(processed, _ int) {
+				progress = append(progress, processed)
+			},
+		)
+	}()
+
+	<-started
+	<-started
+	cancel()
+
+	summary := <-summaryResult
+
+	select {
+	case <-started:
+		t.Fatal("started another channel test after cancellation")
+	default:
+	}
+	assert.Equal(t, channelTestSummary{Tested: 2, Succeeded: 2}, summary)
+	assert.Equal(t, []int{0}, progress)
 }
 
 func TestTestAllChannelsRejectsExistingActiveTask(t *testing.T) {

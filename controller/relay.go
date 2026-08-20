@@ -200,6 +200,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
+		// Each attempt owns its own upstream request id; a stale value set by a
+		// failed attempt must not leak into a later attempt's log.
+		c.Set(common.UpstreamRequestIdKey, "")
 		service.ObserveTurnAttemptBegin(c)
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
@@ -414,6 +417,18 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 			adminInfo["multi_key_index"] = common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
 		}
 		service.AppendChannelAffinityAdminInfo(c, adminInfo)
+		if upstreamDetail := err.GetUpstreamErrorDetail(); upstreamDetail != nil {
+			// Mask upstream-controlled message text before persisting (defense
+			// in depth: providers may echo credentials in error bodies).
+			upstreamDetail.Message = common.MaskSensitiveInfo(upstreamDetail.Message)
+			adminInfo["upstream_error"] = upstreamDetail
+			// The upstream request id may only exist inside the error body
+			// (e.g. DashScope SSE errors); surface it through the existing
+			// logs.upstream_request_id column when no header carried one.
+			if upstreamDetail.RequestID != "" && c.GetString(common.UpstreamRequestIdKey) == "" {
+				c.Set(common.UpstreamRequestIdKey, upstreamDetail.RequestID)
+			}
+		}
 		other["admin_info"] = adminInfo
 		startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
 		if startTime.IsZero() {

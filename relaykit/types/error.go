@@ -96,6 +96,39 @@ type NewAPIError struct {
 	errorCode      ErrorCode
 	StatusCode     int
 	Metadata       json.RawMessage
+	upstreamDetail *UpstreamErrorDetail
+}
+
+// UpstreamErrorDetail carries structured diagnostics recovered from a non-2xx
+// upstream response body, for example an SSE "event:error" payload returned
+// by some Anthropic-compatible endpoints (DashScope/Bailian) on streaming
+// requests instead of a standalone JSON object. It is meant for admin-facing
+// logs and error records only; attaching it must not change the
+// client-visible error message carried by Err.
+type UpstreamErrorDetail struct {
+	Message   string `json:"message,omitempty"`
+	Code      string `json:"code,omitempty"`
+	Type      string `json:"type,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
+}
+
+// GetUpstreamErrorDetail returns admin-facing diagnostics recovered from the
+// upstream error body, or nil when no structured detail was captured.
+func (e *NewAPIError) GetUpstreamErrorDetail() *UpstreamErrorDetail {
+	if e == nil {
+		return nil
+	}
+	return e.upstreamDetail
+}
+
+// SetUpstreamErrorDetail attaches admin-facing diagnostics recovered from the
+// upstream error body. It intentionally leaves Err untouched so client-visible
+// error semantics stay unchanged.
+func (e *NewAPIError) SetUpstreamErrorDetail(detail *UpstreamErrorDetail) {
+	if e == nil || detail == nil {
+		return
+	}
+	e.upstreamDetail = detail
 }
 
 // Unwrap enables errors.Is / errors.As to work with NewAPIError by exposing the underlying error.

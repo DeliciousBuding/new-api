@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -120,6 +121,76 @@ func TestRelayErrorHandlerKeepsOpenAIErrorMessage(t *testing.T) {
 
 	require.NotNil(t, newAPIError)
 	require.Equal(t, message, newAPIError.Error())
+}
+
+func TestRelayErrorHandlerAttachesSSEDetailWithoutChangingClientError(t *testing.T) {
+	message := "Access denied, please make sure your account is in good standing."
+	body := "id:1\nevent:error\n:HTTP_STATUS/400\n" +
+		"data:{\"request_id\":\"req-1\",\"code\":\"Arrearage\",\"type\":\"Arrearage\",\"message\":\"" + message + "\"}\n\n"
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	newAPIError := RelayErrorHandler(context.Background(), resp, false)
+
+	require.NotNil(t, newAPIError)
+	// The client-visible error keeps the bare status-code form; structured
+	// upstream diagnostics are attached for admin-facing surfaces only.
+	require.Equal(t, "bad response status code 400", newAPIError.Error())
+	require.Equal(t, http.StatusBadRequest, newAPIError.StatusCode)
+
+	detail := newAPIError.GetUpstreamErrorDetail()
+	require.NotNil(t, detail)
+	assert.Equal(t, "Arrearage", detail.Code)
+	assert.Equal(t, message, detail.Message)
+	assert.Equal(t, "req-1", detail.RequestID)
+}
+
+func TestRelayErrorHandlerLogsSSEDetailForAdmins(t *testing.T) {
+	withDebugEnabled(t, false)
+
+	body := "event:error\ndata:{\"request_id\":\"req-1\",\"code\":\"Arrearage\",\"message\":\"Access denied\"}\n\n"
+	var logBuffer bytes.Buffer
+
+	common.LogWriterMu.Lock()
+	oldWriter := gin.DefaultErrorWriter
+	gin.DefaultErrorWriter = &logBuffer
+	common.LogWriterMu.Unlock()
+	t.Cleanup(func() {
+		common.LogWriterMu.Lock()
+		gin.DefaultErrorWriter = oldWriter
+		common.LogWriterMu.Unlock()
+	})
+
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	newAPIError := RelayErrorHandler(context.Background(), resp, false)
+
+	require.NotNil(t, newAPIError)
+	require.Equal(t, "bad response status code 400", newAPIError.Error())
+	assert.Contains(t, logBuffer.String(), "upstream error detail")
+	assert.Contains(t, logBuffer.String(), "code=Arrearage")
+	assert.Contains(t, logBuffer.String(), "request_id=req-1")
+}
+
+func TestRelayErrorHandlerKeepsFullBodyForChannelTestOnSSEError(t *testing.T) {
+	body := "event:error\ndata:{\"request_id\":\"req-1\",\"code\":\"Arrearage\",\"message\":\"Access denied\"}\n\n"
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	newAPIError := RelayErrorHandler(context.Background(), resp, true)
+
+	require.NotNil(t, newAPIError)
+	// Channel test (showBodyWhenFail=true) keeps seeing the complete raw body.
+	assert.Contains(t, newAPIError.Error(), body)
+	assert.Contains(t, newAPIError.Error(), "bad response status code 400")
+	require.NotNil(t, newAPIError.GetUpstreamErrorDetail())
 }
 
 func TestRelayErrorHandlerKeepsInvalidJSONBodyInDebugLog(t *testing.T) {
