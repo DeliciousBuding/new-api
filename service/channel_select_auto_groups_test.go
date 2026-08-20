@@ -154,10 +154,10 @@ func TestUpstreamBudgetExhaustedBoundaries(t *testing.T) {
 	assert.Equal(t, 0, param.Attempts())
 
 	// Unlimited (default) and negative caps must never bound the request.
-	for _, cap := range []int{0, -1} {
-		common.MaxUpstreamAttempts = cap
+	for _, limit := range []int{0, -1} {
+		common.MaxUpstreamAttempts = limit
 		param.attempts = 100
-		assert.False(t, param.UpstreamBudgetExhausted(), "cap %d must mean unlimited", cap)
+		assert.False(t, param.UpstreamBudgetExhausted(), "cap %d must mean unlimited", limit)
 	}
 
 	// A cap of 1 means the first attempt is the only one allowed.
