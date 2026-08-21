@@ -48,6 +48,13 @@ function defaultValues() {
     timeout_sec: 15,
     sidecall_secret: '',
     disable_proxy_fetch: false,
+    cache_ttl_sec: 86400,
+    max_images: 20,
+    request_concurrency: 4,
+    max_description_bytes: 8000,
+    max_total_bytes: 48000,
+    default_max_tokens: 2000,
+    max_fallback_models: 3,
   }
 }
 

@@ -79,6 +79,43 @@ const schema = z.object({
     .min(1, { message: 'Must be at least 1' }),
   sidecall_secret: z.string().optional(),
   disable_proxy_fetch: z.boolean(),
+  // v0.4：每请求策略上限 + 缓存 TTL（范围与后端写时校验一致，见
+  // setting/model_setting/vision_relay.go 的 visionRelayIntKeyBounds）
+  cache_ttl_sec: z.coerce
+    .number()
+    .int({ message: 'Must be an integer' })
+    .min(0, { message: 'Must be at least 0 (0 = disable cache)' })
+    .max(604800, { message: 'Must be at most 604800 (7 days)' }),
+  max_images: z.coerce
+    .number()
+    .int({ message: 'Must be an integer' })
+    .min(1)
+    .max(50),
+  request_concurrency: z.coerce
+    .number()
+    .int({ message: 'Must be an integer' })
+    .min(1)
+    .max(8),
+  max_description_bytes: z.coerce
+    .number()
+    .int({ message: 'Must be an integer' })
+    .min(1000)
+    .max(32000),
+  max_total_bytes: z.coerce
+    .number()
+    .int({ message: 'Must be an integer' })
+    .min(4000)
+    .max(256000),
+  default_max_tokens: z.coerce
+    .number()
+    .int({ message: 'Must be an integer' })
+    .min(256)
+    .max(16384),
+  max_fallback_models: z.coerce
+    .number()
+    .int({ message: 'Must be an integer' })
+    .min(1)
+    .max(8),
 })
 
 type VisionRelaySettingsFormValues = z.output<typeof schema>
@@ -96,6 +133,13 @@ type FlatVisionRelaySettings = {
   'vision_relay.timeout_sec': number
   'vision_relay.sidecall_secret': string
   'vision_relay.disable_proxy_fetch': boolean
+  'vision_relay.cache_ttl_sec': number
+  'vision_relay.max_images': number
+  'vision_relay.request_concurrency': number
+  'vision_relay.max_description_bytes': number
+  'vision_relay.max_total_bytes': number
+  'vision_relay.default_max_tokens': number
+  'vision_relay.max_fallback_models': number
 }
 
 type VisionRelaySettingsCardProps = {
@@ -123,6 +167,23 @@ export function VisionRelaySettingsCard({
     'vision_relay.disable_proxy_fetch': Boolean(
       defaultValues.disable_proxy_fetch
     ),
+    'vision_relay.cache_ttl_sec': Number(defaultValues.cache_ttl_sec ?? 86400),
+    'vision_relay.max_images': Number(defaultValues.max_images ?? 20),
+    'vision_relay.request_concurrency': Number(
+      defaultValues.request_concurrency ?? 4
+    ),
+    'vision_relay.max_description_bytes': Number(
+      defaultValues.max_description_bytes ?? 8000
+    ),
+    'vision_relay.max_total_bytes': Number(
+      defaultValues.max_total_bytes ?? 48000
+    ),
+    'vision_relay.default_max_tokens': Number(
+      defaultValues.default_max_tokens ?? 2000
+    ),
+    'vision_relay.max_fallback_models': Number(
+      defaultValues.max_fallback_models ?? 3
+    ),
   })
 
   const buildFormDefaults = (
@@ -139,6 +200,13 @@ export function VisionRelaySettingsCard({
     timeout_sec: Number(values.timeout_sec ?? 15),
     sidecall_secret: '',
     disable_proxy_fetch: Boolean(values.disable_proxy_fetch),
+    cache_ttl_sec: Number(values.cache_ttl_sec ?? 86400),
+    max_images: Number(values.max_images ?? 20),
+    request_concurrency: Number(values.request_concurrency ?? 4),
+    max_description_bytes: Number(values.max_description_bytes ?? 8000),
+    max_total_bytes: Number(values.max_total_bytes ?? 48000),
+    default_max_tokens: Number(values.default_max_tokens ?? 2000),
+    max_fallback_models: Number(values.max_fallback_models ?? 3),
   })
 
   const form = useForm<
@@ -167,6 +235,25 @@ export function VisionRelaySettingsCard({
       'vision_relay.disable_proxy_fetch': Boolean(
         defaultValues.disable_proxy_fetch
       ),
+      'vision_relay.cache_ttl_sec': Number(
+        defaultValues.cache_ttl_sec ?? 86400
+      ),
+      'vision_relay.max_images': Number(defaultValues.max_images ?? 20),
+      'vision_relay.request_concurrency': Number(
+        defaultValues.request_concurrency ?? 4
+      ),
+      'vision_relay.max_description_bytes': Number(
+        defaultValues.max_description_bytes ?? 8000
+      ),
+      'vision_relay.max_total_bytes': Number(
+        defaultValues.max_total_bytes ?? 48000
+      ),
+      'vision_relay.default_max_tokens': Number(
+        defaultValues.default_max_tokens ?? 2000
+      ),
+      'vision_relay.max_fallback_models': Number(
+        defaultValues.max_fallback_models ?? 3
+      ),
     }
     form.reset(buildFormDefaults(defaultValues))
   }, [defaultValues, form])
@@ -186,6 +273,13 @@ export function VisionRelaySettingsCard({
       'vision_relay.timeout_sec': values.timeout_sec,
       'vision_relay.sidecall_secret': (values.sidecall_secret ?? '').trim(),
       'vision_relay.disable_proxy_fetch': values.disable_proxy_fetch,
+      'vision_relay.cache_ttl_sec': values.cache_ttl_sec,
+      'vision_relay.max_images': values.max_images,
+      'vision_relay.request_concurrency': values.request_concurrency,
+      'vision_relay.max_description_bytes': values.max_description_bytes,
+      'vision_relay.max_total_bytes': values.max_total_bytes,
+      'vision_relay.default_max_tokens': values.default_max_tokens,
+      'vision_relay.max_fallback_models': values.max_fallback_models,
     }
 
     const hasChanges = (
@@ -216,6 +310,21 @@ export function VisionRelaySettingsCard({
       disable_proxy_fetch: String(
         normalized['vision_relay.disable_proxy_fetch']
       ),
+      cache_ttl_sec: String(normalized['vision_relay.cache_ttl_sec']),
+      max_images: String(normalized['vision_relay.max_images']),
+      request_concurrency: String(
+        normalized['vision_relay.request_concurrency']
+      ),
+      max_description_bytes: String(
+        normalized['vision_relay.max_description_bytes']
+      ),
+      max_total_bytes: String(normalized['vision_relay.max_total_bytes']),
+      default_max_tokens: String(
+        normalized['vision_relay.default_max_tokens']
+      ),
+      max_fallback_models: String(
+        normalized['vision_relay.max_fallback_models']
+      ),
     })
 
     if (result.success) {
@@ -235,6 +344,15 @@ export function VisionRelaySettingsCard({
           timeout_sec: normalized['vision_relay.timeout_sec'],
           sidecall_secret: '',
           disable_proxy_fetch: normalized['vision_relay.disable_proxy_fetch'],
+          cache_ttl_sec: normalized['vision_relay.cache_ttl_sec'],
+          max_images: normalized['vision_relay.max_images'],
+          request_concurrency: normalized['vision_relay.request_concurrency'],
+          max_description_bytes:
+            normalized['vision_relay.max_description_bytes'],
+          max_total_bytes: normalized['vision_relay.max_total_bytes'],
+          default_max_tokens: normalized['vision_relay.default_max_tokens'],
+          max_fallback_models:
+            normalized['vision_relay.max_fallback_models'],
         })
       )
     }
@@ -520,6 +638,170 @@ export function VisionRelaySettingsCard({
                 <FormDescription>
                   {t(
                     'Total time budget per request in seconds. Must be a positive integer.'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='max_images'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Max Images Per Request')}</FormLabel>
+                <FormControl>
+                  <Input
+                    {...field}
+                    value={String(field.value ?? '')}
+                    onChange={(event) => field.onChange(event.target.value)}
+                    placeholder='20'
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'Maximum number of images transcribed per request (1-50). Images beyond this become image_limit placeholders.'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='request_concurrency'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Request Concurrency')}</FormLabel>
+                <FormControl>
+                  <Input
+                    {...field}
+                    value={String(field.value ?? '')}
+                    onChange={(event) => field.onChange(event.target.value)}
+                    placeholder='4'
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'Sidecall goroutines per request (1-8). Raise together with max_images and timeout so more images finish within the deadline.'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='max_description_bytes'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Max Description Bytes Per Image')}</FormLabel>
+                <FormControl>
+                  <Input
+                    {...field}
+                    value={String(field.value ?? '')}
+                    onChange={(event) => field.onChange(event.target.value)}
+                    placeholder='8000'
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t('Byte cap per image description (1000-32000).')}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='max_total_bytes'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Max Total Injected Bytes')}</FormLabel>
+                <FormControl>
+                  <Input
+                    {...field}
+                    value={String(field.value ?? '')}
+                    onChange={(event) => field.onChange(event.target.value)}
+                    placeholder='48000'
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'Total byte budget for all injected descriptions (4000-256000). Scale with max_images or later images get [omitted].'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='default_max_tokens'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Vision Model Max Tokens')}</FormLabel>
+                <FormControl>
+                  <Input
+                    {...field}
+                    value={String(field.value ?? '')}
+                    onChange={(event) => field.onChange(event.target.value)}
+                    placeholder='2000'
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t('max_tokens for the vision sidecall (256-16384).')}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='max_fallback_models'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Max Fallback Models')}</FormLabel>
+                <FormControl>
+                  <Input
+                    {...field}
+                    value={String(field.value ?? '')}
+                    onChange={(event) => field.onChange(event.target.value)}
+                    placeholder='3'
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'How many models from the fallback chain are tried per image (1-8).'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='cache_ttl_sec'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Description Cache TTL (Seconds)')}</FormLabel>
+                <FormControl>
+                  <Input
+                    {...field}
+                    value={String(field.value ?? '')}
+                    onChange={(event) => field.onChange(event.target.value)}
+                    placeholder='86400'
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'Redis TTL for cross-request image descriptions (0-604800). 0 disables the cache.'
                   )}
                 </FormDescription>
                 <FormMessage />

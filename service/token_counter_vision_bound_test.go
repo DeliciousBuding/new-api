@@ -92,7 +92,7 @@ func visionMultiImageRelayInfo(t *testing.T, numImages int) (*gin.Context, *rela
 	return c, info, raw
 }
 
-// boundVisionImageFiles must keep the first MaxImages image entries and drop
+// boundVisionImageFiles must keep the first maxImages image entries and drop
 // the rest, while preserving non-image files in their original positions.
 func TestBoundVisionImageFilesDropsSurplusImages(t *testing.T) {
 	urlSrc := func(u string) *types.URLSource { return types.NewURLFileSource(u) }
@@ -110,25 +110,26 @@ func TestBoundVisionImageFilesDropsSurplusImages(t *testing.T) {
 	files := []*types.FileMeta{
 		img(), audio(), img(), img(), unknown(), img(), img(), audio(), img(), img(), img(),
 	}
-	bounded := boundVisionImageFiles(files)
+	// 显式 bound=5（v0.4 签名带 maxImages；用远小于图片数的值验证截断语义，
+	// 不受默认 MaxImages=20 影响）。
+	const bound = 5
+	bounded := boundVisionImageFiles(files, bound)
 
-	wantImageCount := vision_relay.MaxImages
 	gotImageCount := 0
 	for _, f := range bounded {
 		if f.FileType == types.FileTypeImage {
 			gotImageCount++
 		}
 	}
-	assert.Equal(t, wantImageCount, gotImageCount, "image count must be capped at MaxImages")
+	assert.Equal(t, bound, gotImageCount, "image count must be capped at maxImages")
 
 	// Non-image files must all survive.
 	assert.Equal(t, 2, countFileType(bounded, types.FileTypeAudio))
 	assert.Equal(t, 1, countFileType(bounded, ""))
 
-	// Surviving images must be the first MaxImages in order (positions 0,2,3,...).
-	// The 7th image in the original slice (index 10, since images are at
-	// 0,2,3,5,6,8,9,10) must be dropped.
-	require.Len(t, bounded, wantImageCount+3) // MaxImages images + 2 audio + 1 unknown
+	// Surviving images must be the first bound in order (positions 0,2,3,...).
+	// Images at indices 8,9,10 of the original slice must be dropped.
+	require.Len(t, bounded, bound+3) // bound images + 2 audio + 1 unknown
 }
 
 func countFileType(files []*types.FileMeta, ft types.FileType) int {
@@ -143,8 +144,8 @@ func countFileType(files []*types.FileMeta, ft types.FileType) int {
 
 // boundVisionImageFiles with nil/empty input must return nil (no panic).
 func TestBoundVisionImageFilesEmpty(t *testing.T) {
-	require.Nil(t, boundVisionImageFiles(nil))
-	require.Nil(t, boundVisionImageFiles([]*types.FileMeta{}))
+	require.Nil(t, boundVisionImageFiles(nil, vision_relay.MaxImages))
+	require.Nil(t, boundVisionImageFiles([]*types.FileMeta{}, vision_relay.MaxImages))
 }
 
 // boundVisionImageFiles must not mutate the input slice; callers downstream
@@ -161,7 +162,7 @@ func TestBoundVisionImageFilesDoesNotMutateInput(t *testing.T) {
 		{FileType: types.FileTypeImage, Source: types.NewURLFileSource("http://example.com/8.png")},
 	}
 	require.Len(t, original, 8)
-	_ = boundVisionImageFiles(original)
+	_ = boundVisionImageFiles(original, 4)
 	// Input slice length and element identities are unchanged.
 	require.Len(t, original, 8)
 	for i := range original {

@@ -318,8 +318,11 @@ func TestEngineEnhanceImageLimitPlaceholder(t *testing.T) {
 	}
 	raw := `{"messages":[{"role":"user","content":[` + strings.Join(blocks, ",") + `]}]}`
 	engine := &Engine{Client: &VisionClient{HTTPClient: ts.Client()}}
+	// 显式压低 MaxImages=6 保留本回归测试语义（v0.4 默认 20 下 8 图不触发截断）
+	cfg := testConfig(ts.URL)
+	cfg.Limits = Limits{MaxImages: 6}
 	stats := &Stats{}
-	enhanced, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, testConfig(ts.URL), stats)
+	enhanced, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, cfg, stats)
 	if err != nil {
 		t.Fatalf("enhance: %v", err)
 	}
@@ -731,8 +734,11 @@ func TestEngineEnhanceFailedReasons(t *testing.T) {
 	}
 	raw := `{"messages":[{"role":"user","content":[` + strings.Join(blocks, ",") + `]}]}`
 	engine := &Engine{Client: &VisionClient{HTTPClient: ts.Client()}}
+	// 显式压低 MaxImages=6 保留本回归测试语义（v0.4 默认 20 下 8 图不触发截断）
+	cfg := testConfig(ts.URL)
+	cfg.Limits = Limits{MaxImages: 6}
 	stats := &Stats{}
-	_, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, testConfig(ts.URL), stats)
+	_, err := engine.Enhance(context.Background(), []byte(raw), FormatClaude, cfg, stats)
 	require.NoError(t, err, "enhance")
 	require.Equal(t, 8, stats.Failed)
 	require.Equal(t, 2, stats.FailedReasons[EnumImageLimit])

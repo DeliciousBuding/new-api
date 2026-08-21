@@ -62,34 +62,34 @@ Claude `system[]` 和 Responses `instructions[]` 中的图片当前会在原高�
 - **不可信内容边界**：成功转写使用 `ResultPrefix` / `ResultSuffix` 包围，明确声明其中内容不可信。
 - **图像限制**：图片数、下载/解码字节、像素、边长、单图描述和总注入量都在 `pkg/vision_relay/types.go` 设硬上限。
 - **并发限制**：请求内图片并发、进程级解码槽和进程级视觉调用槽分别受限，避免网络吞吐与解码内存互相放大。
+- **v0.4 配置面分层**：每请求策略上限（`max_images`/`request_concurrency`/`max_description_bytes`/`max_total_bytes`/`default_max_tokens`/`max_fallback_models`）与缓存 TTL（`cache_ttl_sec`）迁入 DB 热更新（每请求读快照生效；写时范围校验 + 请求时钳制 + 核心零值兜底三层防御）。进程级资源防线（解码字节/像素/边长/全局并发闸）保持包内常量 + 启动环境变量（`VISION_RELAY_*`），不进 DB——热改全局闸会瞬时放大进程内存峰值。
 - **敏感词**：新转写和跨请求缓存命中都重新经过当前敏感词策略；污染缓存会 best-effort 删除。
 - **日志脱敏**：结构化日志只记录稳定枚举、计数、模型名和耗时；配置错误不得回显可能含 userinfo 的 URL，也不得记录 API key 或 sidecall secret。
 
 ## 去重、缓存与可观测性
 
 - 请求内按图片 digest 去重，同图多块只识别一次。
-- Redis 跨请求缓存键绑定图片 digest 和实际识图指令；提示词变化自然生成新键，默认 TTL 为 24 小时。
-- 缓存值是渲染后的明文转写，可能含图片中的代码、配置或其他敏感文本；Redis 必须按敏感数据面管理。当前没有 Vision Relay 独立的 cache off/TTL 配置。
+- Redis 跨请求缓存键绑定图片 digest 和实际识图指令；提示词变化自然生成新键，默认 TTL 为 24 小时（v0.4 起 `vision_relay.cache_ttl_sec` 热配置，0 = 禁用）。
+- 缓存值是渲染后的明文转写，可能含图片中的代码、配置或其他敏感文本；Redis 必须按敏感数据面管理。
 - `Stats` 区分图片块数、唯一图片数、请求内去重、跨请求缓存命中、视觉调用数和 fallback 次数。
 - `Attempts` 按实际调用顺序记录模型、稳定结果枚举和耗时；自由文本错误不会进入日志。
 
-当前 fallback 是同一 `base_url` 和 `api_key` 下最多三个模型名，不是每一步绑定不同 provider/channel 的路由链。
+当前 fallback 是同一 `base_url` 和 `api_key` 下按 `max_fallback_models`（v0.4 起热配置，默认 3）截断的模型名链，不是每一步绑定不同 provider/channel 的路由链。
 
 ## 已知实现债务
 
-以下是 2026-08-16 对当前实现确认的高优先级缺口：
+以下是 2026-08-16 对当前实现确认的高优先级缺口（v0.4 已消化的条目已移除）：
 
 - 结构化输出缺少 strict quality gate，格式损坏不会触发 fallback，也可能进入缓存。
 - 请求内图片准备当前串行，慢 URL 仍会阻塞同一请求内后续图片的准备。
-- 设置页逐键保存且业务失败不会可靠 reject mutation，缺少完整 prospective snapshot 校验和明确 secret keep/set/clear 语义。
-- cache identity 未包含 provider/model/render-contract 版本，也没有 singleflight、独立开关或 TTL 配置。
+- cache identity 未包含 provider/model/render-contract 版本，也没有 singleflight（TTL 与独立开关已于 v0.4 提供）。
 - 纯核心包的“只依赖标准库/x-image/gjson/sjson”边界与项目级“业务 JSON 一律走 `common.*`”规则存在张力；在明确例外或抽象 port 前，不应继续扩散直接 `encoding/json` 调用。
 
 ## 配置边界
 
 配置键以 `vision_relay.` 为前缀。`enabled` 为权威开关；关闭时其他残留坏配置不影响请求。启用时写入守卫和运行时校验共同保证 target model、endpoint、model chain、API key、timeout 和 sidecall secret 的完整性。
 
-`api_key` 与 `sidecall_secret` 是只写敏感配置，选项读取面不回显。设置页当前逐键提交，尚无原子 bulk update 或显式 keep/set/clear secret 契约；修改保存流程时必须防止部分成功和空值误清除。资源硬上限不属于热配置，避免运行中修改全局闸门容量。
+`api_key` 与 `sidecall_secret` 是只写敏感配置，选项读取面不回显。设置页通过原子 bulk update 一次提交全量快照，后端校验完整 prospective snapshot 后单事务写变更键；secret 空值 = 保持现值（keep），后端强制该契约。每请求策略上限（v0.4）属热配置、逐请求生效；进程级全局闸容量（解码/调用槽）仍只经启动环境变量调整，不在运行中修改。
 
 ## 变更检查
 
