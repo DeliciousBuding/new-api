@@ -11,7 +11,6 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
-	"github.com/QuantumNous/new-api/pkg/vision_relay"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	constant2 "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -252,16 +251,16 @@ func EstimateRequestToken(c *gin.Context, meta *types.TokenCountMeta, info *rela
 		shouldFetchFiles = false
 	}
 
-	// Vision Relay 会在 prepare 阶段把图片块截断到 vision_relay.MaxImages
-	// （pkg/vision_relay/engine.go）。当 Vision Relay 将为该请求启用时，
-	// estimate 阶段也按同一上限截断 image 文件：超限图既不会被 fetch（避免
-	// 远程抓取放大先于边界生效），也不计入 520 占位（避免预扣费高估将被
-	// 增强删除的图片）。非 image 文件（音频/视频/未知）不受影响——Vision
-	// Relay 不接管它们。仅当 VisionRelayWillEngageForEstimate 为真时截断，
+	// Vision Relay 会在 prepare 阶段把图片块截断到 max_images（v0.4 起 DB
+	// 可配，默认 20；pkg/vision_relay/engine.go）。当 Vision Relay 将为该请求
+	// 启用时，estimate 阶段也按同一上限截断 image 文件：超限图既不会被 fetch
+	// （避免远程抓取放大先于边界生效），也不计入 520 占位（避免预扣费高估
+	// 将被增强删除的图片）。非 image 文件（音频/视频/未知）不受影响——Vision
+	// Relay 不接管它们。仅当 VisionRelayMaxImagesForEstimate > 0 时截断，
 	// 否则保持原行为（不破坏 >MaxImages 的合法多图请求）。
 	files := meta.Files
-	if VisionRelayWillEngageForEstimate(info) {
-		files = boundVisionImageFiles(meta.Files)
+	if maxImages := VisionRelayMaxImagesForEstimate(info); maxImages > 0 {
+		files = boundVisionImageFiles(meta.Files, maxImages)
 	}
 
 	// 使用统一的文件服务获取文件类型
@@ -314,26 +313,26 @@ func EstimateRequestToken(c *gin.Context, meta *types.TokenCountMeta, info *rela
 }
 
 // boundVisionImageFiles 返回一个新切片，其中 image 文件（FileType ==
-// FileTypeImage）超过 vision_relay.MaxImages 的部分被丢弃，非 image 文件
-// 原样保留且位置不变。返回 nil 表示输入为空；调用方应在 Vision Relay 实际
-// 将接管该请求时才调用（VisionRelayWillEngageForEstimate 为真），否则会
-// 错误截断合法的多图请求。
+// FileTypeImage）超过 maxImages 的部分被丢弃，非 image 文件原样保留且位置
+// 不变。返回 nil 表示输入为空；调用方应在 Vision Relay 实际将接管该请求时
+// 才调用（maxImages > 0），否则会错误截断合法的多图请求。
+// maxImages 来自快照 vision_relay.max_images（v0.4 起 DB 可配）。
 //
 // 截断按文件在 meta.Files 中的出现顺序（消息遍历顺序），与 Vision Relay
 // 引擎在 JSON 中扫描 image 块的顺序一致——engine.go 在 prepare 阶段对
-// 超过 MaxImages 的 image 块直接 ErrImageLimit 占位（不下载、不识图），
+// 超过 max_images 的 image 块直接 ErrImageLimit 占位（不下载、不识图），
 // 这里在 estimate 阶段镜像同一边界。仅截断已知 image 文件；FileType 为
 // 空的未知文件可能不是 image，Vision Relay 也不会按 image 块截断它们，
 // 保留以便 fetch 循环解析真实类型。
-func boundVisionImageFiles(files []*types.FileMeta) []*types.FileMeta {
-	if len(files) == 0 {
+func boundVisionImageFiles(files []*types.FileMeta, maxImages int) []*types.FileMeta {
+	if len(files) == 0 || maxImages <= 0 {
 		return nil
 	}
 	bounded := make([]*types.FileMeta, 0, len(files))
 	imageCount := 0
 	for _, file := range files {
 		if file != nil && file.FileType == types.FileTypeImage {
-			if imageCount >= vision_relay.MaxImages {
+			if imageCount >= maxImages {
 				continue
 			}
 			imageCount++

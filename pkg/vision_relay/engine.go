@@ -61,6 +61,10 @@ type Engine struct {
 func (e *Engine) Enhance(ctx context.Context, raw []byte, format Format, cfg Config, stats *Stats) ([]byte, error) {
 	start := time.Now()
 
+	// 0. 生效 limits（零值回退包内默认——三层防御最内层）。cfg 是值拷贝，
+	//    回写仅影响本请求；全部子流程只读 cfg.Limits，不再引包常量。
+	cfg.Limits = cfg.Limits.withDefaults()
+
 	// 1. 路径感知扫描
 	patches, err := Discover(raw, format)
 	if err != nil {
@@ -75,9 +79,9 @@ func (e *Engine) Enhance(ctx context.Context, raw []byte, format Format, cfg Con
 	//    不解码 base64、不计算 digest——直接 image_limit 占位）。字节获取与
 	//    digest 准备保持串行，但必须在全局 decode gate 外；该 gate 只保护后续
 	//    CompressForVision 中的图像解析、完整解码、resize 和重编码。
-	images := make([]*PatchedImage, 0, min(len(patches), MaxImages))
+	images := make([]*PatchedImage, 0, min(len(patches), cfg.Limits.MaxImages))
 	for i := range patches {
-		if i >= MaxImages {
+		if i >= cfg.Limits.MaxImages {
 			img := &PatchedImage{Patch: patches[i], Err: ErrImageLimit}
 			images = append(images, img)
 			recordFailure(stats, EnumImageLimit, img)
@@ -94,7 +98,7 @@ func (e *Engine) Enhance(ctx context.Context, raw []byte, format Format, cfg Con
 	results := e.describeGrouped(ctx, images, cfg, stats)
 
 	// 4. 严格截断（v0.2.2：单图/总量预算含边界文本与尾标；按图片原始顺序）
-	truncateResults(images, results, stats)
+	truncateResults(images, results, stats, cfg.Limits)
 
 	// 5. sjson 局部替换（A4：所有 image 块 → text 块/占位，零残留）
 	enhanced, err := Apply(raw, images, results)
@@ -136,7 +140,7 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 	instruction := BuildInstruction(cfg)
 	results := make(map[string]string, len(groups))
 	var mu sync.Mutex
-	sem := make(chan struct{}, RequestConcurrency)
+	sem := make(chan struct{}, cfg.Limits.RequestConcurrency)
 	var wg sync.WaitGroup
 	var abort atomic.Bool // 请求级熔断：401/403 后停止所有后续 sidecall
 	for digest, group := range groups {
@@ -285,11 +289,11 @@ func gateErrEnum(err error) string {
 }
 
 // truncateResults 严格截断（v0.2.2）：
-//   - 单图：预算 = MaxDescriptionBytes - len(TruncatedSuffix)，截断后加尾标，
-//     最终长度 ≤ MaxDescriptionBytes
+//   - 单图：预算 = limits.MaxDescriptionBytes - len(TruncatedSuffix)，截断后
+//     加尾标，最终长度 ≤ limits.MaxDescriptionBytes
 //   - 总量：预算含 wrap 边界文本（prefix/suffix/换行）与占位文本，按图片
 //     原始顺序累计（确定性，非 map 随机序）
-func truncateResults(images []*PatchedImage, results map[string]string, stats *Stats) {
+func truncateResults(images []*PatchedImage, results map[string]string, stats *Stats, limits Limits) {
 	total := 0
 	for _, img := range images {
 		desc, ok := results[img.Digest]
@@ -301,15 +305,15 @@ func truncateResults(images []*PatchedImage, results map[string]string, stats *S
 		// wrap 后注入长度：prefix + \n + desc + \n + suffix
 		base := len(fmt.Sprintf(ResultPrefix, img.Patch.Index, len(images))) +
 			1 + len(ResultSuffix) + 1
-		budget := MaxTotalBytes - total - base
+		budget := limits.MaxTotalBytes - total - base
 		if budget < len(TruncatedSuffix)+16 {
 			// 总量已耗尽：最小化——只留最短占位（不可空）
 			results[img.Digest] = "[omitted]"
 			total += len("[omitted]") + base
 			continue
 		}
-		if len(desc) > MaxDescriptionBytes {
-			desc = truncateUTF8(desc, MaxDescriptionBytes-len(TruncatedSuffix)) + TruncatedSuffix
+		if len(desc) > limits.MaxDescriptionBytes {
+			desc = truncateUTF8(desc, limits.MaxDescriptionBytes-len(TruncatedSuffix)) + TruncatedSuffix
 			results[img.Digest] = desc
 		}
 		if len(desc) > budget {

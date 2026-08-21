@@ -15,9 +15,13 @@ import (
 
 // VisionRelaySettings 定义 Vision Relay（网关层图片识图替换）配置。
 // 注册名 "vision_relay" → DB option keys 形如 vision_relay.enabled。
-// 8 字段（v0.2.3：含 sidecall_secret）；api_key/sidecall_secret 以敏感后缀
-// 被 GetOptions 过滤自动隐藏（不回显，前端空值=不修改）。
-// 安全限制（图片数/像素/字节/并发等）是包内常量，不进 DB 配置面（v0.2.1）。
+// 15 字段（v0.4：每请求策略上限与缓存 TTL 迁入 DB 热更新）；api_key/
+// sidecall_secret 以敏感后缀被 GetOptions 过滤自动隐藏（不回显，前端空值=
+// 不修改）。
+// 配置面分层（v0.4）：每请求策略（max_images/request_concurrency/描述字节/
+// tokens/fallback 数/cache_ttl_sec）进 DB 热更新；进程级资源防线（解码字节/
+// 像素/边长/全局并发闸）保持包内常量 + 启动环境变量，不进 DB（热改内存闸
+// 会瞬时放大进程内存峰值，见 pkg/vision_relay/types.go）。
 type VisionRelaySettings struct {
 	Enabled           bool     `json:"enabled"`             // 总开关，默认关闭
 	TargetModels      []string `json:"target_models"`       // 目标模型 allowlist（glob，JSON 数组），默认空=不处理任何模型
@@ -30,6 +34,16 @@ type VisionRelaySettings struct {
 	StructuredPrompt  string   `json:"structured_prompt"`   // 结构化转写指令模板（空=内置默认四小节指令）；仅 Structured=true 且 prompt 为空时生效
 	SidecallSecret    string   `json:"sidecall_secret"`     // 递归保护共享 secret（认证 marker HMAC 密钥，审核 P0-2；空=不携带/不信任任何递归头）
 	DisableProxyFetch bool     `json:"disable_proxy_fetch"` // 抓取用户图片 URL 时禁用环境代理（proxy-only 出口部署；默认 off=走环境代理）
+	// v0.4：每请求策略上限 + 缓存 TTL（DB 热更新，写入面带范围校验，请求面
+	// 越界钳制兜底）。默认值见 defaultVisionRelaySettings，与核心包默认常量
+	// 保持一致；核心 withDefaults 是三层防御最内层（调用方手构 Config 时兜底）。
+	CacheTTLSeconds     int `json:"cache_ttl_sec"`         // 跨请求描述缓存 TTL（秒）；0 = 禁用缓存
+	MaxImages           int `json:"max_images"`            // 单请求最多处理图片数（fetch/decode 前生效）
+	RequestConcurrency  int `json:"request_concurrency"`   // 每请求图片并发度（sidecall goroutine 数）
+	MaxDescriptionBytes int `json:"max_description_bytes"` // 单图描述注入上限（截断后加尾标）
+	MaxTotalBytes       int `json:"max_total_bytes"`       // 全部注入（含边界文本）总上限
+	DefaultMaxTokens    int `json:"default_max_tokens"`    // 视觉模型输出上限（识图端点 max_tokens）
+	MaxFallbackModels   int `json:"max_fallback_models"`   // fallback 链最多尝试模型数
 }
 
 // VisionRelaySnapshot 不可变配置快照（值对象，深拷贝 slice；请求全程使用）
@@ -48,6 +62,17 @@ var defaultVisionRelaySettings = VisionRelaySettings{
 	// 结构优于单段散文，且解析侧有散文降级兜底；可经 vision_relay.structured
 	// 显式关闭。
 	Structured: true,
+	// v0.4：每请求策略默认值与核心包默认常量一致（pkg/vision_relay/types.go）。
+	// MaxImages=20 配套 MaxTotalBytes=48k（agent 重发历史图的实测单图描述
+	// ~1.3KB，20 图约 27KB，48k 留出结构化转写余量）；RequestConcurrency=4
+	// 在 30s 预算内可转写更多图（跨请求缓存命中后并发几乎不产生成本）。
+	CacheTTLSeconds:     86400, // 24h，与 v0.2.2 写死值一致；0=禁用
+	MaxImages:           20,
+	RequestConcurrency:  4,
+	MaxDescriptionBytes: 8_000,
+	MaxTotalBytes:       48_000,
+	DefaultMaxTokens:    2000,
+	MaxFallbackModels:   3,
 }
 
 // 全局实例（配置注册/默认导出对象；运行时快照从 OptionMap 读取，见
@@ -82,6 +107,17 @@ func GetVisionRelaySnapshot() (VisionRelaySnapshot, error) {
 	structuredPromptRaw := common.OptionMap["vision_relay.structured_prompt"]
 	sidecallToken := common.OptionMap["vision_relay.sidecall_secret"]
 	disableProxyRaw := common.OptionMap["vision_relay.disable_proxy_fetch"]
+	// v0.4：每请求策略数值键（limits + 缓存 TTL）。逐键宽松解析（见
+	// parseVisionRelayLimits），与其余键的严格解析刻意不对称。
+	limitsRaw := map[string]string{
+		"vision_relay.cache_ttl_sec":         common.OptionMap["vision_relay.cache_ttl_sec"],
+		"vision_relay.max_images":            common.OptionMap["vision_relay.max_images"],
+		"vision_relay.request_concurrency":   common.OptionMap["vision_relay.request_concurrency"],
+		"vision_relay.max_description_bytes": common.OptionMap["vision_relay.max_description_bytes"],
+		"vision_relay.max_total_bytes":       common.OptionMap["vision_relay.max_total_bytes"],
+		"vision_relay.default_max_tokens":    common.OptionMap["vision_relay.default_max_tokens"],
+		"vision_relay.max_fallback_models":   common.OptionMap["vision_relay.max_fallback_models"],
+	}
 	common.OptionMapRWMutex.RUnlock()
 
 	snap := defaultVisionRelaySettings
@@ -102,7 +138,51 @@ func GetVisionRelaySnapshot() (VisionRelaySnapshot, error) {
 	if err := parseVisionRelayFields(&snap, targetsRaw, modelsRaw, baseURL, apiKey, prompt, timeoutRaw, structuredRaw, structuredPromptRaw, sidecallToken, disableProxyRaw); err != nil {
 		return VisionRelaySnapshot{}, err
 	}
+	parseVisionRelayLimits(&snap, limitsRaw)
 	return snap, nil
+}
+
+// parseVisionRelayLimits 解析 v0.4 数值键（每请求策略上限 + 缓存 TTL）。
+// 与其余键的严格解析刻意不对称：limits 是资源/成本防线，坏值钳制到硬边界
+// 回退默认防线即可——按严格解析把单个坏数值升级为全局 5xx 是更糟的故障
+// 面（防线坏了不等于防线没了）。写时校验（ValidateVisionRelayWrite）已把
+// 非法值拦截在入库面；这里只兜"直接改库绕过写校验"的残留。
+// 生效值会出现在请求日志的 max_images/request_concurrency 字段，热更新
+// 是否生效一眼可见。
+func parseVisionRelayLimits(snap *VisionRelaySnapshot, raw map[string]string) {
+	snap.CacheTTLSeconds = clampVisionRelayInt(raw["vision_relay.cache_ttl_sec"],
+		snap.CacheTTLSeconds, visionRelayCacheTTLSecondsMin, visionRelayCacheTTLSecondsMax)
+	snap.MaxImages = clampVisionRelayInt(raw["vision_relay.max_images"],
+		snap.MaxImages, visionRelayMaxImagesMin, visionRelayMaxImagesMax)
+	snap.RequestConcurrency = clampVisionRelayInt(raw["vision_relay.request_concurrency"],
+		snap.RequestConcurrency, visionRelayRequestConcurrencyMin, visionRelayRequestConcurrencyMax)
+	snap.MaxDescriptionBytes = clampVisionRelayInt(raw["vision_relay.max_description_bytes"],
+		snap.MaxDescriptionBytes, visionRelayMaxDescriptionBytesMin, visionRelayMaxDescriptionBytesMax)
+	snap.MaxTotalBytes = clampVisionRelayInt(raw["vision_relay.max_total_bytes"],
+		snap.MaxTotalBytes, visionRelayMaxTotalBytesMin, visionRelayMaxTotalBytesMax)
+	snap.DefaultMaxTokens = clampVisionRelayInt(raw["vision_relay.default_max_tokens"],
+		snap.DefaultMaxTokens, visionRelayDefaultMaxTokensMin, visionRelayDefaultMaxTokensMax)
+	snap.MaxFallbackModels = clampVisionRelayInt(raw["vision_relay.max_fallback_models"],
+		snap.MaxFallbackModels, visionRelayMaxFallbackModelsMin, visionRelayMaxFallbackModelsMax)
+}
+
+// clampVisionRelayInt 整型配置钳制解析：空/非法 → 默认；越界 → 钳制到
+// [min,max]。绝不返回越界值——核心包收到的 Limits 恒在硬边界内。
+func clampVisionRelayInt(raw string, def, min, max int) int {
+	if strings.TrimSpace(raw) == "" {
+		return def
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return def
+	}
+	if n < min {
+		return min
+	}
+	if n > max {
+		return max
+	}
+	return n
 }
 
 // parseVisionRelayFields 解析除 enabled 外的全部字段。GetVisionRelaySnapshot 在
@@ -349,6 +429,16 @@ func ValidateVisionRelayWrite(key, value string) error {
 			return fmt.Errorf("vision_relay.timeout_sec: must be a positive integer, got %q", value)
 		}
 		return nil
+	case "vision_relay.cache_ttl_sec", "vision_relay.max_images",
+		"vision_relay.request_concurrency", "vision_relay.max_description_bytes",
+		"vision_relay.max_total_bytes", "vision_relay.default_max_tokens",
+		"vision_relay.max_fallback_models":
+		// v0.4：数值键写时范围校验（硬边界表）。空值放行（前端空值=不修改；
+		// 请求面按默认值钳制兜底）。
+		if strings.TrimSpace(value) == "" {
+			return nil
+		}
+		return validateVisionRelayIntKey(key, value)
 	case "vision_relay.disable_proxy_fetch", "vision_relay.structured":
 		if strings.TrimSpace(value) == "" {
 			return nil
@@ -383,6 +473,49 @@ const (
 	minVisionRelaySidecallSecretLength = 16   // HMAC 认证 marker 密钥，弱密钥可被暴力枚举伪造
 	maxVisionRelayPromptLength         = 8192 // 识图指令模板上限；正常使用远低于此值
 )
+
+// v0.4 数值键硬边界（写时校验与请求时钳制共用）。上限留足调优余量但封顶
+// 天文数字——limits 是成本/资源防线，钳制上限即防线。缓存 TTL 上限 7 天
+// （TTL 过长会让陈旧描述滞留 Redis 且绕过识图指令变更后的自然失效）。
+const (
+	visionRelayCacheTTLSecondsMin, visionRelayCacheTTLSecondsMax         = 0, 604_800 // 0=禁用缓存
+	visionRelayMaxImagesMin, visionRelayMaxImagesMax                     = 1, 50
+	visionRelayRequestConcurrencyMin, visionRelayRequestConcurrencyMax   = 1, 8
+	visionRelayMaxDescriptionBytesMin, visionRelayMaxDescriptionBytesMax = 1_000, 32_000
+	visionRelayMaxTotalBytesMin, visionRelayMaxTotalBytesMax             = 4_000, 256_000
+	visionRelayDefaultMaxTokensMin, visionRelayDefaultMaxTokensMax       = 256, 16_384
+	visionRelayMaxFallbackModelsMin, visionRelayMaxFallbackModelsMax     = 1, 8
+)
+
+// visionRelayIntKeyBounds 数值键 → [min,max] 表（写时校验用；请求时钳制
+// 的 min/max 在 parseVisionRelayLimits 逐键硬编码同一组常量）。
+var visionRelayIntKeyBounds = map[string][2]int{
+	"vision_relay.cache_ttl_sec":         {visionRelayCacheTTLSecondsMin, visionRelayCacheTTLSecondsMax},
+	"vision_relay.max_images":            {visionRelayMaxImagesMin, visionRelayMaxImagesMax},
+	"vision_relay.request_concurrency":   {visionRelayRequestConcurrencyMin, visionRelayRequestConcurrencyMax},
+	"vision_relay.max_description_bytes": {visionRelayMaxDescriptionBytesMin, visionRelayMaxDescriptionBytesMax},
+	"vision_relay.max_total_bytes":       {visionRelayMaxTotalBytesMin, visionRelayMaxTotalBytesMax},
+	"vision_relay.default_max_tokens":    {visionRelayDefaultMaxTokensMin, visionRelayDefaultMaxTokensMax},
+	"vision_relay.max_fallback_models":   {visionRelayMaxFallbackModelsMin, visionRelayMaxFallbackModelsMax},
+}
+
+// validateVisionRelayIntKey 数值键写时校验：必须为整数且落在硬边界内。
+// 非法值在入库面被拒，杜绝"天文数字直进 DB"（请求面钳制只是兜底，不替
+// 代写时拦截——写时给操作者即时反馈，请求面静默钳制会让误配无感知）。
+func validateVisionRelayIntKey(key, value string) error {
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return fmt.Errorf("%s: must be an integer, got %q", key, value)
+	}
+	bounds, ok := visionRelayIntKeyBounds[key]
+	if !ok {
+		return nil
+	}
+	if n < bounds[0] || n > bounds[1] {
+		return fmt.Errorf("%s: out of allowed range [%d, %d], got %d", key, bounds[0], bounds[1], n)
+	}
+	return nil
+}
 
 // validateVisionRelaySensitiveValue api_key/sidecall_secret 写时最小格式校验
 // （audit-2026-08 #48）：空值放行（前端空值=不修改语义）；非空时禁止空白/
@@ -422,6 +555,14 @@ var VisionRelayOptionKeys = []string{
 	"vision_relay.timeout_sec",
 	"vision_relay.sidecall_secret",
 	"vision_relay.disable_proxy_fetch",
+	// v0.4：每请求策略上限 + 缓存 TTL（DB 热更新，写时范围校验）
+	"vision_relay.cache_ttl_sec",
+	"vision_relay.max_images",
+	"vision_relay.request_concurrency",
+	"vision_relay.max_description_bytes",
+	"vision_relay.max_total_bytes",
+	"vision_relay.default_max_tokens",
+	"vision_relay.max_fallback_models",
 }
 
 // IsVisionRelaySecretKey reports whether the given option key is a write-only
@@ -472,6 +613,9 @@ func ValidateVisionRelayBulkSnapshot(resolved map[string]string) error {
 	); err != nil {
 		return err
 	}
+	// v0.4：数值键同样进前瞻快照（宽松钳制，与请求面一致；写时范围校验由
+	// 控制器的逐键 ValidateVisionRelayWrite 循环负责）。
+	parseVisionRelayLimits(&snap, resolved)
 	if err := snap.ValidateEndpoint(); err != nil {
 		return err
 	}

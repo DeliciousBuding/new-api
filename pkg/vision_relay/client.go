@@ -298,13 +298,16 @@ type DescribeResult struct {
 // 解析并 Render 成 Markdown 分节后返回（v0.3）；每个模型尝试都记入 Attempts
 // 供上层聚合观测（v0.3，参考 modlens meta.attempts）。
 func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, data []byte, mediaType string, cfg Config) DescribeResult {
+	// 零值兜底（与 Enhance 入口一致）：DescribeOne 是包内可独立调用的入口
+	// （单测/未来直接调用方），不能假设调用方先过 Enhance 的 withDefaults。
+	cfg.Limits = cfg.Limits.withDefaults()
 	models := make([]string, 0, len(cfg.Models))
 	for _, item := range cfg.Models {
 		if item = strings.TrimSpace(item); item != "" {
 			models = append(models, item)
 		}
-		if len(models) >= MaxFallbackModels {
-			break // v0.2.2：fallback 模型硬限制
+		if len(models) >= cfg.Limits.MaxFallbackModels {
+			break // fallback 模型硬限制（v0.4：DB 可配，零值已由 Enhance 回退默认）
 		}
 	}
 	if len(models) == 0 {
@@ -338,7 +341,7 @@ func (c *VisionClient) DescribeOne(ctx context.Context, instruction string, data
 		}
 		attemptStart := time.Now()
 		text, calls, err := c.Call(ctx, model, instruction, data, mediaType,
-			cfg.BaseURL, cfg.APIKey, cfg.SidecallSecret, remaining, DefaultMaxTokens)
+			cfg.BaseURL, cfg.APIKey, cfg.SidecallSecret, remaining, cfg.Limits.DefaultMaxTokens)
 		result.HTTPCalls += calls
 		result.Attempts = append(result.Attempts, Attempt{
 			Model:     model,
