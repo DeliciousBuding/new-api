@@ -96,6 +96,19 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 
 > 提取器本体是 fork-owned 新文件 `service/upstream_error_extract.go`（上游不存在，永不冲突），不在本表。
 
+### Relay 韧性（尝试预算 + 状态归因，#155）
+
+| 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
+|---|---|---|---|---|
+| `service/channel_select.go` | `RetryParam.attempts` 单调尝试计数 + `UpstreamBudgetExhausted`（不随 auto-group 切换重置，封顶单请求上游尝试数） | #155 | — | 中 |
+| `common/constants.go` | `MaxUpstreamAttempts` 全局上限（默认 0=无上限，保持历史行为） | #155 | — | 低 |
+| `model/option.go` | `MaxUpstreamAttempts` option 接入 | #155 | — | 低 |
+| `controller/relay.go` | 每次真实上游尝试 `IncreaseAttempts`；`shouldRetry` 后查预算上限 | #155 | — | 中 |
+| `relaykit/types/error.go` | `upstreamStatusCode` 字段 + Get/Set（记录 status_code_mapping 改写前的真实上游码） | #155 | `relaykit/README.md` | 中 |
+| `service/error.go` | 映射改写时 `SetUpstreamStatusCode` | #155 | — | 低 |
+
+> 与上游 #6580（exclude-driven failover）机制不同、不重复：本处是**尝试预算上限 + 映射前状态归因**，#6580 合入后可共存。`MaxUpstreamAttempts` 默认 0=不改变行为，运维显式配置才生效。
+
 ### 渠道测试（channel test）
 
 | 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
