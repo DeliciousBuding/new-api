@@ -1094,6 +1094,7 @@ func UpdateChannel(c *gin.Context) {
 	}
 	// 记录变更的字段名（语言无关的字段标识），密钥仅记录"已更换"绝不记录内容。
 	changedFields := make([]string, 0)
+	fieldChanges := make(map[string]string)
 	if channel.Models != originChannel.Models {
 		changedFields = append(changedFields, "models")
 	}
@@ -1109,10 +1110,16 @@ func UpdateChannel(c *gin.Context) {
 	if channel.Key != "" && channel.Key != originChannel.Key {
 		changedFields = append(changedFields, "key")
 	}
+	// auto_ban 是安全敏感字段（事故根因：1→0 漂移无法归因），记录字段名与前后值。
+	if !equalIntPtr(channel.AutoBan, originChannel.AutoBan) {
+		changedFields = append(changedFields, "auto_ban")
+		fieldChanges["auto_ban"] = intPtrToString(originChannel.AutoBan) + " → " + intPtrToString(channel.AutoBan)
+	}
 	recordManageAudit(c, "channel.update", map[string]interface{}{
 		"id":             channel.Id,
 		"name":           channel.Name,
 		"changed_fields": changedFields,
+		"changes":        fieldChanges,
 	})
 	channel.Key = ""
 	clearChannelInfo(&channel.Channel)
@@ -1191,6 +1198,23 @@ func equalStringPtr(a, b *string) bool {
 		return false
 	}
 	return *a == *b
+}
+
+func equalIntPtr(a, b *int) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+func intPtrToString(v *int) string {
+	if v == nil {
+		return "null"
+	}
+	return strconv.Itoa(*v)
 }
 
 type fetchModelsRequest struct {
