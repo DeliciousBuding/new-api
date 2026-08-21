@@ -24,23 +24,24 @@ import (
 // 防 VisionBaseURL 误配本实例导致无限递归）
 const relayRequestHeader = "X-NewAPI-Vision-Relay"
 
-// 跨请求识图描述缓存的 Redis key 前缀与默认 TTL。
+// 跨请求识图描述缓存的 Redis key 前缀。TTL 是 DB 可配的 vision_relay.cache_ttl_sec
+// （默认 24h；0 = 禁用缓存）。
 // key = prefix + descriptionCacheKey(digest, instruction)（纯核心已把
 // digest 与识图指令绑定哈希，prompt 变更后旧缓存自然失效）。
 // 描述是"图片内容 × 识图指令"的稳定转述，24h 内同图同指令复用是纯收益；
 // 缓存未启用/读写失败静默降级，绝不影响识图主流程。
-const (
-	visionRelayCacheKeyPrefix = "vision:desc:"
-	visionRelayCacheTTL       = 24 * time.Hour
-)
+const visionRelayCacheKeyPrefix = "vision:desc:"
 
 // visionRelayCache DescriptionCache 的 NewAPI 适配：Redis 跨请求描述缓存。
 // Get 命中即跳过该 digest 的旁路调用；任何错误（Redis 未启用/连接失败/key
-// 不存在）都返回未命中，由核心引擎继续正常识图。
-type visionRelayCache struct{}
+// 不存在）都返回未命中，由核心引擎继续正常识图。ttl<=0 = 禁用（Get 恒未
+// 命中、Set 静默忽略——热关闭缓存无需清 Redis）。
+type visionRelayCache struct {
+	ttl time.Duration
+}
 
-func (visionRelayCache) Get(ctx context.Context, key string) (string, bool) {
-	if !common.RedisEnabled || common.RDB == nil {
+func (c visionRelayCache) Get(ctx context.Context, key string) (string, bool) {
+	if c.ttl <= 0 || !common.RedisEnabled || common.RDB == nil {
 		return "", false
 	}
 	val, err := common.RDB.Get(ctx, visionRelayCacheKeyPrefix+key).Result()
@@ -50,11 +51,11 @@ func (visionRelayCache) Get(ctx context.Context, key string) (string, bool) {
 	return val, true
 }
 
-func (visionRelayCache) Set(ctx context.Context, key, value string) error {
-	if !common.RedisEnabled || common.RDB == nil {
+func (c visionRelayCache) Set(ctx context.Context, key, value string) error {
+	if c.ttl <= 0 || !common.RedisEnabled || common.RDB == nil {
 		return nil
 	}
-	return common.RDB.Set(ctx, visionRelayCacheKeyPrefix+key, value, visionRelayCacheTTL).Err()
+	return common.RDB.Set(ctx, visionRelayCacheKeyPrefix+key, value, c.ttl).Err()
 }
 
 // Delete 删除跨请求描述缓存 key（缓存值被敏感词热更新判定为污染时清除）。
@@ -171,8 +172,8 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 		},
 		// 跨请求描述缓存（纯优化）：同图同指令第二次起跳过旁路识图。
 		// 纯核心只依赖接口，Redis 未启用时 Get 恒未命中、Set 静默忽略。
-		// TTL 由适配器策略决定（visionRelayCacheTTL），核心不感知。
-		Cache: visionRelayCache{},
+		// TTL 由适配器策略决定（cfg.CacheTTLSeconds；0 = 禁用缓存）。
+		Cache: visionRelayCache{ttl: time.Duration(cfg.CacheTTLSeconds) * time.Second},
 	}
 	coreCfg := vision_relay.Config{
 		Enabled:          cfg.Enabled,
@@ -185,6 +186,16 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 		Structured:       cfg.Structured,
 		StructuredPrompt: cfg.StructuredPrompt,
 		SidecallSecret:   cfg.SidecallSecret, // 审查 P1-2：出站旁路请求必须携带认证 marker（自回环递归防护）
+		// v0.4：每请求策略上限从写死迁到 DB 热更新（快照值已含默认/校验）。
+		// 核心 withDefaults 再做一次零值兜底（三层防御最内层）。
+		Limits: vision_relay.Limits{
+			MaxImages:           cfg.MaxImages,
+			RequestConcurrency:  cfg.RequestConcurrency,
+			MaxDescriptionBytes: cfg.MaxDescriptionBytes,
+			MaxTotalBytes:       cfg.MaxTotalBytes,
+			DefaultMaxTokens:    cfg.DefaultMaxTokens,
+			MaxFallbackModels:   cfg.MaxFallbackModels,
+		},
 	}
 	var stats vision_relay.Stats
 	enhanced, err := engine.Enhance(enhanceCtx, rawBody, format, coreCfg, &stats)
@@ -242,12 +253,13 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 		}
 	}
 
-	// 13. 结构化统计日志（A12）
+	// 13. 结构化统计日志（A12；v0.4 附生效 limits——热更新是否生效一眼可见）
 	logger.LogInfo(c, fmt.Sprintf(
-		"vision: target_model=%s images_total=%d images_success=%d images_failed=%d unique=%d cache_hits=%d cache_served=%d vision_calls=%d fallback_count=%d elapsed_ms=%d models_used=%s description_bytes=%d failed_reasons=%s attempts=%s",
+		"vision: target_model=%s images_total=%d images_success=%d images_failed=%d unique=%d cache_hits=%d cache_served=%d vision_calls=%d fallback_count=%d elapsed_ms=%d models_used=%s description_bytes=%d max_images=%d request_concurrency=%d failed_reasons=%s attempts=%s",
 		relayInfo.OriginModelName, stats.Total, stats.Success, stats.Failed, stats.UniqueImages,
 		stats.CacheHits, stats.CacheServed, stats.VisionCalls, stats.FallbackCount, stats.ElapsedMs,
-		stats.ModelsUsed, stats.DescriptionBytes, visionRelayFailedReasons(&stats), visionRelayAttempts(&stats)))
+		stats.ModelsUsed, stats.DescriptionBytes, cfg.MaxImages, cfg.RequestConcurrency,
+		visionRelayFailedReasons(&stats), visionRelayAttempts(&stats)))
 	// 12b. 上游识别链劣化（5xx/超时/解析失败 → 图片级占位，请求本身未 5xx）——
 	//      系统级 SysLog，运营无需翻请求日志即可感知（audit-2026-08 #47）
 	if stats.Failed > 0 {
@@ -297,32 +309,45 @@ func visionRelayAttempts(stats *vision_relay.Stats) string {
 	return string(b)
 }
 
-// VisionRelayWillEngageForEstimate reports whether PrepareVisionRelayRequest
-// will actually transform this request, as seen from the pre-augmentation
-// estimate path. It mirrors the engagement checks (enabled + target model
-// match + supported relay format) but deliberately omits the recursion-header
-// bypass: estimate-phase requests are originals, not authenticated sidecalls,
-// so the header check is irrelevant for bounding decisions.
-//
-// token_counter.go uses this to pre-bound image fetches to
-// vision_relay.MaxImages when Vision Relay would truncate the surplus anyway,
-// avoiding needless remote fetches for URL images that never reach upstream.
-func VisionRelayWillEngageForEstimate(info *relaycommon.RelayInfo) bool {
+// visionRelaySnapshotForEstimate 判断 PrepareVisionRelayRequest 是否将接管
+// 该请求（estimate 阶段视角）。镜像接管判定的命中条件（enabled + target
+// model 匹配 + 支持的 relay format），但故意省略递归头 bypass：estimate 阶段
+// 的请求是原始请求而非已认证旁路，头检查对边界决策无关。
+// 命中返回配置快照；未命中返回 ok=false。
+func visionRelaySnapshotForEstimate(info *relaycommon.RelayInfo) (model_setting.VisionRelaySnapshot, bool) {
 	if info == nil {
-		return false
+		return model_setting.VisionRelaySnapshot{}, false
 	}
 	cfg, err := model_setting.GetVisionRelaySnapshot()
 	if err != nil || !cfg.Enabled {
-		return false
+		return model_setting.VisionRelaySnapshot{}, false
 	}
 	patterns, err := cfg.TargetModelPatterns()
 	if err != nil || !visionRelayMatchPatterns(patterns, info.OriginModelName) {
-		return false
+		return model_setting.VisionRelaySnapshot{}, false
 	}
 	if _, ok := visionRelayFormat(info.RelayFormat); !ok {
-		return false
+		return model_setting.VisionRelaySnapshot{}, false
 	}
-	return true
+	return cfg, true
+}
+
+// VisionRelayWillEngageForEstimate 是否将接管（bool 版，供既有调用方/测试）。
+func VisionRelayWillEngageForEstimate(info *relaycommon.RelayInfo) bool {
+	_, ok := visionRelaySnapshotForEstimate(info)
+	return ok
+}
+
+// VisionRelayMaxImagesForEstimate 返回 estimate 阶段应把图片文件截断到的上限
+// （= 快照 max_images，v0.4 起 DB 可配）；未接管时返回 0（不截断）。
+// token_counter.go 用它预取边界：超限图不会被 fetch，也不计入 520 占位——
+// 避免远程抓取放大先于 Vision Relay 的 MaxImages 截断生效。
+func VisionRelayMaxImagesForEstimate(info *relaycommon.RelayInfo) int {
+	cfg, ok := visionRelaySnapshotForEstimate(info)
+	if !ok {
+		return 0
+	}
+	return cfg.MaxImages
 }
 
 // visionRelayFormat 协议格式映射（未知格式返回 ok=false）

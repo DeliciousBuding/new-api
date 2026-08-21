@@ -165,6 +165,14 @@ const MODELS_SECTIONS = [
           timeout_sec: settings['vision_relay.timeout_sec'],
           sidecall_secret: settings['vision_relay.sidecall_secret'],
           disable_proxy_fetch: settings['vision_relay.disable_proxy_fetch'],
+          cache_ttl_sec: settings['vision_relay.cache_ttl_sec'],
+          max_images: settings['vision_relay.max_images'],
+          request_concurrency: settings['vision_relay.request_concurrency'],
+          max_description_bytes:
+            settings['vision_relay.max_description_bytes'],
+          max_total_bytes: settings['vision_relay.max_total_bytes'],
+          default_max_tokens: settings['vision_relay.default_max_tokens'],
+          max_fallback_models: settings['vision_relay.max_fallback_models'],
         }}
       />
     ),

@@ -258,7 +258,11 @@ func UpdateOption(c *gin.Context) {
 		"vision_relay.timeout_sec", "vision_relay.base_url",
 		"vision_relay.api_key", "vision_relay.sidecall_secret",
 		"vision_relay.prompt", "vision_relay.structured",
-		"vision_relay.structured_prompt", "vision_relay.disable_proxy_fetch":
+		"vision_relay.structured_prompt", "vision_relay.disable_proxy_fetch",
+		"vision_relay.cache_ttl_sec", "vision_relay.max_images",
+		"vision_relay.request_concurrency", "vision_relay.max_description_bytes",
+		"vision_relay.max_total_bytes", "vision_relay.default_max_tokens",
+		"vision_relay.max_fallback_models":
 		err = model_setting.ValidateVisionRelayWrite(option.Key, option.Value.(string))
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
@@ -409,6 +413,14 @@ type VisionRelayOptionUpdateRequest struct {
 	TimeoutSec        string `json:"timeout_sec"`
 	SidecallSecret    string `json:"sidecall_secret"`
 	DisableProxyFetch string `json:"disable_proxy_fetch"`
+	// v0.4：每请求策略上限 + 缓存 TTL（字符串，与 DB option 格式一致）
+	CacheTTLSeconds     string `json:"cache_ttl_sec"`
+	MaxImages           string `json:"max_images"`
+	RequestConcurrency  string `json:"request_concurrency"`
+	MaxDescriptionBytes string `json:"max_description_bytes"`
+	MaxTotalBytes       string `json:"max_total_bytes"`
+	DefaultMaxTokens    string `json:"default_max_tokens"`
+	MaxFallbackModels   string `json:"max_fallback_models"`
 }
 
 // UpdateVisionRelayOptions saves the full vision relay configuration in a single
@@ -428,17 +440,24 @@ func UpdateVisionRelayOptions(c *gin.Context) {
 	}
 
 	updates := map[string]string{
-		"vision_relay.enabled":             req.Enabled,
-		"vision_relay.structured":          req.Structured,
-		"vision_relay.structured_prompt":   req.StructuredPrompt,
-		"vision_relay.target_models":       req.TargetModels,
-		"vision_relay.models":              req.Models,
-		"vision_relay.base_url":            req.BaseURL,
-		"vision_relay.api_key":             req.APIKey,
-		"vision_relay.prompt":              req.Prompt,
-		"vision_relay.timeout_sec":         req.TimeoutSec,
-		"vision_relay.sidecall_secret":     req.SidecallSecret,
-		"vision_relay.disable_proxy_fetch": req.DisableProxyFetch,
+		"vision_relay.enabled":               req.Enabled,
+		"vision_relay.structured":            req.Structured,
+		"vision_relay.structured_prompt":     req.StructuredPrompt,
+		"vision_relay.target_models":         req.TargetModels,
+		"vision_relay.models":                req.Models,
+		"vision_relay.base_url":              req.BaseURL,
+		"vision_relay.api_key":               req.APIKey,
+		"vision_relay.prompt":                req.Prompt,
+		"vision_relay.timeout_sec":           req.TimeoutSec,
+		"vision_relay.sidecall_secret":       req.SidecallSecret,
+		"vision_relay.disable_proxy_fetch":   req.DisableProxyFetch,
+		"vision_relay.cache_ttl_sec":         req.CacheTTLSeconds,
+		"vision_relay.max_images":            req.MaxImages,
+		"vision_relay.request_concurrency":   req.RequestConcurrency,
+		"vision_relay.max_description_bytes": req.MaxDescriptionBytes,
+		"vision_relay.max_total_bytes":       req.MaxTotalBytes,
+		"vision_relay.default_max_tokens":    req.DefaultMaxTokens,
+		"vision_relay.max_fallback_models":   req.MaxFallbackModels,
 	}
 
 	// Read current OptionMap values for secret keep-semantics and change

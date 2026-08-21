@@ -7,6 +7,8 @@ package vision_relay
 
 import (
 	"context"
+	"os"
+	"strconv"
 )
 
 // Config 一次请求使用的不可变配置快照（来自 setting/model_setting 的注册表）。
@@ -31,24 +33,90 @@ type Config struct {
 	// SidecallSecret 递归保护共享 secret（认证 marker HMAC 密钥，审核 P0-2）。
 	// 空 = 不携带 marker、不信任任何递归头（外部伪造不可 bypass）。
 	SidecallSecret string
+	// Limits 单请求识图策略/资源上限（v0.4：DB 可配）。零值字段在 Enhance
+	// 入口回退包内默认常量——调用方无需感知默认值。
+	Limits Limits
 }
 
-// 安全限制常量（v0.2.1：不进 DB 配置面，先写死；有真实调优需求再升为
-// 启动时环境变量——尤其全局闸容量不适合热修改）。
+// 进程级/单图安全限制（v0.4：可经启动环境变量覆盖，热更新不安全）。
+// 这些是资源防线而非每请求策略——尤其全局闸容量，热改瞬间并发突变会
+// 放大进程内存峰值（见 setting 层对"哪些进 DB、哪些只进 env"的划分）。
+var (
+	MaxDecodedBytes   = envInt64("VISION_RELAY_MAX_DECODED_BYTES", 15<<20) // 单图解码后字节上限（含远程下载限量）
+	MaxPixels         = envInt64("VISION_RELAY_MAX_PIXELS", 12_000_000)    // 单图像素上限（宽*高，DecodeConfig 阶段校验）
+	MaxDimension      = envInt("VISION_RELAY_MAX_DIMENSION", 4096)         // 单图边长上限
+	GlobalDecodeSlots = envInt("VISION_RELAY_DECODE_SLOTS", 2)             // 进程级解码/压缩并发槽（内存闸门）
+	GlobalCallSlots   = envInt("VISION_RELAY_CALL_SLOTS", 8)               // 进程级旁路调用并发槽
+)
+
+// envInt / envInt64 启动期读取进程级环境变量（未设置/非法值 → 回退默认）。
+// 只在包初始化时调用；非法值静默回退默认，绝不因环境拼写错误拒绝启动。
+func envInt(name string, fallback int) int {
+	if v := os.Getenv(name); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return fallback
+}
+
+func envInt64(name string, fallback int64) int64 {
+	if v := os.Getenv(name); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return fallback
+}
+
+// 每请求策略默认值（v0.4 起可经 DB 热更新覆盖，见 setting/model_setting 的
+// vision_relay.* 配置键）。核心 Limits 零值字段回退到这些常量——无 DB 配置
+// 时行为与写死时代一致。
 const (
-	MaxImages           = 6             // 单请求最多处理图片数（fetch/decode 前生效）
-	MaxDecodedBytes     = 15 << 20      // 单图解码后字节上限（含远程下载限量）
-	MaxPixels           = 12_000_000    // 单图像素上限（宽*高，DecodeConfig 阶段校验）
-	MaxDimension        = 4096          // 单图边长上限
+	MaxImages           = 20            // 单请求最多处理图片数（fetch/decode 前生效）
 	MaxDescriptionBytes = 8_000         // 单图描述注入上限
 	MaxTotalBytes       = 24_000        // 全部注入（含边界文本）总上限
-	RequestConcurrency  = 2             // 每请求图片并发度
-	GlobalDecodeSlots   = 2             // 进程级解码/压缩并发槽（内存闸门）
-	GlobalCallSlots     = 8             // 进程级旁路调用并发槽
+	RequestConcurrency  = 4             // 每请求图片并发度
 	DefaultMaxTokens    = 2000          // 视觉模型输出上限
-	MaxFallbackModels   = 3             // fallback 链最多尝试模型数（v0.2.2 硬限制）
+	MaxFallbackModels   = 3             // fallback 链最多尝试模型数
 	TruncatedSuffix     = "[truncated]" // 截断尾标（预算需预留其字节）
 )
+
+// Limits 单请求识图策略/资源上限（v0.4：DB 可配，注入 Config）。
+// 零值字段由 withDefaults 回退包内默认常量——三层防御的最内层：
+// 写时范围校验（setting）→ 请求时严格解析（snapshot）→ 核心零值兜底。
+type Limits struct {
+	MaxImages           int // 单请求最多处理图片数（fetch/decode 前生效）
+	RequestConcurrency  int // 每请求图片并发度（sidecall goroutine 数）
+	MaxDescriptionBytes int // 单图描述注入上限（截断后加 TruncatedSuffix）
+	MaxTotalBytes       int // 全部注入（含边界文本）总上限
+	DefaultMaxTokens    int // 视觉模型输出上限（识图端点 max_tokens）
+	MaxFallbackModels   int // fallback 链最多尝试模型数
+}
+
+// withDefaults 零值字段回退包内默认常量（无 DB 配置时行为不变）。
+// 调用方在 Enhance 入口对 Config 副本执行一次，后续全链路用生效值。
+func (l Limits) withDefaults() Limits {
+	if l.MaxImages <= 0 {
+		l.MaxImages = MaxImages
+	}
+	if l.RequestConcurrency <= 0 {
+		l.RequestConcurrency = RequestConcurrency
+	}
+	if l.MaxDescriptionBytes <= 0 {
+		l.MaxDescriptionBytes = MaxDescriptionBytes
+	}
+	if l.MaxTotalBytes <= 0 {
+		l.MaxTotalBytes = MaxTotalBytes
+	}
+	if l.DefaultMaxTokens <= 0 {
+		l.DefaultMaxTokens = DefaultMaxTokens
+	}
+	if l.MaxFallbackModels <= 0 {
+		l.MaxFallbackModels = MaxFallbackModels
+	}
+	return l
+}
 
 // 占位枚举（A9：占位文本只允许以下稳定枚举——不含 URL/key/模型名/provider 错误体）
 const (

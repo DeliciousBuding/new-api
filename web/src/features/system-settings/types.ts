@@ -51,6 +51,13 @@ export type UpdateVisionRelayOptionsRequest = {
   timeout_sec: string
   sidecall_secret: string
   disable_proxy_fetch: string
+  cache_ttl_sec: string
+  max_images: string
+  request_concurrency: string
+  max_description_bytes: string
+  max_total_bytes: string
+  default_max_tokens: string
+  max_fallback_models: string
 }
 
 export type UpdateVisionRelayOptionsResponse = {
@@ -236,6 +243,13 @@ export type ModelSettings = {
   'vision_relay.timeout_sec': number
   'vision_relay.sidecall_secret': string
   'vision_relay.disable_proxy_fetch': boolean
+  'vision_relay.cache_ttl_sec': number
+  'vision_relay.max_images': number
+  'vision_relay.request_concurrency': number
+  'vision_relay.max_description_bytes': number
+  'vision_relay.max_total_bytes': number
+  'vision_relay.default_max_tokens': number
+  'vision_relay.max_fallback_models': number
   ModelPrice: string
   ModelRatio: string
   CacheRatio: string
