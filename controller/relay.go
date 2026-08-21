@@ -360,6 +360,12 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if types.IsChannelError(openaiErr) {
 		return true
 	}
+	// Structured upstream codes (account/auth-fatal) cannot be resolved by
+	// retrying; fail fast instead of burning the retry budget. This complements
+	// the status-code matrix below with the provider's own error classification.
+	if service.IsNonRetryableUpstreamError(openaiErr) {
+		return false
+	}
 	if types.IsSkipRetryError(openaiErr) {
 		return false
 	}

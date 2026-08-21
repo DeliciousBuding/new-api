@@ -52,6 +52,12 @@ func ShouldDisableChannel(err *types.NewAPIError) bool {
 	if types.IsChannelError(err) {
 		return true
 	}
+	// Structured provider code (e.g. DashScope "Arrearage") reliably marks the
+	// account as out of credit; disable even when the message-text keyword path
+	// is degraded (e.g. an SSE body that failed to parse into a message).
+	if IsAccountFatalError(err) {
+		return true
+	}
 	if types.IsSkipRetryError(err) {
 		return false
 	}
