@@ -89,6 +89,85 @@ func createChannelSelectAutoGroupsChannel(t *testing.T, db *gorm.DB, id int, gro
 	}).Error)
 }
 
+func TestUpstreamAttemptBudgetSurvivesAutoGroupSwitch(t *testing.T) {
+	db := setupChannelSelectAutoGroupsTest(t)
+	const modelName = "auto-groups-budget-model"
+	createChannelSelectAutoGroupsChannel(t, db, 2201, "vip", modelName)
+	createChannelSelectAutoGroupsChannel(t, db, 2202, "default", modelName)
+	model.InitChannelCache()
+
+	originalMax := common.MaxUpstreamAttempts
+	t.Cleanup(func() { common.MaxUpstreamAttempts = originalMax })
+
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"vip", "default"})
+	common.SetContextKey(ctx, constant.ContextKeyTokenCrossGroupRetry, true)
+
+	retry := 0
+	param := &RetryParam{
+		Ctx:         ctx,
+		TokenGroup:  "auto",
+		ModelName:   modelName,
+		RequestPath: "/v1/chat/completions",
+		Retry:       &retry,
+	}
+
+	common.MaxUpstreamAttempts = 0
+	first, _, err := CacheGetRandomSatisfiedChannel(param)
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	param.IncreaseAttempts()
+
+	param.IncreaseRetry()
+	second, secondGroup, err := CacheGetRandomSatisfiedChannel(param)
+	require.NoError(t, err)
+	require.NotNil(t, second)
+	param.IncreaseAttempts()
+	require.Equal(t, "default", secondGroup, "expected the selection to move to the next auto group")
+
+	// This is the whole point: crossing an auto group resets Retry (it doubles as
+	// the per-group priority tier index), which is why RetryTimes alone cannot
+	// bound total upstream attempts.
+	assert.Equal(t, 0, param.GetRetry(), "auto-group switch is expected to reset the per-group retry counter")
+	assert.Equal(t, 2, param.Attempts(), "global attempt count must not be reset by the group switch")
+
+	// Cap of 0 keeps the historical unbounded behaviour.
+	common.MaxUpstreamAttempts = 0
+	assert.False(t, param.UpstreamBudgetExhausted())
+
+	// A cap that the request already reached stops further retries even though
+	// GetRetry() is back at 0 and would still satisfy the RetryTimes loop.
+	common.MaxUpstreamAttempts = 2
+	assert.True(t, param.UpstreamBudgetExhausted())
+
+	common.MaxUpstreamAttempts = 4
+	assert.False(t, param.UpstreamBudgetExhausted())
+}
+
+func TestUpstreamBudgetExhaustedBoundaries(t *testing.T) {
+	originalMax := common.MaxUpstreamAttempts
+	t.Cleanup(func() { common.MaxUpstreamAttempts = originalMax })
+
+	param := &RetryParam{}
+	assert.Equal(t, 0, param.Attempts())
+
+	// Unlimited (default) and negative caps must never bound the request.
+	for _, limit := range []int{0, -1} {
+		common.MaxUpstreamAttempts = limit
+		param.attempts = 100
+		assert.False(t, param.UpstreamBudgetExhausted(), "cap %d must mean unlimited", limit)
+	}
+
+	// A cap of 1 means the first attempt is the only one allowed.
+	common.MaxUpstreamAttempts = 1
+	param.attempts = 0
+	assert.False(t, param.UpstreamBudgetExhausted(), "budget must not be exhausted before the first attempt")
+	param.IncreaseAttempts()
+	assert.True(t, param.UpstreamBudgetExhausted(), "cap 1 must forbid a second attempt")
+}
+
 func TestCacheGetRandomSatisfiedChannelUsesTokenAutoGroupsWhenGlobalAutoIsEmpty(t *testing.T) {
 	db := setupChannelSelectAutoGroupsTest(t)
 	const modelName = "auto-groups-runtime-model"
