@@ -109,6 +109,16 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 
 > 与上游 #6580（exclude-driven failover）机制不同、不重复：本处是**尝试预算上限 + 映射前状态归因**，#6580 合入后可共存。`MaxUpstreamAttempts` 默认 0=不改变行为，运维显式配置才生效。
 
+### 结构化错误码分类 + 审计（#156 #157）
+
+| 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
+|---|---|---|---|---|
+| `service/channel.go` | `ShouldDisableChannel` 按结构化码 `IsAccountFatalError` 直接禁用（不依赖关键词，SSE 体解析失败时仍可靠） | #156 | — | 中 |
+| `controller/relay.go` | `shouldRetry` 按 `IsNonRetryableUpstreamError`（账户/鉴权级）快速失败 | #156 | — | 中 |
+| `controller/channel.go` | `auto_ban` 变更进 `changed_fields` + 记录前后值（1→0 漂移归因） | #157 | — | 中 |
+
+> 分类器本体是 fork-owned 新文件 `service/upstream_error_classify.go`（保守精确匹配，未知码原样走既有状态码/关键词逻辑），不在本表。
+
 ### 渠道测试（channel test）
 
 | 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
