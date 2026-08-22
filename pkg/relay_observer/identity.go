@@ -76,6 +76,11 @@ const (
 	// session-scope user dimension when the user id is absent, per SSOT:
 	// a versioned credential HMAC, never the raw key).
 	SourceCredential AliasSource = "credential"
+	// SourceTransientTurn marks the per-turn synthetic alias of a request
+	// without a resolvable session identity. The raw value is the turn's
+	// deterministic row id, so every stateless turn resolves to its own
+	// transient session; the alias never merges across turns or users.
+	SourceTransientTurn AliasSource = "transient_turn"
 )
 
 // Alias is the frozen, versioned HMAC alias of one session identifier. It is

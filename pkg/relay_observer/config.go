@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -82,6 +83,13 @@ type Config struct {
 
 	RetentionTurnDays    int
 	RetentionContentDays int
+
+	// ExcludedUsers is the set of user IDs whose turns are recorded as
+	// metadata-only: the observer still writes the turn row (usage, tokens,
+	// attempts) but never captures or persists request content. It is set
+	// from RELAY_OBSERVER_EXCLUDED_USERS at startup and hot-reloadable
+	// through the relay_observer.excluded_users option.
+	ExcludedUsers map[int64]bool
 }
 
 // Redacted is the placeholder that replaces secrets (SQLDSN, HMAC keys) in
@@ -167,6 +175,11 @@ const (
 	optQueryTimeoutMs       = "relay_observer.query_timeout_ms"
 	optRetentionTurnDays    = "relay_observer.retention_turn_days"
 	optRetentionContentDays = "relay_observer.retention_content_days"
+	// optExcludedUsers is the comma-separated user-id list whose turns are
+	// metadata-only. It hot-reloads through the options table; an unset or
+	// empty option falls back to the startup RELAY_OBSERVER_EXCLUDED_USERS
+	// set.
+	optExcludedUsers = "relay_observer.excluded_users"
 )
 
 // RuntimeTunable is the hot-reloadable runtime tuning snapshot of the
@@ -317,7 +330,42 @@ func ConfigFromEnv() (Config, error) {
 	if cfg.RetentionContentDays, err = envInt("RELAY_OBSERVER_RETENTION_CONTENT_DAYS", cfg.RetentionContentDays, 1, MaxRetentionDays); err != nil {
 		return Config{}, err
 	}
+	cfg.ExcludedUsers = excludedUsersFromString(os.Getenv("RELAY_OBSERVER_EXCLUDED_USERS"))
 	return cfg, nil
+}
+
+// GetExcludedUsers resolves the live excluded-user set from the
+// hot-reloadable relay_observer.excluded_users option, falling back to the
+// startup RELAY_OBSERVER_EXCLUDED_USERS set when the option is unset, empty,
+// or invalid. Callers read it at each use point so a change takes effect
+// without a restart. Safe to call concurrently.
+func GetExcludedUsers(cfg Config) map[int64]bool {
+	common.OptionMapRWMutex.RLock()
+	raw := common.OptionMap[optExcludedUsers]
+	common.OptionMapRWMutex.RUnlock()
+	if raw == "" {
+		return cfg.ExcludedUsers
+	}
+	return excludedUsersFromString(raw)
+}
+
+// excludedUsersFromString parses a comma-separated user-id list into a set.
+// Blank entries and non-numeric tokens are skipped (fail-open: a typo must
+// never disable the observer); an empty or nil input yields an empty set.
+func excludedUsersFromString(raw string) map[int64]bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	out := make(map[int64]bool)
+	for _, part := range strings.Split(trimmed, ",") {
+		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil || id < 1 {
+			continue
+		}
+		out[id] = true
+	}
+	return out
 }
 
 func envBool(name string, def bool) (bool, error) {

@@ -44,6 +44,7 @@ import { Route as AuthenticatedKeysIndexRouteImport } from './routes/_authentica
 import { Route as AuthenticatedModelsIndexRouteImport } from './routes/_authenticated/models/index'
 import { Route as AuthenticatedModelsSectionRouteImport } from './routes/_authenticated/models/$section'
 import { Route as AuthenticatedObservabilityIndexRouteImport } from './routes/_authenticated/observability/index'
+import { Route as AuthenticatedObservabilityTurnsRouteImport } from './routes/_authenticated/observability/turns'
 import { Route as AuthenticatedPlaygroundIndexRouteImport } from './routes/_authenticated/playground/index'
 import { Route as AuthenticatedProfileIndexRouteImport } from './routes/_authenticated/profile/index'
 import { Route as AuthenticatedRedemptionCodesIndexRouteImport } from './routes/_authenticated/redemption-codes/index'
@@ -252,6 +253,12 @@ const AuthenticatedObservabilityIndexRoute =
     path: '/',
     getParentRoute: () => AuthenticatedObservabilityRouteRoute,
   } as any)
+const AuthenticatedObservabilityTurnsRoute =
+  AuthenticatedObservabilityTurnsRouteImport.update({
+    id: '/turns',
+    path: '/turns',
+    getParentRoute: () => AuthenticatedObservabilityRouteRoute,
+  } as any)
 const AuthenticatedPlaygroundIndexRoute =
   AuthenticatedPlaygroundIndexRouteImport.update({
     id: '/playground/',
@@ -430,6 +437,7 @@ export interface FileRoutesByFullPath {
   '/dashboard/$section': typeof AuthenticatedDashboardSectionRoute
   '/errors/$error': typeof AuthenticatedErrorsErrorRoute
   '/models/$section': typeof AuthenticatedModelsSectionRoute
+  '/observability/turns': typeof AuthenticatedObservabilityTurnsRoute
   '/usage-logs/$section': typeof AuthenticatedUsageLogsSectionRoute
   '/channels/': typeof AuthenticatedChannelsIndexRoute
   '/dashboard/': typeof AuthenticatedDashboardIndexRoute
@@ -488,6 +496,7 @@ export interface FileRoutesByTo {
   '/dashboard/$section': typeof AuthenticatedDashboardSectionRoute
   '/errors/$error': typeof AuthenticatedErrorsErrorRoute
   '/models/$section': typeof AuthenticatedModelsSectionRoute
+  '/observability/turns': typeof AuthenticatedObservabilityTurnsRoute
   '/usage-logs/$section': typeof AuthenticatedUsageLogsSectionRoute
   '/channels': typeof AuthenticatedChannelsIndexRoute
   '/dashboard': typeof AuthenticatedDashboardIndexRoute
@@ -551,6 +560,7 @@ export interface FileRoutesById {
   '/_authenticated/dashboard/$section': typeof AuthenticatedDashboardSectionRoute
   '/_authenticated/errors/$error': typeof AuthenticatedErrorsErrorRoute
   '/_authenticated/models/$section': typeof AuthenticatedModelsSectionRoute
+  '/_authenticated/observability/turns': typeof AuthenticatedObservabilityTurnsRoute
   '/_authenticated/usage-logs/$section': typeof AuthenticatedUsageLogsSectionRoute
   '/_authenticated/channels/': typeof AuthenticatedChannelsIndexRoute
   '/_authenticated/dashboard/': typeof AuthenticatedDashboardIndexRoute
@@ -613,6 +623,7 @@ export interface FileRouteTypes {
     | '/dashboard/$section'
     | '/errors/$error'
     | '/models/$section'
+    | '/observability/turns'
     | '/usage-logs/$section'
     | '/channels/'
     | '/dashboard/'
@@ -671,6 +682,7 @@ export interface FileRouteTypes {
     | '/dashboard/$section'
     | '/errors/$error'
     | '/models/$section'
+    | '/observability/turns'
     | '/usage-logs/$section'
     | '/channels'
     | '/dashboard'
@@ -733,6 +745,7 @@ export interface FileRouteTypes {
     | '/_authenticated/dashboard/$section'
     | '/_authenticated/errors/$error'
     | '/_authenticated/models/$section'
+    | '/_authenticated/observability/turns'
     | '/_authenticated/usage-logs/$section'
     | '/_authenticated/channels/'
     | '/_authenticated/dashboard/'
@@ -1031,6 +1044,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedObservabilityIndexRouteImport
       parentRoute: typeof AuthenticatedObservabilityRouteRoute
     }
+    '/_authenticated/observability/turns': {
+      id: '/_authenticated/observability/turns'
+      path: '/turns'
+      fullPath: '/observability/turns'
+      preLoaderRoute: typeof AuthenticatedObservabilityTurnsRouteImport
+      parentRoute: typeof AuthenticatedObservabilityRouteRoute
+    }
     '/_authenticated/playground/': {
       id: '/_authenticated/playground/'
       path: '/playground'
@@ -1236,11 +1256,13 @@ const authRouteRouteWithChildren = authRouteRoute._addFileChildren(
 )
 
 interface AuthenticatedObservabilityRouteRouteChildren {
+  AuthenticatedObservabilityTurnsRoute: typeof AuthenticatedObservabilityTurnsRoute
   AuthenticatedObservabilityIndexRoute: typeof AuthenticatedObservabilityIndexRoute
 }
 
 const AuthenticatedObservabilityRouteRouteChildren: AuthenticatedObservabilityRouteRouteChildren =
   {
+    AuthenticatedObservabilityTurnsRoute: AuthenticatedObservabilityTurnsRoute,
     AuthenticatedObservabilityIndexRoute: AuthenticatedObservabilityIndexRoute,
   }
 

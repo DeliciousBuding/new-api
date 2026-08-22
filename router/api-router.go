@@ -237,6 +237,7 @@ func SetApiRouter(router *gin.Engine) {
 			relayObserverRoute.GET("/sessions/:id", controller.GetRelayObserverSession)
 			relayObserverRoute.GET("/sessions/:id/turns", controller.GetRelayObserverSessionTurns)
 			relayObserverRoute.GET("/sessions/:id/transcript", controller.GetRelayObserverSessionTranscript)
+			relayObserverRoute.GET("/turns", controller.GetRelayObserverTurns)
 			relayObserverRoute.GET("/turns/:id/context", controller.GetRelayObserverTurnContext)
 		}
 		ratioSyncRoute := apiRouter.Group("/ratio_sync")

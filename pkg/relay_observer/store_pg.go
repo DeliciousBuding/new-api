@@ -46,9 +46,10 @@ const (
 	observerSchemaV6 = 6
 	observerSchemaV7 = 7
 	observerSchemaV8 = 8
+	observerSchemaV9 = 9
 	// observerSchemaCurrent is the newest schema version; keep it in sync
-	// when an index migration is appended.
-	observerSchemaCurrent = observerSchemaV8
+	// when a structure or index migration is appended.
+	observerSchemaCurrent = observerSchemaV9
 
 	// observerSchemaLockKey is the fixed advisory-lock key serializing
 	// concurrent bootstrap attempts against the same database.
@@ -82,6 +83,20 @@ var observerMigrations = []string{
 	"migrations/002_v2.sql",
 	"migrations/003_v3.sql",
 	"migrations/004_v4.sql",
+	"migrations/005_v9.sql",
+}
+
+// structureMigrationVersions maps each structure migration file to the schema
+// version row it records. The mapping is explicit because the ordinal-to-
+// version shortcut broke once index migrations claimed versions 5-8: file
+// 005_v9.sql is the fifth structure file but the ninth schema version, and a
+// v5-v8 schema must still apply it.
+var structureMigrationVersions = map[string]int{
+	"migrations/001_v1.sql": observerSchemaV1,
+	"migrations/002_v2.sql": observerSchemaV2,
+	"migrations/003_v3.sql": observerSchemaV3,
+	"migrations/004_v4.sql": observerSchemaV4,
+	"migrations/005_v9.sql": observerSchemaV9,
 }
 
 // observerIndexMigration describes one asynchronously-applied index. Index
@@ -293,20 +308,21 @@ func (a dbtxAdapter) ExecContext(ctx context.Context, query string, args ...any)
 }
 
 // verifySchema performs the bounded startup schema check: the version table
-// must hold exactly the current [1..8] version list. Historical prefixes
-// ([1] .. [1..7]) are rejected — they are upgrade targets owned by bootstrap
+// must hold exactly the current [1..9] version list. Historical prefixes
+// ([1] .. [1..8]) are rejected — they are upgrade targets owned by bootstrap
 // mode, and running against them would silently miss the v4 alias identity
-// index or the v5-v8 performance indexes. Every required observer table must
-// exist, and the v2 column and v4 alias identity index are checked so a
-// schema whose version row lies about its structure is rejected. It never
-// runs DDL, scans data tables, or executes VACUUM.
+// index, the v5-v8 performance indexes, or the v9 transient-session marker.
+// Every required observer table must exist, and the v2 column, v4 alias
+// identity index, and v9 transient-session column are checked so a schema
+// whose version row lies about its structure is rejected. It never runs DDL,
+// scans data tables, or executes VACUUM.
 func verifySchema(ctx context.Context, db dbtx) error {
 	versions, err := readSchemaVersions(ctx, db)
 	if err != nil {
 		return fmt.Errorf("relayobserver: schema verify: %w", err)
 	}
 	if !isVersionListCurrent(versions) {
-		return fmt.Errorf("relayobserver: schema verify: version mismatch: have %v, want [1, 2, 3, 4, 5, 6, 7, 8]; run schema mode bootstrap to upgrade", versions)
+		return fmt.Errorf("relayobserver: schema verify: version mismatch: have %v, want [1, 2, 3, 4, 5, 6, 7, 8, 9]; run schema mode bootstrap to upgrade", versions)
 	}
 	missing, err := missingObserverTables(ctx, db)
 	if err != nil {
@@ -331,6 +347,13 @@ func verifySchema(ctx context.Context, db dbtx) error {
 	}
 	if !has {
 		return fmt.Errorf("relayobserver: schema verify: v4 provider-scoped alias identity index is missing")
+	}
+	has, err = observerV9TransientColumnExists(ctx, db)
+	if err != nil {
+		return err
+	}
+	if !has {
+		return fmt.Errorf("relayobserver: schema verify: v9 transient-session column is missing")
 	}
 	return nil
 }
@@ -399,10 +422,17 @@ func isVersionListV7(versions []int) bool {
 	return len(versions) == 7 && versions[0] == observerSchemaV1 && versions[1] == observerSchemaV2 && versions[2] == observerSchemaV3 && versions[3] == observerSchemaV4 && versions[4] == observerSchemaV5 && versions[5] == observerSchemaV6 && versions[6] == observerSchemaV7
 }
 
+// isVersionListV8 reports whether versions is exactly the v8 state
+// [1, 2, 3, 4, 5, 6, 7, 8], which still awaits the v9 transient-session
+// structure migration.
+func isVersionListV8(versions []int) bool {
+	return len(versions) == 8 && versions[0] == observerSchemaV1 && versions[1] == observerSchemaV2 && versions[2] == observerSchemaV3 && versions[3] == observerSchemaV4 && versions[4] == observerSchemaV5 && versions[5] == observerSchemaV6 && versions[6] == observerSchemaV7 && versions[7] == observerSchemaV8
+}
+
 // isVersionListCurrent reports whether versions is exactly the current state
 // [1, 2, 3, 4, 5, 6, 7, 8].
 func isVersionListCurrent(versions []int) bool {
-	return len(versions) == 8 && versions[0] == observerSchemaV1 && versions[1] == observerSchemaV2 && versions[2] == observerSchemaV3 && versions[3] == observerSchemaV4 && versions[4] == observerSchemaV5 && versions[5] == observerSchemaV6 && versions[6] == observerSchemaV7 && versions[7] == observerSchemaV8
+	return len(versions) == 9 && versions[0] == observerSchemaV1 && versions[1] == observerSchemaV2 && versions[2] == observerSchemaV3 && versions[3] == observerSchemaV4 && versions[4] == observerSchemaV5 && versions[5] == observerSchemaV6 && versions[6] == observerSchemaV7 && versions[7] == observerSchemaV8 && versions[8] == observerSchemaV9
 }
 
 // observerV2ColumnExists reports whether the v2 created_at column exists on
@@ -426,6 +456,33 @@ func observerV2ColumnExists(ctx context.Context, db dbtx) (bool, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return false, fmt.Errorf("relayobserver: schema verify: check v2 column: %w", err)
+	}
+	return exists, nil
+}
+
+// observerV9TransientColumnExists reports whether the v9 is_transient column
+// exists on observer_sessions. The version row could claim v9 while the
+// column is missing (for example a manually pruned schema), so the verify
+// path checks the real column.
+func observerV9TransientColumnExists(ctx context.Context, db dbtx) (bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'observer_sessions'
+		  AND column_name = 'is_transient')`)
+	if err != nil {
+		return false, fmt.Errorf("relayobserver: schema verify: check v9 column: %w", err)
+	}
+	defer closeRows(rows)
+	if !rows.Next() {
+		return false, fmt.Errorf("relayobserver: schema verify: check v9 column: no result row")
+	}
+	var exists bool
+	if err := rows.Scan(&exists); err != nil {
+		return false, fmt.Errorf("relayobserver: schema verify: check v9 column: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("relayobserver: schema verify: check v9 column: %w", err)
 	}
 	return exists, nil
 }
@@ -596,11 +653,17 @@ func bootstrapSchemaTx(ctx context.Context, tx dbtx, tables map[string]bool, ver
 				return err
 			}
 		}
-	case (isVersionListV5(versions) || isVersionListV6(versions) || isVersionListV7(versions)) && allRequiredTablesPresent(tables):
-		// Structure is complete; the remaining v5-v8 index upgrades run
-		// asynchronously, so there is no structure work here. This is a
-		// bootstrap no-op, mirroring verify mode's strict current-only rule:
-		// the index migrations — not bootstrap structure DDL — own v5-v7.
+	case (isVersionListV5(versions) || isVersionListV6(versions) || isVersionListV7(versions) || isVersionListV8(versions)) && allRequiredTablesPresent(tables):
+		// Structure and index migrations are complete except for any pending
+		// structure suffix. A v5-v8 schema still needs the v9 transient-
+		// session migration (index migrations claimed versions 5-8, so the
+		// pending list is resolved by version, not by position); a fully
+		// current v9 schema never reaches this branch.
+		for _, file := range pendingMigrations(versions) {
+			if err := applyMigrationTx(ctx, tx, file); err != nil {
+				return err
+			}
+		}
 	case isVersionListCurrent(versions):
 		// A complete current schema passes verify and the bootstrap is an
 		// idempotent no-op. The deep current-shape checks (v2 column, v4
@@ -631,15 +694,19 @@ func applyMigrationTx(ctx context.Context, tx dbtx, file string) error {
 }
 
 // pendingMigrations returns the structure migrations a complete schema with
-// the given version rows still needs, in order: [1] yields 002, 003, 004;
-// [1, 2] yields 003, 004. Version rows are 1-indexed against the structure
-// migration file order, so the count of applied structure migrations equals
-// the number of version rows. Index migrations are excluded — they are applied
-// asynchronously, not from this list.
+// the given version rows still needs, in order. The membership test uses the
+// explicit file-to-version map because index migrations claim versions 5-8:
+// [1] yields 002, 003, 004, 005_v9; [1..8] yields only 005_v9. Index
+// migrations are excluded — they are applied asynchronously, not from this
+// list.
 func pendingMigrations(versions []int) []string {
+	applied := make(map[int]bool, len(versions))
+	for _, v := range versions {
+		applied[v] = true
+	}
 	var pending []string
-	for i, file := range observerMigrations {
-		if i+1 > len(versions) {
+	for _, file := range observerMigrations {
+		if !applied[structureMigrationVersions[file]] {
 			pending = append(pending, file)
 		}
 	}
@@ -954,7 +1021,6 @@ FROM (
       AND NOT EXISTS (
         SELECT 1 FROM observer_contexts c
         WHERE c.session_id = o.session_id
-          AND c.item_digests @> to_jsonb(encode(o.item_digest, 'hex'))
       )
     ORDER BY o.created_at
     LIMIT $2
@@ -1230,7 +1296,14 @@ func (s *pgStore) DeleteOrphanContent(ctx context.Context, cutoff time.Time, lim
 }
 
 // deleteOrphanContentQ deletes bounded orphan objects through the query
-// seam. It returns the number of rows deleted.
+// seam. Orphans are content objects of sessions that no longer have any
+// retained context row: the per-session NOT EXISTS probe uses the btree
+// index on observer_contexts.session_id, so the sweep stays cheap even when
+// no orphans exist. Per-digest orphans inside a still-live session are
+// reclaimed when the owning session expires (DeleteSessionRetention wipes
+// the session's content), which keeps the query bounded without a per-digest
+// JSONB containment anti-join over every old content object. It returns the
+// number of rows deleted.
 func deleteOrphanContentQ(ctx context.Context, q contentQuerier, cutoff time.Time, limit int) (int, error) {
 	if limit < 1 {
 		return 0, nil
@@ -1242,7 +1315,6 @@ WHERE o.id IN (
       AND NOT EXISTS (
         SELECT 1 FROM observer_contexts c
         WHERE c.session_id = o2.session_id
-          AND c.item_digests @> to_jsonb(encode(o2.item_digest, 'hex'))
       )
     ORDER BY o2.id
     LIMIT $2

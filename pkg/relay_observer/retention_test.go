@@ -364,9 +364,11 @@ func TestDeleteSessionRetentionSkipsReactivated(t *testing.T) {
 
 // TestDeleteOrphanContentShapeAndCount locks the orphan deletion: bounded by
 // a LIMIT on the candidate subquery, candidates filtered by the indexed
-// created_at predicate, and reference safety enforced by a JSONB containment
-// anti-join against the session's retained context digest lists. The delete
-// never reads the payload column and returns the deleted row count.
+// created_at predicate, and reference safety enforced by a per-session
+// anti-join (content of a session with no retained context rows). The
+// per-session probe uses the btree index on observer_contexts.session_id, so
+// the sweep stays cheap even when no orphans exist. The delete never reads
+// the payload column and returns the deleted row count.
 func TestDeleteOrphanContentShapeAndCount(t *testing.T) {
 	fx := &retentionFakeTx{orphans: 7}
 	cutoff := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
@@ -382,7 +384,7 @@ func TestDeleteOrphanContentShapeAndCount(t *testing.T) {
 	assert.Contains(t, sqlText, "o2.created_at < $1")
 	assert.Contains(t, sqlText, "NOT EXISTS (")
 	assert.Contains(t, sqlText, "c.session_id = o2.session_id")
-	assert.Contains(t, sqlText, "c.item_digests @> to_jsonb(encode(o2.item_digest, 'hex'))")
+	assert.NotContains(t, sqlText, "item_digests", "the orphan sweep must not contain a JSONB containment anti-join")
 	assert.Contains(t, sqlText, "ORDER BY o2.id")
 	assert.Contains(t, sqlText, "LIMIT $2")
 	assert.NotContains(t, sqlText, "payload")

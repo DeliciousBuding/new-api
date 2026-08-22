@@ -693,6 +693,40 @@ func GetRelayObserverSessionTurns(c *gin.Context) {
 	})
 }
 
+// GetRelayObserverTurns serves GET /api/relay-observer/turns: one keyset page
+// of the global turn list across every session, including per-turn transient
+// sessions of stateless traffic. This is the browse view for requests that
+// carry no session identity; the session list deliberately excludes them.
+func GetRelayObserverTurns(c *gin.Context) {
+	qs, timeout, ok := observerQuerySurface(c)
+	if !ok {
+		return
+	}
+	query, ok := parseTurnQuery(c, nil)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
+	defer cancel()
+	page, err := qs.ListTurns(ctx, query)
+	if err != nil {
+		relayObserverQueryError(c, "turns", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data": gin.H{
+			"page_size": query.PageSize,
+			"items":     observerTurnsDTO(page.Items),
+			"meta": observerPageMetaDTO{
+				NextCursor: page.Meta.NextCursor,
+				HasMore:    page.Meta.HasMore,
+			},
+		},
+	})
+}
+
 // parseTranscriptQuery assembles the bounded TranscriptQuery: direction is
 // whitelisted ("latest" default, "older"), cursor is a non-negative message
 // index, and page_size reuses the shared clamp.

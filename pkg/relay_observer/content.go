@@ -134,6 +134,11 @@ type ContentInput struct {
 	// session and advances last_seen / turn_count, and a gap state advances
 	// gap_count even when no content was persisted.
 	ContentState string
+	// Transient marks a per-turn synthetic session created for a request
+	// without a resolvable session identity. The observer_session row is
+	// flagged is_transient so the session list can exclude it by default;
+	// retention cleans it up like any other session.
+	Transient bool
 	// Items are the ordered canonical items of the turn (T2.2 output). Empty
 	// with a non-empty Aliases is the session-only append: identity and
 	// counters are persisted, content is not.

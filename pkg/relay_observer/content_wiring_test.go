@@ -481,3 +481,75 @@ func TestPlanContentSkipsWithoutHMACKey(t *testing.T) {
 	assert.Empty(t, appends)
 	assert.Equal(t, int64(0), d.contentGaps.Load())
 }
+
+// TestWorkerExcludedUserRecordsMetadataOnly is the blacklist contract: an
+// event whose user is in ExcludedUsers is still written as a turn, but its
+// ContentState is metadata_only and no content append is produced — the
+// observer keeps usage metadata without retaining any request content for
+// the excluded user, even when the request carries a resolvable session
+// identity.
+func TestWorkerExcludedUserRecordsMetadataOnly(t *testing.T) {
+	store := contentStore()
+	d, _ := newTestDispatcher(t, store, contentCfg(func(c *Config) {
+		c.BatchSize = 1
+		c.ExcludedUsers = map[int64]bool{7: true}
+	}))
+
+	// contentEventPtr carries a Codex session identity, which would normally
+	// append content; the blacklist must suppress it before identity binding.
+	require.True(t, d.TryEnqueue(contentEventPtr(), 1<<20))
+	waitNotify(t, store.writeNotify)
+	require.Eventually(t, func() bool { return d.writtenTotal.Load() == 1 }, 2*time.Second, time.Millisecond)
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	require.Len(t, store.batches, 1)
+	require.Len(t, store.batches[0], 1)
+	assert.Equal(t, ContentStateMetadataOnly, store.batches[0][0].ContentState)
+	assert.Empty(t, store.appends, "blacklisted user must not produce content appends")
+	assert.Zero(t, d.contentGaps.Load(), "blacklist suppression is not a capture gap")
+}
+
+// TestWorkerCapturesStatelessTrafficViaTransientSession is the full-capture
+// contract: a request without a resolvable session identity still gets its
+// content persisted under a per-turn transient session, so stateless traffic
+// (OpenAI SDK, plain Anthropic SDK, and other identity-less clients) is
+// reconstructable in the turn browser instead of degrading to metadata. The
+// transient alias is keyed by the deterministic turn row id, so every turn
+// resolves to exactly its own transient session.
+func TestWorkerCapturesStatelessTrafficViaTransientSession(t *testing.T) {
+	store := contentStore()
+	d, _ := newTestDispatcher(t, store, contentCfg(func(c *Config) { c.BatchSize = 1 }))
+
+	ev := sampleEventPtr()
+	ev.RelayFormat = string(types.RelayFormatOpenAI)
+	req := dto.Request(&dto.GeneralOpenAIRequest{
+		Model: "deepseek-v4-flash",
+		Messages: []dto.Message{
+			{Role: "user", Content: "hi"},
+		},
+	})
+	ev.Request = &req
+	ev.Identity = IdentityInput{Scope: ScopeUnknown, Headers: http.Header{}, Body: []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}]}`)}
+
+	require.True(t, d.TryEnqueue(ev, 1<<20))
+	waitNotify(t, store.writeNotify)
+	require.Eventually(t, func() bool { return d.writtenTotal.Load() == 1 }, 2*time.Second, time.Millisecond)
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	require.Len(t, store.batches, 1)
+	assert.Equal(t, ContentStateFull, store.batches[0][0].ContentState)
+	require.Len(t, store.appends, 1)
+	require.Len(t, store.appends[0], 1)
+	in := store.appends[0][0]
+	assert.True(t, in.Transient, "stateless traffic must be captured under a transient session")
+	require.Len(t, in.Aliases, 1)
+	assert.Equal(t, SourceTransientTurn, in.Aliases[0].Source)
+	assert.Equal(t, ScopeUnknown, in.Aliases[0].Scope)
+	assert.Equal(t, turnRowID("node-a", "req_123"), in.TurnID)
+	require.NotEmpty(t, in.Items)
+	assert.Equal(t, CanonicalKindMessage, in.Items[0].Kind)
+	assert.Equal(t, "hi", in.Items[0].Content[0].Text)
+	assert.Zero(t, d.contentGaps.Load())
+}

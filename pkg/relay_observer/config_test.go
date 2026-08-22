@@ -35,6 +35,7 @@ func clearObserverEnv(t *testing.T) {
 		"RELAY_OBSERVER_RETENTION_TURN_DAYS",
 		"RELAY_OBSERVER_RETENTION_CONTENT_DAYS",
 		"RELAY_OBSERVER_MAX_CAPTURE_BYTES_PER_TURN",
+		"RELAY_OBSERVER_EXCLUDED_USERS",
 	} {
 		t.Setenv(e, "")
 	}
@@ -369,6 +370,57 @@ func TestGetRuntimeTunableHotReload(t *testing.T) {
 		assert.Equal(t, MaxQueryTimeout, tunable.QueryTimeout)
 		assert.Equal(t, MaxRetentionDays, tunable.RetentionTurnDays)
 		assert.Equal(t, MaxRetentionDays, tunable.RetentionContentDays)
+	})
+}
+
+// TestConfigFromEnvExcludedUsers locks the startup blacklist parsing: the
+// RELAY_OBSERVER_EXCLUDED_USERS comma-separated user-id list becomes the
+// Config set, invalid tokens are skipped (fail-open), and an empty variable
+// yields nil so ConfigFromEnv still matches DefaultConfig.
+func TestConfigFromEnvExcludedUsers(t *testing.T) {
+	t.Run("empty yields nil set", func(t *testing.T) {
+		clearObserverEnv(t)
+		cfg, err := ConfigFromEnv()
+		require.NoError(t, err)
+		assert.Nil(t, cfg.ExcludedUsers)
+	})
+	t.Run("comma separated ids parse with whitespace", func(t *testing.T) {
+		clearObserverEnv(t)
+		t.Setenv("RELAY_OBSERVER_EXCLUDED_USERS", "5, 100,42")
+		cfg, err := ConfigFromEnv()
+		require.NoError(t, err)
+		assert.Equal(t, map[int64]bool{5: true, 100: true, 42: true}, cfg.ExcludedUsers)
+	})
+	t.Run("invalid and blank tokens skipped", func(t *testing.T) {
+		clearObserverEnv(t)
+		t.Setenv("RELAY_OBSERVER_EXCLUDED_USERS", "5,root,7,")
+		cfg, err := ConfigFromEnv()
+		require.NoError(t, err)
+		assert.Equal(t, map[int64]bool{5: true, 7: true}, cfg.ExcludedUsers)
+	})
+}
+
+// TestGetExcludedUsersHotReload verifies the blacklist resolution: the
+// relay_observer.excluded_users option is authoritative when present and
+// non-empty (even when it parses to an empty set, so an operator can clear
+// the blacklist), and an unset option falls back to the startup Config set.
+func TestGetExcludedUsersHotReload(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ExcludedUsers = map[int64]bool{1: true, 2: true}
+	prev := common.OptionMap
+	t.Cleanup(func() { common.OptionMap = prev })
+
+	t.Run("empty option falls back to config", func(t *testing.T) {
+		common.OptionMap = map[string]string{}
+		assert.Equal(t, cfg.ExcludedUsers, GetExcludedUsers(cfg))
+	})
+	t.Run("valid option hot-reloads the set", func(t *testing.T) {
+		common.OptionMap = map[string]string{"relay_observer.excluded_users": "7, 9"}
+		assert.Equal(t, map[int64]bool{7: true, 9: true}, GetExcludedUsers(cfg))
+	})
+	t.Run("invalid tokens clear the set", func(t *testing.T) {
+		common.OptionMap = map[string]string{"relay_observer.excluded_users": "root"}
+		assert.Empty(t, GetExcludedUsers(cfg))
 	})
 }
 

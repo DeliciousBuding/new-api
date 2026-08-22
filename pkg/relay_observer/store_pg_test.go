@@ -170,7 +170,7 @@ func mustOpenTestDB(t *testing.T) *sql.DB {
 
 // TestVersionListPredicates locks the schema version predicates the bootstrap
 // and verify paths rely on: each structure prefix [1..N] (N=1..4) matches
-// exactly one awaiting-upgrade predicate, and the full [1..8] list is
+// exactly one awaiting-upgrade predicate, and the full [1..9] list is
 // current. Every other list (empty, single foreign version, out-of-order,
 // extra versions) matches none.
 func TestVersionListPredicates(t *testing.T) {
@@ -190,11 +190,12 @@ func TestVersionListPredicates(t *testing.T) {
 		{name: "v1 through v3", versions: []int{1, 2, 3}, v3: true},
 		{name: "v1 through v4", versions: []int{1, 2, 3, 4}, v4: true},
 		{name: "v1 through v7", versions: []int{1, 2, 3, 4, 5, 6, 7}},
-		{name: "current v8", versions: []int{1, 2, 3, 4, 5, 6, 7, 8}, current: true},
+		{name: "v1 through v8", versions: []int{1, 2, 3, 4, 5, 6, 7, 8}},
+		{name: "current v9", versions: []int{1, 2, 3, 4, 5, 6, 7, 8, 9}, current: true},
 		{name: "unknown version", versions: []int{99}},
 		{name: "out of order", versions: []int{2, 1}},
 		{name: "duplicate", versions: []int{1, 1}},
-		{name: "extra version", versions: []int{1, 2, 3, 4, 5, 6, 7, 8, 9}},
+		{name: "extra version", versions: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.v1, isVersionListV1(tt.versions))
@@ -215,6 +216,7 @@ type fakeDbtx struct {
 	tables          []*fakeRow // rows for the information_schema.tables listing
 	hasV2Col        bool       // result of the v2 column EXISTS check
 	hasV4AliasIndex bool       // result of the v4 catalog-shape EXISTS check
+	hasV9Transient  bool       // result of the v9 is_transient column EXISTS check
 	queryErr        error
 	execErr         error
 	execs           []string
@@ -230,6 +232,9 @@ func (f *fakeDbtx) QueryContext(ctx context.Context, query string, args ...any) 
 	case strings.Contains(query, "information_schema.tables"):
 		return &fakeRows{rows: f.tables}, nil
 	case strings.Contains(query, "information_schema.columns"):
+		if strings.Contains(query, "'is_transient'") {
+			return &fakeRows{rows: []*fakeRow{{values: []any{f.hasV9Transient}}}}, nil
+		}
 		return &fakeRows{rows: []*fakeRow{{values: []any{f.hasV2Col}}}}, nil
 	case strings.Contains(query, "JOIN pg_index i"):
 		return &fakeRows{rows: []*fakeRow{{values: []any{f.hasV4AliasIndex}}}}, nil
@@ -263,18 +268,19 @@ func versionRows(versions ...int) []*fakeRow {
 }
 
 // TestVerifySchemaBranches locks every verifySchema branch: only the current
-// [1..8] version list passes; historical prefixes and foreign/empty/extra
+// [1..9] version list passes; historical prefixes and foreign/empty/extra
 // version lists are rejected (they must be upgraded via bootstrap mode), and
-// a current schema missing a required table, its v2 column, or its v4 alias
-// identity index is rejected.
+// a current schema missing a required table, its v2 column, its v4 alias
+// identity index, or its v9 transient-session column is rejected.
 func TestVerifySchemaBranches(t *testing.T) {
 	ctx := context.Background()
-	t.Run("current v8 passes", func(t *testing.T) {
+	t.Run("current v9 passes", func(t *testing.T) {
 		fx := &fakeDbtx{
-			versions:        versionRows(1, 2, 3, 4, 5, 6, 7, 8),
+			versions:        versionRows(1, 2, 3, 4, 5, 6, 7, 8, 9),
 			tables:          allTables(),
 			hasV2Col:        true,
 			hasV4AliasIndex: true,
+			hasV9Transient:  true,
 		}
 		require.NoError(t, verifySchema(ctx, fx))
 	})
@@ -287,6 +293,7 @@ func TestVerifySchemaBranches(t *testing.T) {
 			{1, 2, 3, 4, 5},
 			{1, 2, 3, 4, 5, 6},
 			{1, 2, 3, 4, 5, 6, 7},
+			{1, 2, 3, 4, 5, 6, 7, 8},
 		} {
 			fx := &fakeDbtx{versions: versionRows(versions...), tables: allTables()}
 			err := verifySchema(ctx, fx)
@@ -304,7 +311,7 @@ func TestVerifySchemaBranches(t *testing.T) {
 		}
 	})
 	t.Run("missing table rejected", func(t *testing.T) {
-		fx := &fakeDbtx{versions: versionRows(1, 2, 3, 4, 5, 6, 7, 8), tables: allTables()[:5]}
+		fx := &fakeDbtx{versions: versionRows(1, 2, 3, 4, 5, 6, 7, 8, 9), tables: allTables()[:5]}
 		err := verifySchema(ctx, fx)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "missing required tables")
@@ -312,10 +319,11 @@ func TestVerifySchemaBranches(t *testing.T) {
 	})
 	t.Run("missing v2 column rejected", func(t *testing.T) {
 		fx := &fakeDbtx{
-			versions:        versionRows(1, 2, 3, 4, 5, 6, 7, 8),
+			versions:        versionRows(1, 2, 3, 4, 5, 6, 7, 8, 9),
 			tables:          allTables(),
 			hasV2Col:        false,
 			hasV4AliasIndex: true,
+			hasV9Transient:  true,
 		}
 		err := verifySchema(ctx, fx)
 		require.Error(t, err)
@@ -323,14 +331,27 @@ func TestVerifySchemaBranches(t *testing.T) {
 	})
 	t.Run("missing v4 alias index rejected", func(t *testing.T) {
 		fx := &fakeDbtx{
-			versions:        versionRows(1, 2, 3, 4, 5, 6, 7, 8),
+			versions:        versionRows(1, 2, 3, 4, 5, 6, 7, 8, 9),
 			tables:          allTables(),
 			hasV2Col:        true,
 			hasV4AliasIndex: false,
+			hasV9Transient:  true,
 		}
 		err := verifySchema(ctx, fx)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "v4 provider-scoped alias identity index is missing")
+	})
+	t.Run("missing v9 transient column rejected", func(t *testing.T) {
+		fx := &fakeDbtx{
+			versions:        versionRows(1, 2, 3, 4, 5, 6, 7, 8, 9),
+			tables:          allTables(),
+			hasV2Col:        true,
+			hasV4AliasIndex: true,
+			hasV9Transient:  false,
+		}
+		err := verifySchema(ctx, fx)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "v9 transient-session column is missing")
 	})
 	t.Run("query failure propagated", func(t *testing.T) {
 		fx := &fakeDbtx{queryErr: errors.New("pg unavailable")}
@@ -369,9 +390,10 @@ func TestObserverV4AliasIndexExists(t *testing.T) {
 }
 
 // TestBootstrapSchemaTxBranches locks every bootstrapSchemaTx branch: an
-// empty schema applies every migration in order, complete v1-v4 schemas apply
-// their pending suffix, a current v5 schema is an idempotent no-op, and a
-// partial/unknown schema is rejected and never patched.
+// empty schema applies every migration in order, complete older schemas apply
+// their pending structure suffix (including the v9 transient-session migration
+// on a v5-v8 schema), and a complete current schema is an idempotent no-op,
+// and a partial/unknown schema is rejected and never patched.
 func TestBootstrapSchemaTxBranches(t *testing.T) {
 	ctx := context.Background()
 	t.Run("empty schema applies all migrations in order", func(t *testing.T) {
@@ -388,10 +410,13 @@ func TestBootstrapSchemaTxBranches(t *testing.T) {
 		name     string
 		versions []int
 	}{
-		{name: "complete v1 applies v2 through v4", versions: []int{1}},
-		{name: "complete v2 applies v3 through v4", versions: []int{1, 2}},
-		{name: "complete v3 applies v4", versions: []int{1, 2, 3}},
-		{name: "complete v4 applies no structure migration", versions: []int{1, 2, 3, 4}},
+		{name: "complete v1 applies pending suffix through v9", versions: []int{1}},
+		{name: "complete v2 applies pending suffix through v9", versions: []int{1, 2}},
+		{name: "complete v3 applies pending suffix through v9", versions: []int{1, 2, 3}},
+		{name: "complete v4 applies v9 transient migration", versions: []int{1, 2, 3, 4}},
+		{name: "complete v5 applies v9 transient migration", versions: []int{1, 2, 3, 4, 5}},
+		{name: "complete v7 applies v9 transient migration", versions: []int{1, 2, 3, 4, 5, 6, 7}},
+		{name: "complete v8 applies v9 transient migration", versions: []int{1, 2, 3, 4, 5, 6, 7, 8}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			fx := &fakeDbtx{}
@@ -400,7 +425,7 @@ func TestBootstrapSchemaTxBranches(t *testing.T) {
 				tables[name] = true
 			}
 			require.NoError(t, bootstrapSchemaTx(ctx, fx, tables, tt.versions))
-			wantFiles := observerMigrations[len(tt.versions):]
+			wantFiles := pendingMigrations(tt.versions)
 			require.Len(t, fx.execs, len(wantFiles))
 			for i, file := range wantFiles {
 				want, err := migrationsFS.ReadFile(file)
@@ -411,16 +436,17 @@ func TestBootstrapSchemaTxBranches(t *testing.T) {
 	}
 	t.Run("current schema is an idempotent no-op", func(t *testing.T) {
 		fx := &fakeDbtx{
-			versions:        versionRows(1, 2, 3, 4, 5),
+			versions:        versionRows(1, 2, 3, 4, 5, 6, 7, 8, 9),
 			tables:          allTables(),
 			hasV2Col:        true,
 			hasV4AliasIndex: true,
+			hasV9Transient:  true,
 		}
 		tables := map[string]bool{}
 		for _, name := range requiredObserverTables {
 			tables[name] = true
 		}
-		require.NoError(t, bootstrapSchemaTx(ctx, fx, tables, []int{1, 2, 3, 4, 5}))
+		require.NoError(t, bootstrapSchemaTx(ctx, fx, tables, []int{1, 2, 3, 4, 5, 6, 7, 8, 9}))
 		assert.Empty(t, fx.execs, "a current schema runs no migration")
 	})
 	t.Run("partial schema rejected, never patched", func(t *testing.T) {
@@ -450,14 +476,19 @@ func TestBootstrapSchemaTxBranches(t *testing.T) {
 }
 
 // TestPendingMigrations locks the pending structure-migration mapping: the
-// version row count selects the structure suffix that still needs to run.
-// Index migrations are excluded — they are applied asynchronously.
+// version set selects the structure suffix that still needs to run, resolved
+// by the explicit file-to-version map because index migrations claimed
+// versions 5-8. A v5-v8 schema still needs the v9 transient-session
+// migration; a current v9 schema needs nothing. Index migrations are excluded
+// — they are applied asynchronously.
 func TestPendingMigrations(t *testing.T) {
-	assert.Equal(t, []string{"migrations/002_v2.sql", "migrations/003_v3.sql", "migrations/004_v4.sql"}, pendingMigrations([]int{1}))
-	assert.Equal(t, []string{"migrations/003_v3.sql", "migrations/004_v4.sql"}, pendingMigrations([]int{1, 2}))
-	assert.Equal(t, []string{"migrations/004_v4.sql"}, pendingMigrations([]int{1, 2, 3}))
-	assert.Empty(t, pendingMigrations([]int{1, 2, 3, 4}))
-	assert.Empty(t, pendingMigrations([]int{1, 2, 3, 4, 5}))
+	assert.Equal(t, []string{"migrations/002_v2.sql", "migrations/003_v3.sql", "migrations/004_v4.sql", "migrations/005_v9.sql"}, pendingMigrations([]int{1}))
+	assert.Equal(t, []string{"migrations/003_v3.sql", "migrations/004_v4.sql", "migrations/005_v9.sql"}, pendingMigrations([]int{1, 2}))
+	assert.Equal(t, []string{"migrations/004_v4.sql", "migrations/005_v9.sql"}, pendingMigrations([]int{1, 2, 3}))
+	assert.Equal(t, []string{"migrations/005_v9.sql"}, pendingMigrations([]int{1, 2, 3, 4}))
+	assert.Equal(t, []string{"migrations/005_v9.sql"}, pendingMigrations([]int{1, 2, 3, 4, 5}))
+	assert.Equal(t, []string{"migrations/005_v9.sql"}, pendingMigrations([]int{1, 2, 3, 4, 5, 6, 7, 8}))
+	assert.Empty(t, pendingMigrations([]int{1, 2, 3, 4, 5, 6, 7, 8, 9}))
 }
 
 // TestObserverIndexMigrations locks the asynchronous index-migration contract:
@@ -510,11 +541,12 @@ func TestMissingObserverTables(t *testing.T) {
 
 // TestMigrationsEmbedded locks the embedded structure-migration set: all files
 // exist, 001 creates the v1 version row, 002 adds retention metadata, 003 adds
-// query indexes, and 004 fixes provider-scoped session-alias identity. The v5
-// transcript index is an asynchronous index migration (observerIndexMigrations),
-// not an embedded structure file.
+// query indexes, 004 fixes provider-scoped session-alias identity, and 005
+// adds the v9 transient-session marker. The v5 transcript index is an
+// asynchronous index migration (observerIndexMigrations), not an embedded
+// structure file.
 func TestMigrationsEmbedded(t *testing.T) {
-	require.Len(t, observerMigrations, 4)
+	require.Len(t, observerMigrations, 5)
 	for _, file := range observerMigrations {
 		data, err := migrationsFS.ReadFile(file)
 		require.NoError(t, err, "migration %s must be embedded", file)
@@ -553,4 +585,10 @@ func TestMigrationsEmbedded(t *testing.T) {
 	assert.Contains(t, body4, "idx_observer_session_aliases_identity")
 	assert.Contains(t, body4, "alias_digest,\n        provider")
 	assert.Contains(t, body4, "VALUES (4, now())")
+
+	v9, err := migrationsFS.ReadFile(observerMigrations[4])
+	require.NoError(t, err)
+	body9 := strings.ReplaceAll(string(v9), "\r\n", "\n")
+	assert.Contains(t, body9, "ALTER TABLE observer_sessions ADD COLUMN IF NOT EXISTS is_transient BOOLEAN NOT NULL DEFAULT false")
+	assert.Contains(t, body9, "VALUES (9, now())")
 }
