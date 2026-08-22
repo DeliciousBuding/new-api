@@ -4,6 +4,8 @@
 
 # New API
 
+> **TokenDance fork**（`DeliciousBuding/new-api`）。二开补丁与上游收敛台账见 [`docs/dev/upstream-divergence.md`](docs/dev/upstream-divergence.md)；发布见 `RELEASE.md`；产品能力见 `docs/product/tokendance-gateway.md`。
+
 🍥 **Next-Generation LLM Gateway and AI Asset Management System**
 
 <p align="center">
