@@ -44,6 +44,8 @@ export const observabilityQueryKeys = {
     lists: () => [...observabilityQueryKeys.all, 'turns', 'list'] as const,
     list: (sessionId: string, filters: TurnQueryParams) =>
       [...observabilityQueryKeys.turns.lists(), sessionId, filters] as const,
+    all: (filters: TurnQueryParams) =>
+      [...observabilityQueryKeys.all, 'turns', 'all', filters] as const,
   },
   context: (turnId: string, sessionId: string) =>
     [...observabilityQueryKeys.all, 'context', turnId, sessionId] as const,

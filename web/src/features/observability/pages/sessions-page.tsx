@@ -24,10 +24,12 @@ For commercial licensing, please contact support@quantumnous.com
  * context inline — no tab switching. The selection lives in the
  * `?session=<id>` URL param (deep-linkable, survives reload).
  */
-import { getRouteApi, useNavigate } from '@tanstack/react-router'
+import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
+import { buttonVariants } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 
 import { SessionDetailTab } from './session-detail-tab'
 import { SessionsTab } from './sessions-tab'
@@ -47,10 +49,23 @@ export function ObservabilitySessionsPage() {
     })
   }
 
+  const navLinkClass = cn(
+    buttonVariants({ variant: 'outline', size: 'sm' }),
+    'text-sm'
+  )
+
   return (
     <SectionPageLayout fixedContent>
       <SectionPageLayout.Title>{t('Sessions')}</SectionPageLayout.Title>
       <SectionPageLayout.Content>
+        <div className='mb-3 flex items-center gap-2'>
+          <Link to='/observability' className={navLinkClass}>
+            {t('Sessions')}
+          </Link>
+          <Link to='/observability/turns' className={navLinkClass}>
+            {t('All turns')}
+          </Link>
+        </div>
         <div className='grid h-full min-h-0 gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]'>
           <div className='min-h-0 overflow-auto xl:max-h-full'>
             <SessionsTab

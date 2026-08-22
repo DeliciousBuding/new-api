@@ -35,6 +35,7 @@ var observerQueryRoutes = []string{
 	"/api/relay-observer/sessions/:id",
 	"/api/relay-observer/sessions/:id/turns",
 	"/api/relay-observer/sessions/:id/transcript",
+	"/api/relay-observer/turns",
 	"/api/relay-observer/turns/:id/context",
 }
 
@@ -46,6 +47,7 @@ var observerQueryRequestPaths = []string{
 	"/api/relay-observer/sessions/00000000-0000-0000-0000-000000000001",
 	"/api/relay-observer/sessions/00000000-0000-0000-0000-000000000001/turns",
 	"/api/relay-observer/sessions/00000000-0000-0000-0000-000000000001/transcript",
+	"/api/relay-observer/turns",
 	"/api/relay-observer/turns/00000000-0000-0000-0000-000000000001/context",
 }
 

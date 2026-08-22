@@ -68,6 +68,7 @@ var faultMatrixRoutes = []struct {
 	{name: "sessions", path: "/api/relay-observer/sessions", fault: func(f *fakeObserverQueryStore, err error) { f.sessionsErr = err }},
 	{name: "session", path: "/api/relay-observer/sessions/00000000-0000-0000-0000-000000000001", fault: func(f *fakeObserverQueryStore, err error) { f.sessionErr = err }},
 	{name: "session turns", path: "/api/relay-observer/sessions/00000000-0000-0000-0000-000000000001/turns", fault: func(f *fakeObserverQueryStore, err error) { f.turnsErr = err }},
+	{name: "turns", path: "/api/relay-observer/turns", fault: func(f *fakeObserverQueryStore, err error) { f.turnsErr = err }},
 	{name: "turn context", path: "/api/relay-observer/turns/00000000-0000-0000-0000-000000000001/context?session_id=00000000-0000-0000-0000-0000000000bb", fault: func(f *fakeObserverQueryStore, err error) { f.contextErr = err }},
 }
 

@@ -475,8 +475,8 @@ func resolvePrimarySessionTx(ctx context.Context, tx contentTx, in *ContentInput
 
 	// First sight of this primary alias: create the session and bind it.
 	sid = uuid.New()
-	if _, err := tx.Exec(ctx, `INSERT INTO observer_sessions (id, node_scope, user_id, client_family, first_seen, last_seen, turn_count, gap_count) VALUES ($1, $2, $3, $4, now(), now(), 0, 0) ON CONFLICT (id) DO NOTHING`,
-		sid.String(), in.NodeScope, in.UserID, sessionFamily(in)); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO observer_sessions (id, node_scope, user_id, client_family, first_seen, last_seen, turn_count, gap_count, is_transient) VALUES ($1, $2, $3, $4, now(), now(), 0, 0, $5) ON CONFLICT (id) DO NOTHING`,
+		sid.String(), in.NodeScope, in.UserID, sessionFamily(in), in.Transient); err != nil {
 		return SessionResolution{}, fmt.Errorf("relayobserver: append content: insert session: %w", err)
 	}
 	bound, err := bindAliasRowTx(ctx, tx, in.NodeScope, in.UserID, primary, sid)

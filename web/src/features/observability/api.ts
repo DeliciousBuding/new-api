@@ -149,6 +149,18 @@ export async function listTurns(
   return parseObserverResponse(observerTurnPageSchema, res.data)
 }
 
+/** GET /api/relay-observer/turns — one keyset page of the global turn list
+ * across every session, including per-turn transient sessions of stateless
+ * traffic. This is the browse view for requests without a session identity. */
+export async function listAllTurns(
+  params: TurnQueryParams = {}
+): Promise<ObserverResponse<ObserverTurnPage>> {
+  const res = await api.get(
+    `/api/relay-observer/turns${buildQueryString(params)}`
+  )
+  return parseObserverResponse(observerTurnPageSchema, res.data)
+}
+
 /** GET /api/relay-observer/turns/:id/context — canonical content
  * reconstruction; session_id is a mandatory query parameter. */
 export async function getTurnContext(

@@ -18,7 +18,7 @@ Relay Observer 是可选的原生 relay 可观测系统。它记录一次客户�
 
 主 NewAPI 数据访问仍须同时支持 SQLite、MySQL 和 PostgreSQL；只有 Relay Observer 被明确允许使用 PostgreSQL 方言。`OpenPGStore` 解析并拒绝非 PostgreSQL DSN，失败后 runtime 自禁用。
 
-结构迁移 v1-v4 位于 `pkg/relay_observer/migrations/`，并发索引迁移 v5-v8 由 `pkg/relay_observer/store_pg.go` 管理：
+结构迁移 v1-v4 与 v9 位于 `pkg/relay_observer/migrations/`（`005_v9.sql` 为 `observer_sessions.is_transient` 瞬时会话标记），并发索引迁移 v5-v8 由 `pkg/relay_observer/store_pg.go` 管理：
 
 - migration 版本记录必须与实际对象一致，重复启动保持幂等。
 - 普通 schema bootstrap 在短 advisory lock、lock timeout 和 statement timeout 内执行。
@@ -47,6 +47,8 @@ worker 从受支持协议的稳定字段提取别名，按 provider/scope 和版
 
 worker 把 Claude、OpenAI Chat 和 Responses 请求归一成有序 canonical items。每项内容受大小和数量限制，媒体只保留受控元数据，不保存原始图片或音频 payload。截断必须写显式 gap marker，不能静默丢失。
 
+无法解析出会话身份的请求（无会话头、无 prompt_cache_key 的无身份客户端）不再降级为 metadata-only：worker 为该 turn 合成一个按 turn 唯一的一次性 transient session（别名源 `transient_turn`，raw 值为确定性 turn row id），并照常持久化规范化内容。transient session 行带有 `is_transient` 标记，会话列表默认排除；这些流量通过全局 turn 列表浏览。blacklist 中的用户（`RELAY_OBSERVER_EXCLUDED_USERS` / `relay_observer.excluded_users`）永远不落内容：turn 元数据照常记录，内容捕获在 worker 中整体跳过（不合成 session、不写对象），也不计入 content gap 计数。
+
 内容对象按 session + digest 去重并使用 zstd 存储。上下文采用一条 full checkpoint 加最多八条 delta 的固定组：重建一条 delta 只读取一条 full 和一条 suffix，禁止递归 delta 链。写入只锁当前 session head，不持有表级锁。
 
 ## 查询与权限边界
@@ -54,9 +56,10 @@ worker 把 Claude、OpenAI Chat 和 Responses 请求归一成有序 canonical it
 所有 API 位于 `/api/relay-observer` 并受 `middleware.RootAuth()` 保护：
 
 - `GET /status`：只读进程内状态，不访问数据库。
-- `GET /overview`：固定窗口聚合和总量。
-- `GET /sessions`、`GET /sessions/:id`：会话列表和详情。
-- `GET /sessions/:id/turns`：turn 元数据页。
+- `GET /overview`：固定窗口聚合和总量（`session_count` 与会话列表一致，排除 `is_transient` 瞬时会话；turn 计数含瞬时会话流量）。
+- `GET /sessions`、`GET /sessions/:id`：会话列表和详情（列表默认排除 `is_transient` 瞬时会话）。
+- `GET /turns`：全局 turn 列表（含瞬时会话的无身份流量浏览视图）。
+- `GET /sessions/:id/turns`：单会话 turn 元数据页。
 - `GET /sessions/:id/transcript`：有界扁平对话页。
 - `GET /turns/:id/context?session_id=...`：单 turn 上下文重建。
 
@@ -71,7 +74,9 @@ store 失败和 timeout 使用 HTTP 200 degraded envelope 表达可观测系统�
 - `client_profile` 和 User-Agent 都是客户端可伪造的展示 hint，不能用于认证、授权、计费或路由。
 - error type/code 必须来自稳定分类，不存原始上游错误文本。
 - 新增筛选维度前必须评估可伪造性、隐私、索引成本和 cardinality；不能把任意 header/value 直接变成数据库维度。
+- 黑名单用户（`RELAY_OBSERVER_EXCLUDED_USERS` / `relay_observer.excluded_users`）的请求保留 turn 元数据（次数、token、耗时、尝试），但内容捕获整体跳过，既不持久化请求内容也不合成 session；黑名单解析失败按 fail-open 处理（不启用、不清空）。
 - retention 分别控制 turn/session 和 content 生命周期；删除前在事务内重新检查 session recency，避免 list/delete 窗口误删活跃会话。
+- 孤儿对象清扫以 session 为粒度：只回收「已无任何 retained context 行的 session」的内容对象（btree 索引探针，保持廉价）。活跃 session 内仅被已删 turn 引用的 digest 在 session 到期（删除 session 会连带清空内容）时统一回收；此语义是"引用安全 + 有界扫描"的折中，避免对全部旧内容做逐 digest JSONB 反连接。
 
 规范化文本、tool 参数和 tool 输出使用 zstd 压缩，但没有加密；数据库操作者仍可读取。`retention_content_days` 当前是孤儿对象 grace period，不是已引用内容的硬 TTL。HMAC 内容验证只支持 current/previous 两代 key，轮换周期必须覆盖有效内容保留期，直到引入带版本 key ring。
 
@@ -90,6 +95,7 @@ store 失败和 timeout 使用 HTTP 200 degraded envelope 表达可观测系统�
 - `relay_observer.query_timeout_ms`
 - `relay_observer.retention_turn_days`
 - `relay_observer.retention_content_days`
+- `relay_observer.excluded_users`（逗号分隔的用户 id 黑名单；非空 option 覆盖启动 env 集合，空 option 回退到 env）
 
 DSN、schema mode、HMAC keys、enabled 和队列结构属于启动配置，不能伪装成热配置。完整默认值和硬上限以 `pkg/relay_observer/config.go` 为实现源。
 

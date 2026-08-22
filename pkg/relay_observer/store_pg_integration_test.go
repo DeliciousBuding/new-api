@@ -92,9 +92,12 @@ func cleanupObserverSchema(t *testing.T, db *sql.DB) {
 	}
 }
 
-// ensureV1 brings the schema to the complete v1 state for tests that need a
-// working database: an absent or partial observer schema is dropped and
-// bootstrapped from scratch.
+// ensureV1 brings the schema to the complete current state for tests that
+// need a working database: an absent or partial observer schema is dropped
+// and bootstrapped from scratch. The bootstrap store stays open while the
+// asynchronous index migrations (v5-v8) land their version rows, so a
+// subsequent verify-mode open is deterministic regardless of index build
+// speed.
 func ensureV1(t *testing.T, dsn string) {
 	t.Helper()
 	db := openFixturePool(t, dsn)
@@ -106,6 +109,7 @@ func ensureV1(t *testing.T, dsn string) {
 	cleanupObserverSchema(t, db)
 	store, err = OpenPGStore(context.Background(), dsn, SchemaModeBootstrap)
 	require.NoError(t, err, "bootstrap must succeed on an empty observer schema")
+	waitForCurrentSchema(t, db)
 	require.NoError(t, store.Close(context.Background()))
 }
 
@@ -128,6 +132,25 @@ func TestIntegrationDSNGuard(t *testing.T) {
 	}
 }
 
+// waitForCurrentSchema polls until the schema version rows reach the current
+// list. Bootstrap spawns the index migrations (v5-v8) on a background
+// goroutine, so a freshly bootstrapped database is verify-ready only once
+// their version rows land; polling instead of sleeping keeps the wait
+// bounded and deterministic.
+func waitForCurrentSchema(t *testing.T, db *sql.DB) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		var count int
+		require.NoError(t, db.QueryRow("SELECT count(*) FROM observer_schema_versions").Scan(&count))
+		if count == observerSchemaCurrent {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("schema versions did not reach current (%d) within 30s", observerSchemaCurrent)
+}
+
 // TestIntegrationSchemaLifecycle covers bootstrap on an empty observer schema,
 // verify right after, repeated bootstrap (idempotent success on complete v1),
 // and verify again.
@@ -137,7 +160,8 @@ func TestIntegrationSchemaLifecycle(t *testing.T) {
 	cleanupObserverSchema(t, db)
 
 	store, err := OpenPGStore(context.Background(), dsn, SchemaModeBootstrap)
-	require.NoError(t, err, "bootstrap must create v1 on an empty observer schema")
+	require.NoError(t, err, "bootstrap must create the schema on an empty observer schema")
+	waitForCurrentSchema(t, db)
 	require.NoError(t, store.Close(context.Background()))
 
 	verifyStore, err := OpenPGStore(context.Background(), dsn, SchemaModeVerify)
@@ -145,7 +169,8 @@ func TestIntegrationSchemaLifecycle(t *testing.T) {
 	require.NoError(t, verifyStore.Close(context.Background()))
 
 	againStore, err := OpenPGStore(context.Background(), dsn, SchemaModeBootstrap)
-	require.NoError(t, err, "repeated bootstrap must be idempotent success on complete v1")
+	require.NoError(t, err, "repeated bootstrap must be idempotent success on the complete schema")
+	waitForCurrentSchema(t, db)
 	require.NoError(t, againStore.Close(context.Background()))
 
 	finalVerify, err := OpenPGStore(context.Background(), dsn, SchemaModeVerify)

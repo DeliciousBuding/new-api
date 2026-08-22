@@ -5401,7 +5401,6 @@
     "Load Earlier Messages": "Load Earlier Messages",
     "Load earlier": "Load earlier",
     "Failed to load earlier messages": "Failed to load earlier messages",
-    "System": "System",
     "Unrecognized content": "Unrecognized content",
     "items": "items",
     "Select a session from the Sessions tab to view its details.": "Select a session from the Sessions tab to view its details.",
@@ -5439,6 +5438,20 @@
     "Upstream Error": "Upstream Error",
     "Error Code": "Error Code",
     "Error Type": "Error Type",
-    "Message": "Message"
+    "Message": "Message",
+    "All results": "All results",
+    "All turns": "All turns",
+    "Failed to load turn content": "Failed to load turn content",
+    "No Content": "No Content",
+    "No Turns Found": "No Turns Found",
+    "No turns have been recorded yet. Turns appear here once the observer captures traffic.": "No turns have been recorded yet. Turns appear here once the observer captures traffic.",
+    "OK": "OK",
+    "Select a turn from the list to view its reconstructed content.": "Select a turn from the list to view its reconstructed content.",
+    "The observer could not reconstruct this turn.": "The observer could not reconstruct this turn.",
+    "The observer list request failed.": "The observer list request failed.",
+    "This turn has no session binding, so no content was persisted.": "This turn has no session binding, so no content was persisted.",
+    "Turn Detail": "Turn Detail",
+    "gap": "gap",
+    "truncated": "truncated"
   }
 }

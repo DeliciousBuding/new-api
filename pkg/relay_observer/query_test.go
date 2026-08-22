@@ -40,6 +40,7 @@ type fakeSessionRow struct {
 	lastSeen     time.Time
 	turnCount    int64
 	gapCount     int64
+	isTransient  bool
 }
 
 type fakeTurnRow struct {
@@ -127,7 +128,13 @@ func (f *fakeQueryDB) QueryRow(ctx context.Context, query string, args ...any) r
 		}
 		return &fakeQueryRow{err: sql.ErrNoRows}
 	case strings.Contains(query, "FROM observer_sessions") && strings.Contains(query, "count(*)"):
-		return &fakeQueryRow{values: []any{int64(len(f.sessions))}}
+		var nonTransient int64
+		for _, s := range f.sessions {
+			if !s.isTransient {
+				nonTransient++
+			}
+		}
+		return &fakeQueryRow{values: []any{nonTransient}}
 	case strings.Contains(query, "FROM observer_turns") && strings.Contains(query, "content_state"):
 		var n int64
 		for _, tr := range f.turns {
@@ -830,12 +837,16 @@ func TestOverviewWindows(t *testing.T) {
 func TestOverviewCounts(t *testing.T) {
 	f := newFakeQueryDB()
 	fillSessions(f, 3)
+	// A transient (stateless per-turn) session must not count toward
+	// SessionCount so the overview agrees with the session list, which
+	// excludes transient sessions by default.
+	f.sessions[0].isTransient = true
 	fillTurns(f, 10)
 	f.turns[0].contentState = ContentStateGap
 	f.turns[1].contentState = ContentStateMetadataOnly
 	out, err := overviewQ(context.Background(), f, OverviewQuery{})
 	require.NoError(t, err)
-	assert.Equal(t, int64(3), out.SessionCount)
+	assert.Equal(t, int64(2), out.SessionCount)
 	assert.Equal(t, int64(10), out.TurnCount)
 	assert.Equal(t, int64(2), out.GapCount, "gap and metadata_only both count as gaps")
 }
@@ -1476,17 +1487,31 @@ func TestListSessionsFilterArgs(t *testing.T) {
 		PageSize:  2,
 	})
 	require.NoError(t, err)
-	// The session list has exactly four filter conditions; the fifth argument
-	// is the LIMIT backstop.
+	// The session list defaults to excluding transient sessions (a literal
+	// predicate, no argument) plus four argument-bound filter conditions; the
+	// fifth argument is the LIMIT backstop.
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	require.Len(t, f.sqls, 1)
 	sqlText := f.sqls[0]
+	assert.Contains(t, sqlText, "is_transient = false")
 	assert.Contains(t, sqlText, "node_scope = $1")
 	assert.Contains(t, sqlText, "user_id = $2")
 	assert.Contains(t, sqlText, "last_seen >= $3")
 	assert.Contains(t, sqlText, "last_seen < $4")
 	assert.Contains(t, sqlText, "LIMIT $5")
+}
+
+func TestListSessionsIncludeTransientDropsFilter(t *testing.T) {
+	f := newFakeQueryDB()
+	fillSessions(f, 5)
+	_, err := listSessionsQ(context.Background(), f, SessionQuery{IncludeTransient: true, PageSize: 2})
+	require.NoError(t, err)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	require.Len(t, f.sqls, 1)
+	sqlText := f.sqls[0]
+	assert.NotContains(t, sqlText, "is_transient", "IncludeTransient must not filter transient sessions")
 }
 
 func TestListTurnsFilterArgs(t *testing.T) {

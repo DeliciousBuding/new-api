@@ -984,6 +984,7 @@ func (d *Dispatcher) planContent(batch []queuedEvent) (appends []pendingContentA
 		PreviousKey:     d.cfg.PreviousHMACKey,
 		PreviousVersion: d.cfg.PreviousHMACKeyVersion,
 	}
+	excluded := GetExcludedUsers(d.cfg)
 	appends = make([]pendingContentAppend, 0, len(batch))
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -998,6 +999,14 @@ func (d *Dispatcher) planContent(batch []queuedEvent) (appends []pendingContentA
 		if ev == nil {
 			continue
 		}
+		if len(excluded) > 0 && excluded[ev.UserID] {
+			// Blacklisted user: record the metadata turn only. Content capture
+			// is skipped entirely (no normalization, no identity resolution, no
+			// content append), so no request bytes or canonical items are ever
+			// retained for the excluded user.
+			ev.ContentState = ContentStateMetadataOnly
+			continue
+		}
 		plan := d.normalizeOne(ev)
 		ev.ContentState = plan.state
 		gapCounted := plan.state == ContentStateGap || plan.state == ContentStateMetadataOnly
@@ -1006,24 +1015,43 @@ func (d *Dispatcher) planContent(batch []queuedEvent) (appends []pendingContentA
 		// even when normalization produced no items, so session views see
 		// every turn of an identity chain regardless of capture outcome.
 		idRes, err := ResolveIdentity(ev.Identity, km)
-		if err != nil || idRes.Primary.Digest == "" {
-			// No resolvable session identity (unknown profile, missing or
-			// oversized sources, or an unconfigured HMAC key): no session to
-			// bind. A turn without aliases is never tracked — the event keeps
-			// its normalized ContentState.
+		var aliases []Alias
+		var previousAliases []Alias
+		transient := false
+		switch {
+		case err == nil && idRes.Primary.Digest != "":
+			aliases = append(aliases, idRes.Primary)
+			aliases = append(aliases, idRes.Auxiliary...)
+			if idRes.PreviousPrimary.Digest != "" {
+				previousAliases = append(previousAliases, idRes.PreviousPrimary)
+				previousAliases = append(previousAliases, idRes.PreviousAuxiliary...)
+			}
+		case plan.state == ContentStateMetadataOnly:
+			// No resolvable session identity and no content to bind: a turn
+			// with neither aliases nor items is a no-op. The event keeps its
+			// normalized ContentState and the metadata turn stands alone.
 			if gapCounted {
 				d.contentGaps.Add(1)
 			}
 			continue
-		}
-		aliases := make([]Alias, 0, 1+len(idRes.Auxiliary))
-		aliases = append(aliases, idRes.Primary)
-		aliases = append(aliases, idRes.Auxiliary...)
-		var previousAliases []Alias
-		if idRes.PreviousPrimary.Digest != "" {
-			previousAliases = make([]Alias, 0, 1+len(idRes.PreviousAuxiliary))
-			previousAliases = append(previousAliases, idRes.PreviousPrimary)
-			previousAliases = append(previousAliases, idRes.PreviousAuxiliary...)
+		default:
+			// No resolvable session identity, but content was captured
+			// (full or gap). Stateless traffic gets a per-turn transient
+			// session so its content is persisted and reconstructable; the
+			// deterministic turn row id keys the synthetic alias, so every
+			// turn resolves to exactly its own transient session. A
+			// non-HMAC identity error (or a keyless config that cannot even
+			// mint the transient alias) still fails open to metadata-only.
+			turnID := turnRowID(ev.NodeScope, ev.EventID)
+			transientAlias, genErr := GenerateAlias(turnID.String(), SourceTransientTurn, ScopeUnknown, km)
+			if genErr != nil {
+				if gapCounted {
+					d.contentGaps.Add(1)
+				}
+				continue
+			}
+			aliases = append(aliases, transientAlias)
+			transient = true
 		}
 		input := ContentInput{
 			NodeScope:       ev.NodeScope,
@@ -1033,6 +1061,7 @@ func (d *Dispatcher) planContent(batch []queuedEvent) (appends []pendingContentA
 			PreviousAliases: previousAliases,
 			TurnID:          turnRowID(ev.NodeScope, ev.EventID),
 			ContentState:    plan.state,
+			Transient:       transient,
 			Items:           plan.items,
 		}
 		pending, reserved := d.reservePendingContent(input)

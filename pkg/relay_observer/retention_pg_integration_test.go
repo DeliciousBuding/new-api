@@ -146,10 +146,11 @@ func openRetentionStores(t *testing.T, dsn string) (Store, RetentionStore) {
 }
 
 // TestIntegrationMigrationLifecycle covers the versioned migration path on
-// the live database: every complete historical prefix upgrades to the
-// current version, repeated bootstrap is idempotent, verify rejects an
-// unknown version, and the v2/v3/v4/v5 structural contracts are present
-// with their expected shapes.
+// the live database: every complete historical prefix is rejected by verify,
+// upgraded to the current structure by bootstrap, completed by the index
+// migrations, and then verifies cleanly. Repeated bootstrap is idempotent,
+// verify rejects a lying index shape and an unknown version, and the v2/v3/
+// v4/v9 structural contracts are present with their expected shapes.
 func TestIntegrationMigrationLifecycle(t *testing.T) {
 	dsn := integrationDSN(t)
 	db := openFixturePool(t, dsn)
@@ -159,10 +160,10 @@ func TestIntegrationMigrationLifecycle(t *testing.T) {
 		name       string
 		migrations int
 	}{
-		{name: "v1 upgrades through v4", migrations: 1},
-		{name: "v2 upgrades through v4", migrations: 2},
-		{name: "v3 upgrades through v4", migrations: 3},
-		{name: "v4 upgrades through v4", migrations: 4},
+		{name: "v1 upgrades through current", migrations: 1},
+		{name: "v2 upgrades through current", migrations: 2},
+		{name: "v3 upgrades through current", migrations: 3},
+		{name: "v4 upgrades through current", migrations: 4},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cleanupObserverSchema(t, db)
@@ -173,22 +174,29 @@ func TestIntegrationMigrationLifecycle(t *testing.T) {
 				require.NoError(t, err)
 			}
 
+			// Strict verify: a complete historical prefix is an upgrade
+			// target, never current — verify rejects it and directs to
+			// bootstrap.
 			store, err := OpenPGStore(ctx, dsn, SchemaModeVerify)
-			require.NoError(t, err, "verify must accept a complete historical prefix")
-			require.NoError(t, store.Close(ctx))
+			require.Error(t, err, "verify must reject a complete historical prefix")
+			assert.Nil(t, store)
 
 			store, err = OpenPGStore(ctx, dsn, SchemaModeBootstrap)
 			require.NoError(t, err, "bootstrap must upgrade the prefix to current structure")
+			// Structure versions land synchronously; the index migrations
+			// v5-v8 land asynchronously, so the schema is only verify-ready
+			// once their version rows land.
+			waitForCurrentSchema(t, db)
 			require.NoError(t, store.Close(ctx))
-			// Structure migrates synchronously; the index migration runs
-			// asynchronously, so bootstrap leaves [1,2,3,4] and the v5 index
-			// is applied separately (idempotently) below.
-			assertSchemaVersions(t, db, []int{1, 2, 3, 4})
 			assertStructureSchemaShape(t, db)
 
 			require.NoError(t, applyIndexMigrations(ctx, db))
-			assertSchemaVersions(t, db, []int{1, 2, 3, 4, 5})
+			assertSchemaVersions(t, db, []int{1, 2, 3, 4, 5, 6, 7, 8, 9})
 			assertV5TranscriptIndex(t, db)
+
+			verifyStore, err := OpenPGStore(ctx, dsn, SchemaModeVerify)
+			require.NoError(t, err, "verify must pass once the prefix is upgraded to current")
+			require.NoError(t, verifyStore.Close(ctx))
 		})
 	}
 
@@ -196,7 +204,7 @@ func TestIntegrationMigrationLifecycle(t *testing.T) {
 	store, err := OpenPGStore(ctx, dsn, SchemaModeBootstrap)
 	require.NoError(t, err, "repeated bootstrap must be idempotent")
 	require.NoError(t, store.Close(ctx))
-	assertSchemaVersions(t, db, []int{1, 2, 3, 4, 5})
+	assertSchemaVersions(t, db, []int{1, 2, 3, 4, 5, 6, 7, 8, 9})
 
 	// A version row is not sufficient: verify must reject an index with the
 	// right name but the legacy four-column shape.
@@ -229,17 +237,16 @@ func TestIntegrationMigrationLifecycle(t *testing.T) {
 	store, err = OpenPGStore(ctx, dsn, SchemaModeBootstrap)
 	require.NoError(t, err, "bootstrap must create the current schema on an empty database")
 	require.NoError(t, store.Close(ctx))
-	assertSchemaVersions(t, db, []int{1, 2, 3, 4})
 	assertStructureSchemaShape(t, db)
 	require.NoError(t, applyIndexMigrations(ctx, db))
-	assertSchemaVersions(t, db, []int{1, 2, 3, 4, 5})
+	assertSchemaVersions(t, db, []int{1, 2, 3, 4, 5, 6, 7, 8, 9})
 	assertV5TranscriptIndex(t, db)
 }
 
 // assertStructureSchemaShape asserts the structure-only shape after bootstrap:
-// the v2 created_at column, the v3 composite indexes, and the v4 alias
-// identity index. The v5 transcript index is asserted separately after the
-// asynchronous index migration runs.
+// the v2 created_at column, the v3 composite indexes, the v4 alias identity
+// index, and the v9 is_transient transient-session column. The v5 transcript
+// index is asserted separately after the asynchronous index migration runs.
 func assertStructureSchemaShape(t *testing.T, db *sql.DB) {
 	t.Helper()
 	var colExists bool
@@ -249,6 +256,10 @@ func assertStructureSchemaShape(t *testing.T, db *sql.DB) {
 	var notNull int
 	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_content_objects WHERE created_at IS NULL`).Scan(&notNull))
 	assert.Zero(t, notNull, "created_at is NOT NULL")
+	var transientExists bool
+	require.NoError(t, db.QueryRow(`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'observer_sessions' AND column_name = 'is_transient')`).Scan(&transientExists))
+	assert.True(t, transientExists, "current schema must include v9 is_transient")
 	assertV3Indexes(t, db)
 	assertV4AliasIndex(t, db)
 }
@@ -402,10 +413,12 @@ func TestIntegrationRetentionSessionDeletion(t *testing.T) {
 }
 
 // TestIntegrationRetentionOrphanGraceAndReferenceSafety covers the orphan
-// rules: content past its grace period with no retained context reference is
-// deleted; content still referenced by any retained context of its session is
-// kept no matter how old; content inside its grace period is kept even
-// without references.
+// rules at the session granularity: content of a session that still has a
+// retained context survives the sweep regardless of per-digest references;
+// old content of a session with no retained contexts is reclaimed; content
+// inside its grace period is kept even without references. Reference safety
+// is per session (the btree-indexed probe), never a per-digest JSONB
+// containment scan.
 func TestIntegrationRetentionOrphanGraceAndReferenceSafety(t *testing.T) {
 	dsn := integrationDSN(t)
 	s := resetObserverSchema(t, dsn)
@@ -417,41 +430,38 @@ func TestIntegrationRetentionOrphanGraceAndReferenceSafety(t *testing.T) {
 	scope := uniqueScope("t51-orphan")
 	cutoff := time.Now().Add(-14 * 24 * time.Hour)
 
-	// Session A: one retained context referencing digest A, plus one
-	// unreferenced object with digest B. Session B: one retained context
-	// referencing digest A as well (cross-session digest sharing must not
-	// interfere — references are per (session, digest)).
+	// Session A keeps a retained context, so ALL its content — even old,
+	// unreferenced digests — survives the sweep. Session B has no retained
+	// context: its old content is reclaimed, its fresh content survives the
+	// grace period.
 	sidA := insertSessionRow(t, db, scope, time.Now())
 	sidB := insertSessionRow(t, db, scope, time.Now())
 	turnA := insertTurnRow(t, db, scope, "a", time.Now(), &sidA)
-	turnB := insertTurnRow(t, db, scope, "b", time.Now(), &sidB)
 
-	// Objects: digest A of session A is old but referenced; digest B of
-	// session A is old and unreferenced; digest A of session B is fresh and
-	// referenced.
 	insertObjectRow(t, db, sidA, digestAHex, time.Now().Add(-31*24*time.Hour))
 	insertObjectRow(t, db, sidA, digestBHex, time.Now().Add(-31*24*time.Hour))
-	insertObjectRow(t, db, sidB, digestAHex, time.Now())
+	insertObjectRow(t, db, sidB, digestAHex, time.Now().Add(-31*24*time.Hour))
+	insertObjectRow(t, db, sidB, digestBHex, time.Now())
 	insertContextRow(t, db, sidA, turnA, digestsJSON(digestAHex))
-	insertContextRow(t, db, sidB, turnB, digestsJSON(digestAHex))
 
 	n, err := store.DeleteOrphanContent(ctx, cutoff, 1000)
 	require.NoError(t, err)
-	assert.Equal(t, 1, n, "only the old unreferenced object may be deleted")
+	assert.Equal(t, 1, n, "only old content of the context-less session may be deleted")
 
 	var count int
-	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_content_objects WHERE session_id = $1 AND item_digest = $2`, sidA, digestA).Scan(&count))
-	assert.Equal(t, 1, count, "old content still referenced by a retained context must survive")
-	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_content_objects WHERE session_id = $1 AND item_digest = $2`, sidA, digestB).Scan(&count))
-	assert.Zero(t, count, "old unreferenced content must be deleted")
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_content_objects WHERE session_id = $1`, sidA).Scan(&count))
+	assert.Equal(t, 2, count, "a session with a retained context keeps all its content")
 	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_content_objects WHERE session_id = $1 AND item_digest = $2`, sidB, digestA).Scan(&count))
+	assert.Zero(t, count, "old content of a context-less session must be deleted")
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM observer_content_objects WHERE session_id = $1 AND item_digest = $2`, sidB, digestB).Scan(&count))
 	assert.Equal(t, 1, count, "fresh content must survive its grace period regardless of references")
 
-	// Once the retained context goes, the old object becomes deletable.
+	// Once the session's last retained context goes, the session's content
+	// becomes reclaimable in one sweep.
 	requireTurnDeleted(t, store, ctx, uuid.MustParse(turnA))
 	n, err = store.DeleteOrphanContent(ctx, cutoff, 1000)
 	require.NoError(t, err)
-	assert.Equal(t, 1, n, "content becomes an orphan once its last retained context is gone")
+	assert.Equal(t, 2, n, "content of a session whose contexts are all gone becomes orphan")
 }
 
 // TestIntegrationRetentionSharedDigestAcrossContexts covers the reference
@@ -650,7 +660,12 @@ func TestIntegrationRetentionFullCheckpointKeepsDeltaAlive(t *testing.T) {
 		VALUES ($1, $2, $3, 1, 1, 2, $4::jsonb, 10)`, sid, deltaTurn, fullCtxID, digestsJSON(digestBHex))
 	require.NoError(t, err)
 
-	requireTurnDeleted(t, store, ctx, uuid.MustParse(fullTurn))
+	// The full checkpoint is referenced by the retained delta: its turn
+	// deletion is a no-op (returns false) and the turn survives for a later
+	// pass.
+	deleted, err := store.DeleteTurnRetention(ctx, uuid.MustParse(fullTurn))
+	require.NoError(t, err)
+	assert.False(t, deleted, "a full checkpoint referenced by a retained delta must not be deleted")
 
 	var count int
 	require.NoError(t, db.QueryRow("SELECT count(*) FROM observer_turns WHERE id = $1", fullTurn).Scan(&count))

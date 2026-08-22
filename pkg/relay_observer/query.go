@@ -177,6 +177,11 @@ type SessionQuery struct {
 	// From/To bound the session recency by last_seen; zero means unbounded.
 	From time.Time
 	To   time.Time
+	// IncludeTransient includes per-turn transient sessions (stateless
+	// traffic) in the page. The default false excludes them so the session
+	// list shows real identity sessions; the global turn browser is the view
+	// for stateless traffic.
+	IncludeTransient bool
 	// PageSize is clamped into [DefaultPageSize, MaxPageSize].
 	PageSize int
 	// Cursor is the opaque keyset cursor of the next page; empty means the
@@ -538,6 +543,12 @@ func listSessionsQ(ctx context.Context, q contentQuerier, query SessionQuery) (S
 
 	var conds []string
 	var args []any
+	if !query.IncludeTransient {
+		// The session list defaults to real identity sessions: per-turn
+		// transient sessions of stateless traffic are browsed through the
+		// global turn list, not the session list.
+		conds = append(conds, "is_transient = false")
+	}
 	if query.NodeScope != "" {
 		conds = append(conds, "node_scope = $"+strconv.Itoa(len(args)+1))
 		args = append(args, query.NodeScope)
@@ -774,7 +785,7 @@ LIMIT $3`, float64(winSec), start, windows+1)
 		out.Windows = out.Windows[:windows]
 	}
 
-	if err := q.QueryRow(ctx, `SELECT count(*) FROM observer_sessions`).Scan(&out.SessionCount); err != nil {
+	if err := q.QueryRow(ctx, `SELECT count(*) FROM observer_sessions WHERE is_transient = false`).Scan(&out.SessionCount); err != nil {
 		return out, fmt.Errorf("relayobserver: query overview session count: %w", err)
 	}
 	if err := q.QueryRow(ctx, `SELECT count(*) FROM observer_turns`).Scan(&out.TurnCount); err != nil {
