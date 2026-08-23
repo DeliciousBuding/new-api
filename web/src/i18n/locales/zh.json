@@ -5453,5 +5453,15 @@
     "Turn Detail": "请求详情",
     "gap": "缺口",
     "truncated": "已截断"
-  }
+  },
+  "Cache Usage Aggregation": "缓存用量预聚合",
+  "Cache Usage Aggregation Enabled": "启用缓存用量预聚合",
+  "Aggregate cache usage from logs into an hourly table so the Keys page and dashboard trend load in under a second instead of running slow scans over the logs table.": "将日志中的缓存用量聚合到小时粒度表，使 Keys 页与看板趋势在秒级内加载，无需对日志表执行慢扫描。",
+  "Aggregation Interval (minutes)": "聚合间隔（分钟）",
+  "Between 5 and 60 minutes. Default is 15.": "5 到 60 分钟，默认 15。",
+  "Covered From": "覆盖起点",
+  "Ready Through": "已聚合至",
+  "Last Run": "上次运行",
+  "Latest Task": "最近任务",
+  "No task yet": "暂无任务"
 }

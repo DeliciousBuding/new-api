@@ -287,6 +287,8 @@ func migrateDB() error {
 		&CustomOAuthProvider{},
 		&UserOAuthBinding{},
 		&PerfMetric{},
+		&TokenCacheUsageHourly{},
+		&CacheUsageAggregationMeta{},
 		&SystemInstance{},
 		&SystemTask{},
 		&SystemTaskLock{},

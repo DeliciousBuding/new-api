@@ -30,6 +30,15 @@
 - 禁止无 fallback 的库专属特性：MySQL-only 函数、PostgreSQL-only 操作符、SQLite 不支持的 `ALTER COLUMN`、无 `TEXT` fallback 的库专属 JSON 列类型。
 - 迁移必须三库可用；SQLite 用 `ALTER TABLE ... ADD COLUMN`（参考 `model/main.go` 模式）。
 
+## Cache 用量聚合表（token_cache_usage_hourly / cache_usage_aggregation_meta）
+
+主库聚合表（`model/cache_usage_aggregation.go`）的方言约定：
+
+- **upsert 覆盖写**：`UpsertCacheUsageHourly` / `SaveCacheUsageAggregationMeta` 用 GORM `clause.OnConflict` + `clause.AssignmentColumns`（`SET col = excluded.col` 覆盖语义，非累加——logs 只 INSERT，每小时重算整体替换）。三库方言由 GORM 处理，不手写 ON CONFLICT / ON DUPLICATE KEY 分支。
+- **小时桶表达式**：`cacheHourBucketExpr()`（`model/cache_usage_aggregation.go`）——MySQL `(created_at DIV 3600)`（`/` 返回 decimal 会碎桶）、ClickHouse `intDiv(created_at, 3600)`、PostgreSQL/SQLite `(created_at / 3600)`。与 `cacheDayBucketExpr` 同源，但 3600 必须用独立函数，不可直接复用 86400 版。
+- **删除清理**：`DeleteCacheUsageHourlyBefore` 用单条 DELETE，刻意不用 `Limit`——GORM v1.25 的 postgres driver 会静默丢弃 DELETE 的 LIMIT（伪分批）；聚合表 90 天 ≈ 21.6 万行，单条删除毫秒级。
+- 聚合表在主库（不受 LOG_DB=ClickHouse 影响）；读侧聚合 SQL 从 logs 提取 JSONB 时复用 `cacheJsonExtractExpr`/`cacheRateInputExpr` 的现有多库分支。
+
 ## GORM 布尔默认标签
 
 默认值属于业务规则时避免 `gorm:"default:true"`——MySQL/PostgreSQL 对布尔默认的归一化不同，会导致 `AutoMigrate` 重启时反复 `ALTER TABLE`。优先在请求/模型归一化、hooks、构造函数或 service 逻辑里设默认；除非三库验证过，不要换成 `default:1`。

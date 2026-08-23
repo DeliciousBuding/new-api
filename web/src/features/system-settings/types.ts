@@ -250,6 +250,8 @@ export type ModelSettings = {
   'vision_relay.max_total_bytes': number
   'vision_relay.default_max_tokens': number
   'vision_relay.max_fallback_models': number
+  'cache_usage_aggregation.enabled': boolean
+  'cache_usage_aggregation.interval_minutes': number
   ModelPrice: string
   ModelRatio: string
   CacheRatio: string
@@ -495,4 +497,23 @@ export type UpstreamRatiosResponse = {
     differences: DifferencesMap
     test_results: TestResult[]
   }
+}
+
+export type CacheUsageAggregationStatus = {
+  enabled: boolean
+  interval_minutes: number
+  covered_from_hour: number
+  ready_hour: number
+  last_run_at: number
+  latest_task: {
+    status: SystemTaskStatus
+    error: string
+    result: string
+  } | null
+}
+
+export type CacheUsageAggregationStatusResponse = {
+  success: boolean
+  message: string
+  data?: CacheUsageAggregationStatus
 }

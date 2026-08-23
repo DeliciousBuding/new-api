@@ -45,8 +45,8 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 
 | 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
 |---|---|---|---|---|
-| `router/api-router.go` | vision/settings 原子更新路由 + observer transcript API 路由 | `787da7e5a` `7c0205bc4` | `docs/dev/vision-relay.md`、`docs/dev/relay-observer.md` | **高** |
-| `controller/option.go` | 设置端点：批量原子更新、完整写入守卫、secret keep/clear 契约 | `787da7e5a` | `docs/dev/vision-relay.md` | 中 |
+| `router/api-router.go` | vision/settings 原子更新路由 + observer transcript API 路由 + cache 用量预聚合状态路由 | `787da7e5a` `7c0205bc4` | `docs/dev/vision-relay.md`、`docs/dev/relay-observer.md`、`docs/dev/database-compatibility.md`（Cache 用量聚合表节） | **高** |
+| `controller/option.go` | 设置端点：批量原子更新、完整写入守卫、secret keep/clear 契约 + cache_usage_aggregation 写侧校验 case | `787da7e5a` | `docs/dev/vision-relay.md` | 中 |
 
 ### 计费 / 配额（billing）
 
@@ -133,10 +133,13 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 |---|---|---|---|---|
 | `main.go` | observer runtime init（fail-open）+ geoip 引入 + embed 基线 | `847829bca` | `docs/dev/relay-observer.md` | **高** |
 | `controller/relay.go` | vision relay 钩子 + observer 观测 + channel affinity 软失败解绑 + SSE 诊断落库（#152：message 脱敏 + request_id 截断 + 每轮重试清 key） | `847829bca` `8fdbbff9e` | `docs/dev/vision-relay.md`、`docs/dev/relay-observer.md` | 中 |
-| `controller/log.go` | 缓存用量聚合统计 + 90 天窗口限制 | `847829bca` | — | 中 |
+| `controller/log.go` | 缓存用量聚合统计 + 90 天窗口限制 + cache 用量预聚合三段选路（水位 fail-safe 回退全实时） | `847829bca` | `docs/dev/database-compatibility.md`（Cache 用量聚合表节） | 中 |
 | `model/log.go` | 日志 locality 提示（`attachGeoInfoToOther`/geoip）+ 品牌注释 scrub | `847829bca` `c178e645e` | — | **高** |
 | `model/option.go` | `LogRecordIpEnabled` 选项接入 | `847829bca` | — | 中 |
 | `middleware/distributor.go` | channel affinity 软失败计数重置 | `847829bca` | — | 中 |
+| `model/main.go` | cache 用量预聚合两表 AutoMigrate（token_cache_usage_hourly / cache_usage_aggregation_meta） | — | `docs/dev/database-compatibility.md`（Cache 用量聚合表节） | 低 |
+| `model/system_task.go` | cache 用量聚合任务类型常量 | — | `docs/dev/database-compatibility.md`（Cache 用量聚合表节） | 低 |
+| `controller/system_task_handlers.go` | 注册 cache 用量聚合定时任务（一行；handler 定义在 fork 文件 `controller/cache_usage_aggregation.go`） | — | `docs/dev/database-compatibility.md`（Cache 用量聚合表节） | 低 |
 | `common/constants.go` | `LogRecordIpEnabled` 开关 + 品牌注释 scrub | `847829bca` `c178e645e` | — | 中 |
 | `logger/logger.go` | 日志计数/状态原子化（`atomic.Int64`/`atomic.Bool`，并发安全） | `847829bca` | — | 低 |
 | `model/log_format_test.go` | 日志格式化测试基线 | `847829bca` | — | 低 |

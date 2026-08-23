@@ -343,6 +343,8 @@ export function ModelMutateDrawer({
       'vision_relay.max_total_bytes': 48000,
       'vision_relay.default_max_tokens': 2000,
       'vision_relay.max_fallback_models': 3,
+      'cache_usage_aggregation.enabled': false,
+      'cache_usage_aggregation.interval_minutes': 15,
       RetryTimes: 0,
       ChannelDisableThreshold: '',
       AutomaticDisableChannelEnabled: false,

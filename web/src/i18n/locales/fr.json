@@ -5453,5 +5453,15 @@
     "Turn Detail": "Turn Detail",
     "gap": "gap",
     "truncated": "truncated"
-  }
+  },
+  "Cache Usage Aggregation": "Cache Usage Aggregation",
+  "Cache Usage Aggregation Enabled": "Cache Usage Aggregation Enabled",
+  "Aggregate cache usage from logs into an hourly table so the Keys page and dashboard trend load in under a second instead of running slow scans over the logs table.": "Aggregate cache usage from logs into an hourly table so the Keys page and dashboard trend load in under a second instead of running slow scans over the logs table.",
+  "Aggregation Interval (minutes)": "Aggregation Interval (minutes)",
+  "Between 5 and 60 minutes. Default is 15.": "Between 5 and 60 minutes. Default is 15.",
+  "Covered From": "Covered From",
+  "Ready Through": "Ready Through",
+  "Last Run": "Last Run",
+  "Latest Task": "Latest Task",
+  "No task yet": "No task yet"
 }
