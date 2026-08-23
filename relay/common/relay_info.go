@@ -185,23 +185,6 @@ type RelayInfo struct {
 	*TaskRelayInfo
 }
 
-// ResponseModelName returns the model name echoed in relay responses. The
-// channel-level response_model setting selects between the origin (downstream
-// request) name and the upstream-visible name; the default is upstream so
-// channels without the setting keep pass-through behavior unchanged.
-func (info *RelayInfo) ResponseModelName() string {
-	if info == nil {
-		return ""
-	}
-	if info.ChannelMeta == nil {
-		return info.OriginModelName
-	}
-	if info.ChannelSetting.ResponseModel == dto.ResponseModelOrigin {
-		return info.OriginModelName
-	}
-	return info.UpstreamModelName
-}
-
 func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	channelType := common.GetContextKeyInt(c, constant.ContextKeyChannelType)
 	paramOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelParamOverride)
@@ -764,6 +747,25 @@ func (info *RelayInfo) GetUpstreamModelName() string {
 }
 
 func (info *RelayInfo) HasChannelMeta() bool { return info != nil && info.ChannelMeta != nil }
+
+// ResponseModelOriginEnabled reports whether the channel-level response_model
+// setting selects the origin echo mode. Safe on nil receiver and nil
+// ChannelMeta (used by response rewrite gates on relay hot paths).
+func (info *RelayInfo) ResponseModelOriginEnabled() bool {
+	return info != nil && info.ChannelMeta != nil &&
+		info.ChannelSetting.ResponseModel == dto.ResponseModelOrigin
+}
+
+// ResponseModelName returns the model name echoed in relay responses. The
+// channel-level response_model setting selects between the origin (downstream
+// request) name and the upstream-visible name; the default is upstream so
+// channels without the setting keep pass-through behavior unchanged.
+func (info *RelayInfo) ResponseModelName() string {
+	if info.ResponseModelOriginEnabled() {
+		return info.GetOriginModelName()
+	}
+	return info.GetUpstreamModelName()
+}
 
 func (info *RelayInfo) GetChannelID() int {
 	if info == nil || info.ChannelMeta == nil {

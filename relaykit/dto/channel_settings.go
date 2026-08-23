@@ -61,6 +61,19 @@ func (s *ChannelSettings) ValidateHTTPTransport() error {
 	return nil
 }
 
+// ValidateResponseModel validates save-time response model echo settings.
+func (s *ChannelSettings) ValidateResponseModel() error {
+	if s == nil {
+		return nil
+	}
+	switch s.ResponseModel {
+	case "", ResponseModelUpstream, ResponseModelOrigin:
+		return nil
+	default:
+		return fmt.Errorf("invalid response_model: %s", s.ResponseModel)
+	}
+}
+
 type VertexKeyType string
 
 const (

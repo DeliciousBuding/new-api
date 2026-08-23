@@ -43,14 +43,18 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 
 ### 响应模型名回显（response_model 开关）
 
+> 全协议面收敛原则：所有「响应里带 model 字段」的出口统一走 `RelayInfo.ResponseModelName()`（默认返回 `UpstreamModelName`，与上游原值严格等价）；直通透传路径仅 origin 模式做轻量改写（`ResponseModelOriginEnabled()` 门控，nil-safe）。P2 记录不修：rerank/image/TTS 响应无 model 字段；legacy 原生渠道硬编码占位名（palm/baidu/zhipu 等）；task 类已用 OriginModelName。
+
 | 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
 |---|---|---|---|---|
-| `relay/channel/openai/relay-openai.go` | 渠道级 `response_model=origin`：流式 chunk 轻量改写（含 `"model"` 键才解析）、流式 final/usage chunk 回显请求名、非流式 bodyMap 改写（与 usage 补全合并分支） | `50488a00f` | —（上游文件最小钩子，逻辑在 `relay/common` helper） | 中 |
-| `relay/channel/openai/helper.go` | Claude/Gemini 输出格式转换前回显请求名 | `50488a00f` | — | 低 |
-| `relay/common/relay_info.go` | `ResponseModelName()` 统一回显策略（默认上游名零行为变化） | `50488a00f` | — | 低 |
-| `relay/channel/gemini/relay-gemini.go` `relay_responses.go`、`cohere/relay-cohere.go`、`cloudflare/relay_cloudflare.go`、`coze/relay-coze.go` | 原生适配层响应赋 model 处统一走 `ResponseModelName()`（共 9 处） | `50488a00f` | — | 低 |
-| `relaykit/dto/channel_settings.go` | `ChannelSettings.ResponseModel` 字段 + 常量（纯增量 dto，relaykit 独立构建不受影响） | `50488a00f` | — | 低 |
-| `web/src/features/channels/*` + `web/src/i18n/locales/*` | 渠道编辑表单「响应模型名」三态下拉 + i18n 全语言 | `50488a00f` | — | 低 |
+| `relay/channel/openai/relay-openai.go` | 流式 chunk 轻量改写（含 `"model"` 键才解析）+ final/usage chunk 回显 + 非流式 bodyMap 改写；默认模式零触碰（usage 补全块保持上游 switch 内原位置） | `50488a00f` | — | 中 |
+| `relay/channel/openai/helper.go` | Claude 输出格式转换前回显（Gemini 输出转换不引用输入 Model，无需改） | `50488a00f` | — | 低 |
+| `relay/channel/openai/relay_responses.go` `chat_via_responses.go` `responses_via_chat.go` `relay_realtime.go` | Responses API 非流式/流式事件、chat↔responses 转换路径、Realtime WS 事件的 model 回显 | `50488a00f` | — | 中 |
+| `relay/channel/claude/relay-claude.go` | 原生 Claude 直通（流式/非流式）+ OpenAI 格式转换 + final usage chunk 回显 | `50488a00f` | — | 中 |
+| `relay/common/relay_info.go` | `ResponseModelName()` / `ResponseModelOriginEnabled()` 统一回显策略与 origin 门控（nil-safe） | `50488a00f` | — | 低 |
+| `relay/channel/gemini/relay-gemini.go` `relay_responses.go`、`cohere/relay-cohere.go`、`cloudflare/relay_cloudflare.go`、`coze/relay-coze.go`、`xai/text.go`、`ollama/stream.go` `relay-ollama.go`、`aws/relay-aws.go` | 原生适配层响应赋 model 点统一走 `ResponseModelName()`（含流式 final/stop chunk、embeddings、上游回显透传点的 origin 门控） | `50488a00f` | — | 低 |
+| `relaykit/dto/channel_settings.go` + `model/channel.go` | `ChannelSettings.ResponseModel` 字段 + 常量 + `ValidateResponseModel` save-time 校验（对照 `ValidateHTTPTransport` 模式接线） | `50488a00f` | — | 低 |
+| `web/src/features/channels/*` + `web/src/i18n/locales/*` | 渠道编辑表单「响应模型名」三态下拉 + extraSettingsConfigured 徽标 + i18n 全语言 | `50488a00f` | — | 低 |
 
 ### 路由 / 设置
 

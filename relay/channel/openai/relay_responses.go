@@ -34,6 +34,20 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
+	// 响应模型名回显策略：origin 模式下把顶层 model 字段改写为下游请求名。
+	// 默认模式不触碰 body（严格零行为变化）。
+	if info.ResponseModelOriginEnabled() &&
+		info.OriginModelName != responsesResponse.Model {
+		var bodyMap map[string]interface{}
+		err = common.Unmarshal(responseBody, &bodyMap)
+		if err != nil {
+			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+		responsesResponse.Model = info.OriginModelName
+		bodyMap["model"] = info.OriginModelName
+		responseBody, _ = common.Marshal(bodyMap)
+	}
+
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
@@ -93,6 +107,17 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			logger.LogError(c, "failed to unmarshal stream response: "+err.Error())
 			sr.Error(err)
 			return
+		}
+		// 响应模型名回显策略：origin 模式下改写 response.created/completed
+		// 等事件携带的 response.model；默认模式原样透传。
+		if info.ResponseModelOriginEnabled() &&
+			streamResponse.Response != nil &&
+			streamResponse.Response.Model != "" &&
+			streamResponse.Response.Model != info.OriginModelName {
+			streamResponse.Response.Model = info.OriginModelName
+			if rewritten, err := common.Marshal(streamResponse); err == nil {
+				data = string(rewritten)
+			}
 		}
 		sendResponsesStreamData(c, streamResponse, data)
 		switch streamResponse.Type {

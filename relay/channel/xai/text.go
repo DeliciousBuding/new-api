@@ -60,6 +60,10 @@ func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 
 		openaiResponse := streamResponseXAI2OpenAI(xAIResp, usage)
+		// 响应模型名回显策略：origin 模式下回显请求名；默认保持上游回显。
+		if info.ResponseModelOriginEnabled() {
+			openaiResponse.Model = info.OriginModelName
+		}
 		_ = openai.ProcessStreamResponse(*openaiResponse, &responseTextBuilder, &toolCount)
 		if err := helper.ObjectData(c, openaiResponse); err != nil {
 			common.SysLog(err.Error())
@@ -92,6 +96,12 @@ func xAIHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response
 	if xaiResponse.Usage != nil {
 		xaiResponse.Usage.CompletionTokens = xaiResponse.Usage.TotalTokens - xaiResponse.Usage.PromptTokens
 		xaiResponse.Usage.CompletionTokenDetails.TextTokens = xaiResponse.Usage.CompletionTokens - xaiResponse.Usage.CompletionTokenDetails.ReasoningTokens
+	}
+
+	// 响应模型名回显策略：origin 模式下回显请求名；默认保持上游回显。
+	if info.ResponseModelOriginEnabled() &&
+		xaiResponse.Model != info.OriginModelName {
+		xaiResponse.Model = info.OriginModelName
 	}
 
 	// new body

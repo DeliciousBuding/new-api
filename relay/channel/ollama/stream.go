@@ -104,7 +104,7 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	helper.SetEventStreamHeaders(c)
 	scanner := helper.NewStreamScanner(resp.Body)
 	usage := &dto.Usage{}
-	var model = info.UpstreamModelName
+	var model = info.ResponseModelName()
 	var responseId = common.GetUUID()
 	var created = time.Now().Unix()
 	var toolCallIndex int

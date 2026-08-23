@@ -28,7 +28,7 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 	// 响应模型名回显策略：origin 模式下把流式 chunk 顶层的 model 字段改写为
 	// 下游请求名。仅当 chunk 含 "model" 键才解析改写（绝大多数 chunk 不带
 	// model 字段，零额外开销）；改写失败时原样透传。
-	if info.ChannelSetting.ResponseModel == dto.ResponseModelOrigin &&
+	if info.ResponseModelOriginEnabled() &&
 		strings.Contains(data, `"model"`) {
 		var chunk map[string]interface{}
 		if err := common.Unmarshal(common.StringToByteSlice(data), &chunk); err == nil {
@@ -38,6 +38,8 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 					data = string(rewritten)
 				}
 			}
+		} else {
+			common.SysLog("error rewriting stream chunk model: " + err.Error())
 		}
 	}
 
@@ -206,7 +208,10 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	}
 
 	// 响应模型名回显策略：origin 模式下 final/usage chunk 的 model 也用请求名。
-	model = info.ResponseModelName()
+	// 默认模式保持上游最后 chunk 透传的 model（零行为变化）。
+	if info.ResponseModelOriginEnabled() {
+		model = info.ResponseModelName()
+	}
 	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
 
 	return usage, nil
@@ -310,27 +315,30 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	// 响应模型名回显策略：origin 模式下把顶层 model 字段改写为下游请求名。
 	// simpleResponse 同步改写，使 forceFormat 与格式转换分支（Claude、Gemini
-	// 输出）一并生效。
-	responseModel := info.ResponseModelName()
-	modelRewritten := responseModel != simpleResponse.Model
-	if usageModified || modelRewritten {
+	// 输出）一并生效。默认模式不触碰 model（严格零行为变化）。
+	if info.ResponseModelOriginEnabled() &&
+		info.OriginModelName != simpleResponse.Model {
 		var bodyMap map[string]interface{}
 		err = common.Unmarshal(responseBody, &bodyMap)
 		if err != nil {
 			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
-		if usageModified {
-			bodyMap["usage"] = simpleResponse.Usage
-		}
-		if modelRewritten {
-			simpleResponse.Model = responseModel
-			bodyMap["model"] = responseModel
-		}
+		simpleResponse.Model = info.OriginModelName
+		bodyMap["model"] = info.OriginModelName
 		responseBody, _ = common.Marshal(bodyMap)
 	}
 
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
+		if usageModified {
+			var bodyMap map[string]interface{}
+			err = common.Unmarshal(responseBody, &bodyMap)
+			if err != nil {
+				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+			}
+			bodyMap["usage"] = simpleResponse.Usage
+			responseBody, _ = common.Marshal(bodyMap)
+		}
 		if forceFormat {
 			responseBody, err = common.Marshal(simpleResponse)
 			if err != nil {

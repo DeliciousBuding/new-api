@@ -100,6 +100,12 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		maybeMarkClaudeRefusal(c, *claudeResponse.Delta.StopReason)
 	}
 	if info.RelayFormat == types.RelayFormatClaude {
+		// 响应模型名回显策略：origin 模式下直通 chunk 的 model 用请求名；
+		// 默认模式保持上游原值。
+		if info.ResponseModelOriginEnabled() &&
+			claudeResponse.Model != "" && claudeResponse.Model != info.OriginModelName {
+			claudeResponse.Model = info.OriginModelName
+		}
 		FormatClaudeResponseInfo(&claudeResponse, nil, claudeInfo)
 
 		if claudeResponse.Type == "message_start" {
@@ -181,7 +187,7 @@ func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, clau
 	} else if info.RelayFormat == types.RelayFormatOpenAI {
 		if info.ShouldIncludeUsage {
 			openAIUsage := buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
-			response := helper.GenerateFinalUsageResponse(claudeInfo.ResponseId, claudeInfo.Created, info.UpstreamModelName, openAIUsage)
+			response := helper.GenerateFinalUsageResponse(claudeInfo.ResponseId, claudeInfo.Created, info.ResponseModelName(), openAIUsage)
 			err := helper.ObjectData(c, response)
 			if err != nil {
 				common.SysLog("send final response failed: " + err.Error())
@@ -195,7 +201,7 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 	claudeInfo := &ClaudeResponseInfo{
 		ResponseId:   helper.GetResponseID(c),
 		Created:      common.GetTimestamp(),
-		Model:        info.UpstreamModelName,
+		Model:        info.ResponseModelName(),
 		ResponseText: strings.Builder{},
 		Usage:        &dto.Usage{},
 	}
@@ -248,7 +254,17 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 			return types.NewError(err, types.ErrorCodeBadResponseBody)
 		}
 	case types.RelayFormatClaude:
-		responseData = data
+		// 响应模型名回显策略：origin 模式下直通响应的 model 用请求名；
+		// 默认模式保持上游原字节透传。
+		if info.ResponseModelOriginEnabled() &&
+			claudeResponse.Model != "" && claudeResponse.Model != info.OriginModelName {
+			claudeResponse.Model = info.OriginModelName
+			if rewritten, err := common.Marshal(claudeResponse); err == nil {
+				responseData = rewritten
+			}
+		} else {
+			responseData = data
+		}
 	}
 
 	if claudeResponse.Usage != nil && claudeResponse.Usage.ServerToolUse != nil && claudeResponse.Usage.ServerToolUse.WebSearchRequests > 0 {
@@ -271,7 +287,7 @@ func ClaudeHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 	claudeInfo := &ClaudeResponseInfo{
 		ResponseId:   helper.GetResponseID(c),
 		Created:      common.GetTimestamp(),
-		Model:        info.UpstreamModelName,
+		Model:        info.ResponseModelName(),
 		ResponseText: strings.Builder{},
 		Usage:        &dto.Usage{},
 	}

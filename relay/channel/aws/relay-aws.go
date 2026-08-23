@@ -240,7 +240,7 @@ func awsHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types
 	claudeInfo := &claude.ClaudeResponseInfo{
 		ResponseId:   helper.GetResponseID(c),
 		Created:      common.GetTimestamp(),
-		Model:        info.UpstreamModelName,
+		Model:        info.ResponseModelName(),
 		ResponseText: strings.Builder{},
 		Usage:        &dto.Usage{},
 	}
@@ -272,7 +272,7 @@ func awsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (
 	claudeInfo := &claude.ClaudeResponseInfo{
 		ResponseId:   helper.GetResponseID(c),
 		Created:      common.GetTimestamp(),
-		Model:        info.UpstreamModelName,
+		Model:        info.ResponseModelName(),
 		ResponseText: strings.Builder{},
 		Usage:        &dto.Usage{},
 	}
@@ -350,7 +350,7 @@ func handleNovaRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) 
 		Id:      helper.GetResponseID(c),
 		Object:  "chat.completion",
 		Created: common.GetTimestamp(),
-		Model:   info.UpstreamModelName,
+		Model:   info.ResponseModelName(),
 		Choices: []dto.OpenAITextResponseChoice{{
 			Index: 0,
 			Message: dto.Message{
