@@ -40,6 +40,9 @@ func handleClaudeFormat(c *gin.Context, data string, info *relaycommon.RelayInfo
 		return err
 	}
 
+	// 响应模型名回显策略：origin 模式下转换后的 Claude 响应也用请求名。
+	streamResponse.Model = info.ResponseModelName()
+
 	if streamResponse.Usage != nil {
 		info.ClaudeConvertInfo.Usage = streamResponse.Usage
 	}
@@ -63,6 +66,9 @@ func handleGeminiFormat(c *gin.Context, data string, info *relaycommon.RelayInfo
 		logger.LogError(c, "failed to unmarshal stream response: "+err.Error())
 		return err
 	}
+
+	// 响应模型名回显策略：origin 模式下转换后的 Gemini 响应也用请求名。
+	streamResponse.Model = info.ResponseModelName()
 
 	result, err := relayconvert.ConvertStreamResponse(c, info, types.RelayFormatGemini, &streamResponse)
 	if err != nil {

@@ -51,7 +51,7 @@ func GeminiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 	}
 
 	chatResp := responseGeminiChat2OpenAI(c, &geminiResponse)
-	chatResp.Model = info.UpstreamModelName
+	chatResp.Model = info.ResponseModelName()
 	if responseID := helper.GetResponseID(c); responseID != "" {
 		chatResp.Id = responseID
 	}
@@ -127,7 +127,7 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 		response, isStop := streamResponseGeminiChat2OpenAI(geminiResponse)
 		response.Id = responseID
 		response.Created = created
-		response.Model = info.UpstreamModelName
+		response.Model = info.ResponseModelName()
 
 		if response.IsToolCall() {
 			finishReason = constant.FinishReasonToolCalls

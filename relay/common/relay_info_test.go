@@ -176,3 +176,49 @@ func TestInitChannelMetaRestoresRequestReasoningEffortForRetry(t *testing.T) {
 	info.InitChannelMeta(ctx)
 	assert.Equal(t, "max", info.ReasoningEffort)
 }
+
+func TestRelayInfoResponseModelName(t *testing.T) {
+	tests := []struct {
+		name     string
+		setting  dto.ChannelSettings
+		expected string
+	}{
+		{
+			name:     "default echoes upstream name",
+			setting:  dto.ChannelSettings{},
+			expected: "upstream-model",
+		},
+		{
+			name:     "explicit upstream echoes upstream name",
+			setting:  dto.ChannelSettings{ResponseModel: dto.ResponseModelUpstream},
+			expected: "upstream-model",
+		},
+		{
+			name:     "origin echoes request name",
+			setting:  dto.ChannelSettings{ResponseModel: dto.ResponseModelOrigin},
+			expected: "origin-model",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := &RelayInfo{
+				OriginModelName: "origin-model",
+				ChannelMeta: &ChannelMeta{
+					UpstreamModelName: "upstream-model",
+					ChannelSetting:    tt.setting,
+				},
+			}
+			assert.Equal(t, tt.expected, info.ResponseModelName())
+		})
+	}
+}
+
+func TestRelayInfoResponseModelNameNilReceiver(t *testing.T) {
+	var info *RelayInfo
+	assert.Empty(t, info.ResponseModelName())
+
+	// ChannelMeta 为 nil 时回退到请求名，不 panic。
+	info = &RelayInfo{OriginModelName: "origin-model"}
+	assert.Equal(t, "origin-model", info.ResponseModelName())
+}
