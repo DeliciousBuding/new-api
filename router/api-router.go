@@ -295,6 +295,12 @@ func SetApiRouter(router *gin.Engine) {
 		logRoute.GET("/self", middleware.UserAuth(), controller.GetUserLogs)
 		logRoute.GET("/self/search", middleware.UserAuth(), middleware.SearchRateLimit(), controller.SearchUserLogs)
 
+		cacheUsageAggregationRoute := apiRouter.Group("/cache-usage-aggregation")
+		cacheUsageAggregationRoute.Use(middleware.RootAuth())
+		{
+			cacheUsageAggregationRoute.GET("/status", controller.GetCacheUsageAggregationStatus)
+		}
+
 		systemTaskRoute := apiRouter.Group("/system-task")
 		systemTaskRoute.Use(middleware.RootAuth())
 		{

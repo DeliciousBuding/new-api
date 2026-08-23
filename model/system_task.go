@@ -21,6 +21,10 @@ const (
 	SystemTaskTypeModelUpdate    = "model_update"
 	SystemTaskTypeMidjourneyPoll = "midjourney_poll"
 	SystemTaskTypeAsyncTaskPoll  = "async_task_poll"
+
+	// SystemTaskTypeCacheUsageAggregation 聚合 logs 到 token_cache_usage_hourly
+	// 的定时增量任务（见 service/cache_usage_aggregation_task.go）。
+	SystemTaskTypeCacheUsageAggregation = "cache_usage_aggregation"
 )
 
 var ErrSystemTaskLockLost = errors.New("system task lock lost")
