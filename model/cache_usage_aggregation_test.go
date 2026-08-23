@@ -179,7 +179,7 @@ func TestCacheUsageAggregationMetaSaveAndGet(t *testing.T) {
 	assert.Equal(t, int64(1), count)
 }
 
-func TestSumCacheUsageHourly(t *testing.T) {
+func TestGetCacheUsageHourly(t *testing.T) {
 	cleanup := setupCacheUsageAggregationTestDB(t)
 	defer cleanup()
 
@@ -191,24 +191,30 @@ func TestSumCacheUsageHourly(t *testing.T) {
 	}
 	require.NoError(t, UpsertCacheUsageHourly(rows))
 
-	stats, err := SumCacheUsageHourly([]int64{1, 2}, 100, 101)
+	got, err := GetCacheUsageHourly([]int64{1, 2}, 100, 101)
 	require.NoError(t, err)
-	require.Len(t, stats, 2)
+	require.Len(t, got, 3)
 
-	assert.Equal(t, int64(30), stats[1].PromptTokens)
-	assert.Equal(t, int64(32), stats[1].InputTokens)
-	assert.Equal(t, int64(34), stats[1].CacheReadTokens)
-	assert.Equal(t, int64(36), stats[1].CacheCreationTokens)
+	byKey := map[[2]int64]TokenCacheUsageHourly{}
+	for _, r := range got {
+		byKey[[2]int64{r.TokenId, r.HourBucket}] = r
+	}
 
-	assert.Equal(t, int64(5), stats[2].PromptTokens)
-	assert.Equal(t, int64(6), stats[2].InputTokens)
+	token1Hour100 := byKey[[2]int64{1, 100}]
+	assert.Equal(t, int64(10), token1Hour100.PromptTokens)
 
-	// 空 tokenIds / 非法区间 → 空 map 且不报错
-	empty, err := SumCacheUsageHourly(nil, 100, 101)
+	token1Hour101 := byKey[[2]int64{1, 101}]
+	assert.Equal(t, int64(20), token1Hour101.PromptTokens)
+
+	token2Hour100 := byKey[[2]int64{2, 100}]
+	assert.Equal(t, int64(5), token2Hour100.PromptTokens)
+
+	// 空 tokenIds / 非法区间 → 空且不报错
+	empty, err := GetCacheUsageHourly(nil, 100, 101)
 	require.NoError(t, err)
 	assert.Empty(t, empty)
 
-	inverted, err := SumCacheUsageHourly([]int64{1}, 101, 100)
+	inverted, err := GetCacheUsageHourly([]int64{1}, 101, 100)
 	require.NoError(t, err)
 	assert.Empty(t, inverted)
 }

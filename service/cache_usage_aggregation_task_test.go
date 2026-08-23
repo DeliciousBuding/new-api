@@ -81,11 +81,11 @@ func TestRunCacheUsageAggregationIncremental(t *testing.T) {
 	assert.Equal(t, nowHour-1, meta.ReadyHour) // 推进到上一个整小时
 	assert.NotZero(t, meta.LastRunAt)
 
-	stats, err := model.SumCacheUsageHourly([]int64{7}, nowHour-3, nowHour-1)
+	rows, err := model.GetCacheUsageHourly([]int64{7}, nowHour-3, nowHour-1)
 	require.NoError(t, err)
-	require.Len(t, stats, 1)
-	assert.Equal(t, int64(400), stats[7].PromptTokens)
-	assert.Equal(t, int64(40), stats[7].CacheReadTokens)
+	require.Len(t, rows, 1)
+	assert.Equal(t, int64(400), rows[0].PromptTokens)
+	assert.Equal(t, int64(40), rows[0].CacheReadTokens)
 }
 
 func TestRunCacheUsageAggregationResumesBackfill(t *testing.T) {

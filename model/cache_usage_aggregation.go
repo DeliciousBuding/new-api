@@ -112,31 +112,24 @@ func UpsertCacheUsageHourly(rows []TokenCacheUsageHourly) error {
 	}).Create(&rows).Error
 }
 
-// SumCacheUsageHourly 返回聚合表在 [startHour, endHour] 桶区间内按 token 的
-// 缓存用量合计（查询路径的聚合段）。空 tokenIds 或非法区间返回空 map。
-func SumCacheUsageHourly(tokenIds []int64, startHour int64, endHour int64) (map[int64]CacheUsageStat, error) {
-	stats := make(map[int64]CacheUsageStat)
+// GetCacheUsageHourly 返回聚合表在 [startHour, endHour] 桶区间内的逐小时行
+// （不聚合）。查询路径在 Go 侧归并（batch 按 token、daily 按天桶）——避开
+// 「主库方言 vs 日志库方言」的第二套 SQL 分桶表达式；量级 = token 数 × 小时数
+// （7 天窗口 36 token ≈ 6000 行），主键顺序扫描毫秒级。空 tokenIds 返回空。
+func GetCacheUsageHourly(tokenIds []int64, startHour int64, endHour int64) ([]TokenCacheUsageHourly, error) {
+	rows := []TokenCacheUsageHourly{}
 	if len(tokenIds) == 0 || startHour > endHour {
-		return stats, nil
+		return rows, nil
 	}
-	rows := []CacheUsageStat{}
-	err := DB.Table("token_cache_usage_hourly").
-		Select("token_id, COALESCE(SUM(prompt_tokens), 0) prompt_tokens, "+
-			"COALESCE(SUM(input_tokens), 0) input_tokens, "+
-			"SUM(cache_read_tokens) cache_read_tokens, "+
-			"SUM(cache_creation_tokens) cache_creation_tokens").
-		Where("token_id IN ?", tokenIds).
+	err := DB.Where("token_id IN ?", tokenIds).
 		Where("hour_bucket >= ?", startHour).
 		Where("hour_bucket <= ?", endHour).
-		Group("token_id").
-		Scan(&rows).Error
+		Order("hour_bucket ASC").
+		Find(&rows).Error
 	if err != nil {
 		return nil, err
 	}
-	for _, r := range rows {
-		stats[r.TokenId] = r
-	}
-	return stats, nil
+	return rows, nil
 }
 
 // GetCacheUsageAggregationMeta 读取单行水位；从未写入时返回全零 meta

@@ -19,17 +19,26 @@ import (
 
 func setupCacheUsageAggregationControllerTestDB(t *testing.T) func() {
 	previousDB := model.DB
+	previousLogDB := model.LOG_DB
 	previousMainType := common.MainDatabaseType()
+	previousLogType := common.LogDatabaseType()
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.CacheUsageAggregationMeta{}, &model.SystemTask{}))
+	require.NoError(t, db.AutoMigrate(&model.CacheUsageAggregationMeta{}, &model.SystemTask{}, &model.TokenCacheUsageHourly{}))
 	model.DB = db
 	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
 
+	logDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, logDB.AutoMigrate(&model.Log{}))
+	model.LOG_DB = logDB
+	common.SetLogDatabaseType(common.DatabaseTypeSQLite)
+
 	return func() {
 		model.DB = previousDB
-		common.SetMainDatabaseType(previousMainType)
+		model.LOG_DB = previousLogDB
+		common.SetDatabaseTypes(previousMainType, previousLogType)
 	}
 }
 
@@ -121,4 +130,152 @@ func TestCacheUsageAggregationHandlerContract(t *testing.T) {
 	// 快照钳制下界：interval 恒在 [5, 60] 分钟（快照默认 15，此断言防未来改坏）
 	interval := handler.Interval()
 	assert.True(t, interval >= 5*time.Minute && interval <= 60*time.Minute)
+}
+
+// insertControllerConsumeLog 向日志库插入一条 type=2 消费日志。
+func insertControllerConsumeLog(t *testing.T, tokenId int64, createdAt int64, promptTokens int64, otherJSON string) {
+	t.Helper()
+	require.NoError(t, model.LOG_DB.Create(&model.Log{
+		UserId:       1,
+		Type:         model.LogTypeConsume,
+		TokenId:      int(tokenId),
+		CreatedAt:    createdAt,
+		PromptTokens: int(promptTokens),
+		Other:        otherJSON,
+	}).Error)
+}
+
+// setControllerOption 锁内写入 OptionMap 键（快照读取路径）。
+func setControllerOption(t *testing.T, key string, value string) {
+	t.Helper()
+	common.OptionMapRWMutex.Lock()
+	defer common.OptionMapRWMutex.Unlock()
+	if common.OptionMap == nil {
+		common.OptionMap = make(map[string]string)
+	}
+	common.OptionMap[key] = value
+}
+
+// seedSegmentedQueryFixture 构造三段对拍环境：logs 覆盖 [baseHour-2, baseHour+2]，
+// 聚合表覆盖到 ReadyHour=baseHour（含），窗口 start 非整小时（baseHour-1 桶中间）。
+// 返回全实时基准结果与窗口参数。
+func seedSegmentedQueryFixture(t *testing.T, baseHour int64) (start, end int64) {
+	// logs：两个 token 跨 5 个小时，含 Anthropic/OpenAI 混合语义
+	insertControllerConsumeLog(t, 1, (baseHour-2)*3600+10, 100, `{"cache_tokens":10,"cache_creation_tokens":5}`)
+	insertControllerConsumeLog(t, 1, (baseHour-1)*3600+2000, 200, `{"usage_semantic":"anthropic","cache_tokens":20,"cache_creation_tokens":8}`)
+	insertControllerConsumeLog(t, 1, (baseHour-1)*3600+3000, 300, `{"cache_tokens":30}`)
+	insertControllerConsumeLog(t, 1, baseHour*3600+50, 400, `{"cache_tokens":40}`)
+	insertControllerConsumeLog(t, 1, (baseHour+1)*3600+60, 500, `{"cache_tokens":50}`)
+	insertControllerConsumeLog(t, 1, (baseHour+2)*3600+70, 600, `{"cache_tokens":60}`)
+	insertControllerConsumeLog(t, 2, (baseHour-1)*3600+100, 700, `{"cache_tokens":70}`)
+	insertControllerConsumeLog(t, 2, (baseHour+1)*3600+100, 800, `{"cache_tokens":80}`)
+
+	// 任务已聚合到 baseHour（含）：CoveredFromHour=baseHour-2、ReadyHour=baseHour
+	require.NoError(t, model.SaveCacheUsageAggregationMeta(&model.CacheUsageAggregationMeta{
+		CoveredFromHour: baseHour - 2,
+		ReadyHour:       baseHour,
+	}))
+	rows, err := model.AggregateCacheUsageHour(t.Context(), baseHour-2, baseHour)
+	require.NoError(t, err)
+	require.NoError(t, model.UpsertCacheUsageHourly(rows))
+
+	// 窗口：start = (baseHour-1) 桶中间（非整小时），end = (baseHour+1) 桶开头后一点
+	return (baseHour-1)*3600 + 1800, (baseHour + 1) * 3600 + 100
+}
+
+func TestSumCacheUsageByTokenIdsSegmentedMatchesRealtime(t *testing.T) {
+	cleanup := setupCacheUsageAggregationControllerTestDB(t)
+	defer cleanup()
+
+	baseHour := int64(25000)
+	start, end := seedSegmentedQueryFixture(t, baseHour)
+
+	setControllerOption(t, "cache_usage_aggregation.enabled", "true")
+	t.Cleanup(func() {
+		common.OptionMapRWMutex.Lock()
+		delete(common.OptionMap, "cache_usage_aggregation.enabled")
+		common.OptionMapRWMutex.Unlock()
+	})
+
+	got, err := sumCacheUsageByTokenIdsSegmented([]int64{1, 2}, start, end)
+	require.NoError(t, err)
+	want, err := model.SumCacheUsageByTokenIds([]int64{1, 2}, start, end)
+	require.NoError(t, err)
+
+	require.Equal(t, want, got)
+	// 非空且覆盖两个 token（防对拍双双为空假绿）
+	require.Len(t, got, 2)
+	assert.Equal(t, int64(1400), got[1].PromptTokens)
+}
+
+func TestSumCacheUsageDailySegmentedMatchesRealtime(t *testing.T) {
+	cleanup := setupCacheUsageAggregationControllerTestDB(t)
+	defer cleanup()
+
+	baseHour := int64(25000) // 25000/24 = 1041.67 → 跨天桶场景
+	start, end := seedSegmentedQueryFixture(t, baseHour)
+
+	setControllerOption(t, "cache_usage_aggregation.enabled", "true")
+	t.Cleanup(func() {
+		common.OptionMapRWMutex.Lock()
+		delete(common.OptionMap, "cache_usage_aggregation.enabled")
+		common.OptionMapRWMutex.Unlock()
+	})
+
+	got, err := sumCacheUsageDailySegmented([]int64{1, 2}, start, end)
+	require.NoError(t, err)
+	want, err := model.SumCacheUsageDaily([]int64{1, 2}, start, end)
+	require.NoError(t, err)
+
+	require.Equal(t, want, got)
+	require.NotEmpty(t, got)
+}
+
+func TestCacheUsageAggregationSegmentsFailSafe(t *testing.T) {
+	cleanup := setupCacheUsageAggregationControllerTestDB(t)
+	defer cleanup()
+
+	baseHour := int64(25000)
+	start, end := seedSegmentedQueryFixture(t, baseHour)
+
+	requireNoSegments := func(t *testing.T) {
+		t.Helper()
+		_, ok := cacheUsageAggregationSegments(start, end)
+		assert.False(t, ok)
+	}
+
+	// 未启用（无 option）→ 走全实时
+	t.Run("disabled by default", requireNoSegments)
+
+	// 已启用但水位未就绪（meta 全零）→ 走全实时
+	t.Run("not ready", func(t *testing.T) {
+		setControllerOption(t, "cache_usage_aggregation.enabled", "true")
+		require.NoError(t, model.DB.Where("1 = 1").Delete(&model.CacheUsageAggregationMeta{}).Error)
+		requireNoSegments(t)
+	})
+
+	// 已就绪但窗口起点超出覆盖下界 → 走全实时
+	t.Run("window before covered range", func(t *testing.T) {
+		setControllerOption(t, "cache_usage_aggregation.enabled", "true")
+		require.NoError(t, model.SaveCacheUsageAggregationMeta(&model.CacheUsageAggregationMeta{
+			CoveredFromHour: baseHour + 5, // 覆盖下界晚于窗口起点
+			ReadyHour:       baseHour + 6,
+		}))
+		requireNoSegments(t)
+	})
+
+	// 全实时降级时结果仍正确（与基准一致）
+	t.Run("fallback result correct", func(t *testing.T) {
+		got, err := sumCacheUsageByTokenIdsSegmented([]int64{1, 2}, start, end)
+		require.NoError(t, err)
+		want, err := model.SumCacheUsageByTokenIds([]int64{1, 2}, start, end)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	})
+
+	t.Cleanup(func() {
+		common.OptionMapRWMutex.Lock()
+		delete(common.OptionMap, "cache_usage_aggregation.enabled")
+		common.OptionMapRWMutex.Unlock()
+	})
 }

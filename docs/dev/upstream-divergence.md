@@ -133,7 +133,7 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 |---|---|---|---|---|
 | `main.go` | observer runtime init（fail-open）+ geoip 引入 + embed 基线 | `847829bca` | `docs/dev/relay-observer.md` | **高** |
 | `controller/relay.go` | vision relay 钩子 + observer 观测 + channel affinity 软失败解绑 + SSE 诊断落库（#152：message 脱敏 + request_id 截断 + 每轮重试清 key） | `847829bca` `8fdbbff9e` | `docs/dev/vision-relay.md`、`docs/dev/relay-observer.md` | 中 |
-| `controller/log.go` | 缓存用量聚合统计 + 90 天窗口限制 | `847829bca` | — | 中 |
+| `controller/log.go` | 缓存用量聚合统计 + 90 天窗口限制 + cache 用量预聚合三段选路（水位 fail-safe 回退全实时） | `847829bca` | `docs/dev/database-compatibility.md`（Cache 用量聚合表节） | 中 |
 | `model/log.go` | 日志 locality 提示（`attachGeoInfoToOther`/geoip）+ 品牌注释 scrub | `847829bca` `c178e645e` | — | **高** |
 | `model/option.go` | `LogRecordIpEnabled` 选项接入 | `847829bca` | — | 中 |
 | `middleware/distributor.go` | channel affinity 软失败计数重置 | `847829bca` | — | 中 |
