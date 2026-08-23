@@ -45,12 +45,12 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 
 | 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
 |---|---|---|---|---|
-| `relay/channel/openai/relay-openai.go` | 渠道级 `response_model=origin`：流式 chunk 轻量改写（含 `"model"` 键才解析）、流式 final/usage chunk 回显请求名、非流式 bodyMap 改写（与 usage 补全合并分支） | 待回填 | —（上游文件最小钩子，逻辑在 `relay/common` helper） | 中 |
-| `relay/channel/openai/helper.go` | Claude/Gemini 输出格式转换前回显请求名 | 待回填 | — | 低 |
-| `relay/common/relay_info.go` | `ResponseModelName()` 统一回显策略（默认上游名零行为变化） | 待回填 | — | 低 |
-| `relay/channel/gemini/relay-gemini.go` `relay_responses.go`、`cohere/relay-cohere.go`、`cloudflare/relay_cloudflare.go`、`coze/relay-coze.go` | 原生适配层响应赋 model 处统一走 `ResponseModelName()`（共 9 处） | 待回填 | — | 低 |
-| `relaykit/dto/channel_settings.go` | `ChannelSettings.ResponseModel` 字段 + 常量（纯增量 dto，relaykit 独立构建不受影响） | 待回填 | — | 低 |
-| `web/src/features/channels/*` + `web/src/i18n/locales/*` | 渠道编辑表单「响应模型名」三态下拉 + i18n 全语言 | 待回填 | — | 低 |
+| `relay/channel/openai/relay-openai.go` | 渠道级 `response_model=origin`：流式 chunk 轻量改写（含 `"model"` 键才解析）、流式 final/usage chunk 回显请求名、非流式 bodyMap 改写（与 usage 补全合并分支） | `50488a00f` | —（上游文件最小钩子，逻辑在 `relay/common` helper） | 中 |
+| `relay/channel/openai/helper.go` | Claude/Gemini 输出格式转换前回显请求名 | `50488a00f` | — | 低 |
+| `relay/common/relay_info.go` | `ResponseModelName()` 统一回显策略（默认上游名零行为变化） | `50488a00f` | — | 低 |
+| `relay/channel/gemini/relay-gemini.go` `relay_responses.go`、`cohere/relay-cohere.go`、`cloudflare/relay_cloudflare.go`、`coze/relay-coze.go` | 原生适配层响应赋 model 处统一走 `ResponseModelName()`（共 9 处） | `50488a00f` | — | 低 |
+| `relaykit/dto/channel_settings.go` | `ChannelSettings.ResponseModel` 字段 + 常量（纯增量 dto，relaykit 独立构建不受影响） | `50488a00f` | — | 低 |
+| `web/src/features/channels/*` + `web/src/i18n/locales/*` | 渠道编辑表单「响应模型名」三态下拉 + i18n 全语言 | `50488a00f` | — | 低 |
 
 ### 路由 / 设置
 
