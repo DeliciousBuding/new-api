@@ -21,6 +21,7 @@ import { IoNetDeploymentSettingsSection } from '../integrations/ionet-deployment
 import type { ModelSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
 import { ClaudeSettingsCard } from './claude-settings-card'
+import { CacheUsageAggregationCard } from './cache-usage-aggregation-card'
 import { GeminiSettingsCard } from './gemini-settings-card'
 import { GlobalSettingsCard } from './global-settings-card'
 import { GrokSettingsCard } from './grok-settings-card'
@@ -173,6 +174,19 @@ const MODELS_SECTIONS = [
           max_total_bytes: settings['vision_relay.max_total_bytes'],
           default_max_tokens: settings['vision_relay.default_max_tokens'],
           max_fallback_models: settings['vision_relay.max_fallback_models'],
+        }}
+      />
+    ),
+  },
+  {
+    id: 'cache-usage-aggregation',
+    titleKey: 'Cache Usage Aggregation',
+    build: (settings: ModelSettings) => (
+      <CacheUsageAggregationCard
+        defaultValues={{
+          enabled: settings['cache_usage_aggregation.enabled'],
+          interval_minutes:
+            settings['cache_usage_aggregation.interval_minutes'] ?? 15,
         }}
       />
     ),
