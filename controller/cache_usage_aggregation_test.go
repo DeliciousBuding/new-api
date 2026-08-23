@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -110,4 +111,14 @@ func TestTruncateCacheUsageAggregationError(t *testing.T) {
 	truncated := truncateCacheUsageAggregationError(long)
 	assert.Len(t, truncated, cacheUsageAggregationStatusErrorMaxLen+len("…"))
 	assert.True(t, strings.HasSuffix(truncated, "…"))
+}
+
+func TestCacheUsageAggregationHandlerContract(t *testing.T) {
+	handler := cacheUsageAggregationHandler{}
+	assert.Equal(t, model.SystemTaskTypeCacheUsageAggregation, handler.Type())
+	assert.Nil(t, handler.NewPayload())
+
+	// 快照钳制下界：interval 恒在 [5, 60] 分钟（快照默认 15，此断言防未来改坏）
+	interval := handler.Interval()
+	assert.True(t, interval >= 5*time.Minute && interval <= 60*time.Minute)
 }

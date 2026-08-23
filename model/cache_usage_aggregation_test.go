@@ -88,7 +88,7 @@ func TestAggregateCacheUsageHour(t *testing.T) {
 	insertConsumeLog(t, LOG_DB, 1, (hour-1)*3600+59, 777, `{"cache_tokens":1}`)
 	insertConsumeLog(t, LOG_DB, 1, (hour+1)*3600+3599+1, 888, `{"cache_tokens":2}`)
 
-	rows, err := AggregateCacheUsageHour(hour, hour+1)
+	rows, err := AggregateCacheUsageHour(t.Context(), hour, hour+1)
 	require.NoError(t, err)
 	require.Len(t, rows, 3)
 

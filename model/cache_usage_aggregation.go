@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"errors"
 
 	"github.com/QuantumNous/new-api/common"
@@ -68,11 +69,12 @@ func cacheHourBucketExpr() string {
 // AggregateCacheUsageHour 从 logs 聚合 [startHour, endHour]（含两端整小时）内
 // type=2 消费日志的缓存用量，按 (token_id, hour_bucket) 分组。输入/缓存提取
 // 复用 cacheRateInputExpr / cacheJsonExtractExpr 的跨协议语义与多库表达式。
+// ctx 经 WithContext 传入（任务侧给每批预算防连接池满时静默挂死）。
 // logs 只 INSERT 不 UPDATE（不变式见 model/log.go createLog），同一小时区间
 // 重复聚合结果一致。
-func AggregateCacheUsageHour(startHour int64, endHour int64) ([]TokenCacheUsageHourly, error) {
+func AggregateCacheUsageHour(ctx context.Context, startHour int64, endHour int64) ([]TokenCacheUsageHourly, error) {
 	rows := []TokenCacheUsageHourly{}
-	err := LOG_DB.Table("logs").
+	err := LOG_DB.WithContext(ctx).Table("logs").
 		Select("token_id, "+cacheHourBucketExpr()+" AS hour_bucket, "+
 			"COALESCE(SUM(prompt_tokens), 0) prompt_tokens, "+
 			"COALESCE(SUM("+cacheRateInputExpr()+"), 0) input_tokens, "+

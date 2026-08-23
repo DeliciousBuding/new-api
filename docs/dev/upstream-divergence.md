@@ -139,6 +139,7 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 | `middleware/distributor.go` | channel affinity 软失败计数重置 | `847829bca` | — | 中 |
 | `model/main.go` | cache 用量预聚合两表 AutoMigrate（token_cache_usage_hourly / cache_usage_aggregation_meta） | — | `docs/dev/database-compatibility.md`（Cache 用量聚合表节） | 低 |
 | `model/system_task.go` | cache 用量聚合任务类型常量 | — | `docs/dev/database-compatibility.md`（Cache 用量聚合表节） | 低 |
+| `controller/system_task_handlers.go` | 注册 cache 用量聚合定时任务（一行；handler 定义在 fork 文件 `controller/cache_usage_aggregation.go`） | — | `docs/dev/database-compatibility.md`（Cache 用量聚合表节） | 低 |
 | `common/constants.go` | `LogRecordIpEnabled` 开关 + 品牌注释 scrub | `847829bca` `c178e645e` | — | 中 |
 | `logger/logger.go` | 日志计数/状态原子化（`atomic.Int64`/`atomic.Bool`，并发安全） | `847829bca` | — | 低 |
 | `model/log_format_test.go` | 日志格式化测试基线 | `847829bca` | — | 低 |
