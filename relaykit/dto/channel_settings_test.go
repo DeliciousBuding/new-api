@@ -642,3 +642,13 @@ func TestChannelSettingsValidateHTTPTransport(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "http2_connection_shards")
 }
+
+func TestChannelSettingsValidateResponseModel(t *testing.T) {
+	require.NoError(t, (&ChannelSettings{}).ValidateResponseModel())
+	require.NoError(t, (&ChannelSettings{ResponseModel: ResponseModelUpstream}).ValidateResponseModel())
+	require.NoError(t, (&ChannelSettings{ResponseModel: ResponseModelOrigin}).ValidateResponseModel())
+
+	err := (&ChannelSettings{ResponseModel: "orign"}).ValidateResponseModel()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "response_model")
+}

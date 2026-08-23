@@ -195,7 +195,7 @@ func cohereHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	openaiResp.Id = cohereResp.ResponseId
 	openaiResp.Created = createdTime
 	openaiResp.Object = "chat.completion"
-	openaiResp.Model = info.UpstreamModelName
+	openaiResp.Model = info.ResponseModelName()
 	openaiResp.Usage = usage
 
 	openaiResp.Choices = []dto.OpenAITextResponseChoice{

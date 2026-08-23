@@ -84,7 +84,7 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 	created := common.GetTimestamp()
 	state, err := relayconvert.NewResponseStreamState(types.RelayFormatOpenAI, types.RelayFormatOpenAIResponses, relayconvert.ResponseStreamOptions{
 		ID:      responseID,
-		Model:   info.UpstreamModelName,
+		Model:   info.ResponseModelName(),
 		Created: created,
 	})
 	if err != nil {
@@ -159,7 +159,7 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 			return false
 		}
 		if isStop {
-			return sendChunk(helper.GenerateStopResponse(responseID, created, info.UpstreamModelName, finishReason))
+			return sendChunk(helper.GenerateStopResponse(responseID, created, info.ResponseModelName(), finishReason))
 		}
 		return true
 	})

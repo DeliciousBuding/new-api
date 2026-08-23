@@ -298,9 +298,9 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 		return usage, err
 	}
 
-	response := helper.GenerateFinalUsageResponse(id, createAt, info.UpstreamModelName, *usage)
+	response := helper.GenerateFinalUsageResponse(id, createAt, info.ResponseModelName(), *usage)
 	if info.RelayFormat == types.RelayFormatClaude && info.ClaudeConvertInfo != nil && !info.ClaudeConvertInfo.Done {
-		response = helper.GenerateStopResponse(id, createAt, info.UpstreamModelName, finishReason)
+		response = helper.GenerateStopResponse(id, createAt, info.ResponseModelName(), finishReason)
 		response.Usage = usage
 	}
 	handleErr := handleFinalStream(c, info, response)
@@ -406,7 +406,7 @@ func GeminiEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 	openAIResponse := dto.OpenAIEmbeddingResponse{
 		Object: "list",
 		Data:   make([]dto.OpenAIEmbeddingResponseItem, 0, len(geminiResponse.Embeddings)),
-		Model:  info.UpstreamModelName,
+		Model:  info.ResponseModelName(),
 	}
 
 	for i, embedding := range geminiResponse.Embeddings {

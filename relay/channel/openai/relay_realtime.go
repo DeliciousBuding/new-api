@@ -2,6 +2,7 @@ package openai
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -187,7 +188,30 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 					localUsage.OutputTokenDetails.AudioTokens += audioToken
 				}
 
-				err = helper.WssString(c, clientConn, string(message))
+				// 响应模型名回显策略：origin 模式下改写事件携带的 model 字段
+			// （response.created / session.* 等）；默认模式原样转发。
+			if info.ResponseModelOriginEnabled() &&
+				strings.Contains(string(message), `"model"`) {
+				var evt map[string]interface{}
+				if err := common.Unmarshal(message, &evt); err == nil {
+					rewritten := false
+					for _, key := range []string{"response", "session"} {
+						if obj, ok := evt[key].(map[string]interface{}); ok {
+							if m, ok := obj["model"].(string); ok && m != "" && m != info.OriginModelName {
+								obj["model"] = info.OriginModelName
+								rewritten = true
+							}
+						}
+					}
+					if rewritten {
+						if b, err := common.Marshal(evt); err == nil {
+							message = b
+						}
+					}
+				}
+			}
+
+			err = helper.WssString(c, clientConn, string(message))
 				if err != nil {
 					errChan <- fmt.Errorf("error writing to client: %v", err)
 					return

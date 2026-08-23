@@ -218,7 +218,7 @@ func TestRelayInfoResponseModelNameNilReceiver(t *testing.T) {
 	var info *RelayInfo
 	assert.Empty(t, info.ResponseModelName())
 
-	// ChannelMeta 为 nil 时回退到请求名，不 panic。
+	// ChannelMeta 为 nil 时与 GetUpstreamModelName 族对齐返回空串，不 panic。
 	info = &RelayInfo{OriginModelName: "origin-model"}
-	assert.Equal(t, "origin-model", info.ResponseModelName())
+	assert.Empty(t, info.ResponseModelName())
 }
