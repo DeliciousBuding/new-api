@@ -61,7 +61,7 @@ func cfStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 			responseText += choice.Delta.GetContentString()
 		}
 		response.Id = id
-		response.Model = info.UpstreamModelName
+		response.Model = info.ResponseModelName()
 		err = helper.ObjectData(c, response)
 		if isFirst {
 			isFirst = false

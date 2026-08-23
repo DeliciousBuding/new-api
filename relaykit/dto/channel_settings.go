@@ -23,12 +23,22 @@ type ChannelSettings struct {
 	// HTTP2ConnectionShards spreads HTTP/2 traffic across N independent transports
 	// (1-8). Zero/unset means 1. Ignored when HTTPProtocol is "http1".
 	HTTP2ConnectionShards int `json:"http2_connection_shards,omitempty"`
+	// ResponseModel controls which model name is echoed in relay responses.
+	// Accepted values: "", "upstream" (default, the upstream-visible model name)
+	// and "origin" (the downstream request's model name).
+	ResponseModel string `json:"response_model,omitempty"`
 }
 
 const (
 	HTTPProtocolAuto         = "auto"
 	HTTPProtocolHTTP1        = "http1"
 	MaxHTTP2ConnectionShards = 8
+
+	// ResponseModelOrigin echoes the downstream request's model name in relay
+	// responses; ResponseModelUpstream (and the empty default) preserve the
+	// upstream-visible name.
+	ResponseModelOrigin   = "origin"
+	ResponseModelUpstream = "upstream"
 )
 
 // ValidateHTTPTransport validates save-time HTTP transport channel settings.

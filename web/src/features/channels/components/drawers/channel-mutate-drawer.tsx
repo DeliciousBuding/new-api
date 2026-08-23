@@ -4102,6 +4102,43 @@ export function ChannelMutateDrawer({
 
                               <FormField
                                 control={form.control}
+                                name='response_model'
+                                render={({ field }) => (
+                                  <FormItem className='flex items-center justify-between px-4 py-3'>
+                                    <div className='space-y-0.5'>
+                                      <FormLabel>
+                                        {t('Response Model Name')}
+                                      </FormLabel>
+                                      <FormDescription>
+                                        {t(
+                                          'Model name echoed in responses: the upstream model name (default) or the request model name'
+                                        )}
+                                      </FormDescription>
+                                    </div>
+                                    <FormControl>
+                                      <Select
+                                        value={field.value || 'upstream'}
+                                        onValueChange={field.onChange}
+                                      >
+                                        <SelectTrigger className='w-48'>
+                                          <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          <SelectItem value='upstream'>
+                                            {t('Upstream model name')}
+                                          </SelectItem>
+                                          <SelectItem value='origin'>
+                                            {t('Request model name')}
+                                          </SelectItem>
+                                        </SelectContent>
+                                      </Select>
+                                    </FormControl>
+                                  </FormItem>
+                                )}
+                              />
+
+                              <FormField
+                                control={form.control}
                                 name='thinking_to_content'
                                 render={({ field }) => (
                                   <FormItem className='flex items-center justify-between px-4 py-3'>
