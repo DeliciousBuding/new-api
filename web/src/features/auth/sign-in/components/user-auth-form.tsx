@@ -46,6 +46,10 @@ import { OAuthProviders } from '@/features/auth/components/oauth-providers'
 import { loginFormSchema } from '@/features/auth/constants'
 import { useAuthRedirect } from '@/features/auth/hooks/use-auth-redirect'
 import { useTurnstile } from '@/features/auth/hooks/use-turnstile'
+import {
+  getInvitationCode,
+  saveInvitationCode,
+} from '@/features/auth/lib/storage'
 import { beginPasskeyLogin, finishPasskeyLogin } from '@/features/auth/passkey'
 import type { AuthFormProps } from '@/features/auth/types'
 import { useStatus } from '@/hooks/use-status'
@@ -104,6 +108,25 @@ export function UserAuthForm({
     !passkeySupported ||
     (requiresLegalConsent && !agreedToLegal)
   const hasWeChatLogin = Boolean(status?.wechat_login)
+  const invitationCodeRequired = Boolean(
+    status?.invitation_code_required ?? status?.data?.invitation_code_required
+  )
+  // Captured once on mount: if a code is already stored, the input stays hidden.
+  const [hadStoredInvitationCode] = useState(() =>
+    Boolean(getInvitationCode())
+  )
+  const showInvitationCodeInput =
+    invitationCodeRequired &&
+    !hadStoredInvitationCode &&
+    (hasWeChatLogin ||
+      Boolean(
+        status?.github_oauth ||
+        status?.discord_oauth ||
+        status?.oidc_enabled ||
+        status?.linuxdo_oauth ||
+        status?.telegram_oauth ||
+        (status?.custom_oauth_providers?.length ?? 0) > 0
+      ))
   const hasOAuthLogin = Boolean(
     status?.github_oauth ||
     status?.discord_oauth ||
@@ -337,6 +360,26 @@ export function UserAuthForm({
         </div>
       )}
 
+      {/* Invitation code input for OAuth auto-registration */}
+      {showInvitationCodeInput && (
+        <div className='mt-2 grid gap-2'>
+          <Label htmlFor='sign-in-invitation-code'>
+            {t('Invitation Code')}
+          </Label>
+          <Input
+            id='sign-in-invitation-code'
+            placeholder={t('Enter your invitation code')}
+            onChange={(event) => {
+              const normalized = event.target.value.trim().toUpperCase()
+              saveInvitationCode(normalized)
+            }}
+          />
+          <p className='text-muted-foreground text-xs'>
+            {t('Required when creating a new account via third-party sign-in')}
+          </p>
+        </div>
+      )}
+
       {/* OAuth Providers */}
       <OAuthProviders
         status={status}
@@ -503,3 +546,4 @@ export function UserAuthForm({
     </Form>
   )
 }
+
