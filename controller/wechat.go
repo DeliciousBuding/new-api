@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 
 	"github.com/gin-gonic/gin"
@@ -89,12 +90,31 @@ func WeChatAuth(c *gin.Context) {
 		}
 	} else {
 		if common.RegisterEnabled {
+			// WeChat login has no state/session channel, so the invitation
+			// code rides the same request as the scan callback query.
+			invitationCode := model.NormalizeInvitationCode(c.Query("invitation_code"))
+			if common.InvitationCodeRequired {
+				if err := model.ConsumeInvitationCode(invitationCode); err != nil {
+					common.SysLog(fmt.Sprintf("invitation code rejected for wechat registration: %v", err))
+					c.JSON(http.StatusOK, gin.H{
+						"success": false,
+						"message": i18n.T(c, i18n.MsgInvitationCodeInvalid),
+					})
+					return
+				}
+			}
 			user.Username = "wechat_" + strconv.Itoa(model.GetMaxUserId()+1)
 			user.DisplayName = "WeChat User"
 			user.Role = common.RoleCommonUser
 			user.Status = common.UserStatusEnabled
+			if common.InvitationCodeRequired {
+				user.InvitationCode = invitationCode
+			}
 
 			if err := user.Insert(0); err != nil {
+				if common.InvitationCodeRequired {
+					model.RefundInvitationCodeUse(invitationCode)
+				}
 				c.JSON(http.StatusOK, gin.H{
 					"success": false,
 					"message": err.Error(),

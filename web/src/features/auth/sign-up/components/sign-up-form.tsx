@@ -47,7 +47,9 @@ import { useEmailVerification } from '@/features/auth/hooks/use-email-verificati
 import { useTurnstile } from '@/features/auth/hooks/use-turnstile'
 import {
   getAffiliateCode,
+  getInvitationCode,
   saveAffiliateCode,
+  saveInvitationCode,
 } from '@/features/auth/lib/storage'
 import { useStatus } from '@/hooks/use-status'
 import { isAuthBundle } from '@/lib/api'
@@ -94,6 +96,7 @@ export function SignUpForm({
       email: '',
       password: '',
       confirmPassword: '',
+      invitation_code: '',
     },
   })
 
@@ -107,6 +110,9 @@ export function SignUpForm({
     status?.data?.oauth_register_enabled ??
     true
   const hasWeChatLogin = Boolean(status?.wechat_login)
+  const invitationCodeRequired = Boolean(
+    status?.invitation_code_required ?? status?.data?.invitation_code_required
+  )
   const turnstileReady = !isTurnstileEnabled || Boolean(turnstileToken)
 
   const wechatQrCodeUrl = useMemo(() => {
@@ -136,11 +142,32 @@ export function SignUpForm({
     if (aff) {
       saveAffiliateCode(aff)
     }
+
+    const invitationCode = new URLSearchParams(window.location.search)
+      .get('invitation_code')
+      ?.trim()
+    if (invitationCode) {
+      const normalized = invitationCode.toUpperCase()
+      saveInvitationCode(normalized)
+      form.setValue('invitation_code', normalized)
+    } else {
+      const storedInvitationCode = getInvitationCode()
+      if (storedInvitationCode) {
+        form.setValue('invitation_code', storedInvitationCode)
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function onSubmit(data: z.infer<typeof registerFormSchema>) {
     if (requiresLegalConsent && !agreedToLegal) {
       toast.error(legalConsentErrorMessage)
+      return
+    }
+
+    // Validate invitation code if required
+    if (invitationCodeRequired && !data.invitation_code?.trim()) {
+      toast.error(t('Invitation code is required'))
       return
     }
 
@@ -166,6 +193,9 @@ export function SignUpForm({
         email: data.email || undefined,
         verification_code: verificationCode || undefined,
         aff_code: getAffiliateCode(),
+        invitation_code:
+          (data.invitation_code || getInvitationCode()).trim().toUpperCase() ||
+          undefined,
         turnstile: turnstileToken,
       })
 
@@ -344,6 +374,32 @@ export function SignUpForm({
               </Button>
             </div>
           </>
+        )}
+
+        {/* Invitation Code Field */}
+        {invitationCodeRequired && (
+          <FormField
+            control={form.control}
+            name='invitation_code'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Invitation Code')}</FormLabel>
+                <FormControl>
+                  <Input
+                    placeholder={t('Enter your invitation code')}
+                    {...field}
+                    onChange={(event) => {
+                      field.onChange(event)
+                      saveInvitationCode(
+                        event.target.value.trim().toUpperCase()
+                      )
+                    }}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
         )}
 
         {/* Turnstile */}

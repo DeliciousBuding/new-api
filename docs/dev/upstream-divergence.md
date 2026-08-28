@@ -160,6 +160,29 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 | `model/log_format_test.go` | 日志格式化测试基线 | `847829bca` | — | 低 |
 | `service/task_polling_test.go` | task 轮询测试基线 | `847829bca` | — | 低 |
 
+### 注册邀请码（invitation-code，fork #165）
+
+> 核心逻辑全部在 fork-owned 文件（`model/invitation_code.go`、`controller/invitation_code.go`、`web/src/features/invitation-codes/`、`web/src/routes/_authenticated/invitation-codes/`，永不冲突）；上游文件只打最小钩子。上游同域 #6317（见「上游同域追踪」）表结构与本实现不互通，若其合入需做收敛/迁移评估。
+
+| 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
+|---|---|---|---|---|
+| `router/api-router.go` | `/api/invitation_code` AdminAuth 路由组（热点文件，理由已在 #165 声明） | #165 | — | **高** |
+| `controller/user.go` | Register 门禁：消费/回补；管理员建号豁免 | #165 | — | 中 |
+| `controller/oauth.go` | OAuth 首登建号门禁（先预检后消费，两个失败分支均回补） | #165 | — | 中 |
+| `controller/wechat.go` | 微信授权建号门禁（消费/回补） | #165 | — | 中 |
+| `controller/misc.go` | GetStatus 暴露 `invitation_code_required` | #165 | — | 低 |
+| `common/constants.go` | `InvitationCodeRequired` 开关（默认关）+ 状态常量 | #165 | — | 中 |
+| `model/option.go` | `InvitationCodeRequired` 选项注册 + UpdateOption case | #165 | — | 中 |
+| `model/user.go` | `invitation_code` 列 + 索引；UpdateWithTx Omit 防误擦除 | #165 | — | 中 |
+| `model/main.go` | invitation_codes 表 AutoMigrate | #165 | — | 低 |
+| `model/errors.go` | 邀请码错误消息（5 条） | #165 | — | 低 |
+| `i18n/keys.go` + `i18n/locales/*.yaml` | 后端 7 消息 key × en/zh-CN/zh-TW | #165 | — | 低 |
+| `web/src/features/auth/*` | 注册/第三方登录流邀请码输入、暂存与提交 | #165 | — | 中 |
+| `web/src/features/system-settings/*` | 基础认证区邀请码必填开关 | #165 | — | 低 |
+| `web/src/hooks/use-sidebar-*.ts` | 侧边栏入口 | #165 | — | 低 |
+| `web/src/i18n/locales/*.json` + `web/src/i18n/static-keys.ts` | 前端七语全量 | #165 | — | 低 |
+| `web/src/routeTree.gen.ts` | 生成文件（新增路由） | #165 | — | 低 |
+
 ## fork-owned 目录（永不与上游冲突）
 
 以下目录/文件上游不存在，纯增量，`git merge official/main` 不会产生冲突，故不在台账内：
@@ -194,6 +217,7 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 | #6580 exclude-driven failover | open | 我们的 #145 直接采用，勿自造 |
 | #6927 异常流中断日志 | open | 补 `stream_incomplete` transport 错误，吸收时核对字段 |
 | #6938 xAI 流内错误转发 | open | xAI 专用，与我们的非 2xx SSE 提取**互补**（不同机制） |
+| #6305/#6317 邀请码注册 | open | fork #165 已独立实现（明文码、仿兑换码习语）；上游 PR 为 SHA-256 哈希存储 + Classic/Default 双前端，表结构不互通，若合入需收敛/迁移评估 |
 
 ### sync 后复查（体检命令）
 

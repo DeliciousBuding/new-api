@@ -25,6 +25,15 @@ var (
 // Redemption errors
 var ErrRedeemFailed = errors.New("redeem.failed")
 
+// Invitation code errors
+var (
+	ErrInvitationCodeRequired  = errors.New("invitation code is required")
+	ErrInvitationCodeInvalid   = errors.New("invalid invitation code")
+	ErrInvitationCodeDisabled  = errors.New("invitation code is disabled")
+	ErrInvitationCodeExpired   = errors.New("invitation code is expired")
+	ErrInvitationCodeExhausted = errors.New("invitation code has reached its max uses")
+)
+
 // 2FA errors
 var ErrTwoFANotEnabled = errors.New("2fa not enabled")
 var ErrTwoFAAlreadyEnabled = errors.New("2fa already enabled")

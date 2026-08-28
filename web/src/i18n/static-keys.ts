@@ -199,6 +199,23 @@ export const STATIC_I18N_KEYS = [
   'Quota must be a positive number',
   'Successfully created {{count}} redemption codes',
 
+  // Invitation codes
+  'Available',
+  'Invitation code(s) created successfully',
+  'Invitation code updated successfully',
+  'Invitation code deleted successfully',
+  'Invitation code enabled successfully',
+  'Invitation code disabled successfully',
+  'Failed to load invitation codes',
+  'Failed to search invitation codes',
+  'Failed to create invitation code',
+  'Failed to update invitation code',
+  'Failed to delete invitation code',
+  'Failed to delete invalid invitation codes',
+  'Failed to update invitation code status',
+  'Max uses must be an integer of at least {{min}}',
+  'Successfully created {{count}} invitation codes',
+
   // Home page (constants-driven labels)
   'Cost Tracking',
   'Model Access',

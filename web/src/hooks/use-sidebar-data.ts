@@ -32,6 +32,7 @@ import {
   Settings,
   Ticket,
   User,
+  UserPlus,
   Users,
   Wallet,
 } from 'lucide-react'
@@ -139,6 +140,11 @@ export function useSidebarData(): SidebarData {
             title: t('Redemption Codes'),
             url: '/redemption-codes',
             icon: Ticket,
+          },
+          {
+            title: t('Invitation Codes'),
+            url: '/invitation-codes',
+            icon: UserPlus,
           },
           {
             title: t('Subscriptions'),
