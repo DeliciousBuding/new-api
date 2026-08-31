@@ -16,29 +16,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-// ============================================================================
-// Home Page Types
-// ============================================================================
+import { render } from '@testing-library/react'
+import { describe, expect, test } from 'vitest'
 
-export type HomePageStyle = 'spark' | 'default'
+import { SparkCellularHero } from '../spark-cellular-hero'
 
-/**
- * Response from home page content API
- */
-export interface HomePageContentResponse {
-  success: boolean
-  message?: string
-  data?: string
-  /** Admin-configured home page design preset: "spark" | "default". */
-  home_page_style?: HomePageStyle
-}
+describe('spark cellular hero', () => {
+  test('renders the decorative canvas as a full-bleed hidden container', () => {
+    const { container } = render(<SparkCellularHero theme='light' />)
 
-/**
- * Home page content result from hook
- */
-export interface HomePageContentResult {
-  content: string
-  homePageStyle: HomePageStyle
-  isLoaded: boolean
-  isUrl: boolean
-}
+    const stage = container.firstElementChild
+    expect(stage).not.toBeNull()
+    expect(stage?.getAttribute('aria-hidden')).toBe('true')
+
+    const canvas = container.querySelector<HTMLCanvasElement>('canvas')
+    expect(canvas).not.toBeNull()
+    // Always present so the animation layer exists even before JS paints it.
+    expect(canvas?.className).toContain('absolute')
+  })
+})

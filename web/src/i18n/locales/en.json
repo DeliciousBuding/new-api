@@ -841,6 +841,7 @@
     "Choose one SMTP transport security mode": "Choose one SMTP transport security mode",
     "Choose the bundle type and define the items inside it.": "Choose the bundle type and define the items inside it.",
     "Choose the default charts, range, and time granularity for model analytics.": "Choose the default charts, range, and time granularity for model analytics.",
+    "Choose the design shown on the public home page. Spark shows a full-screen animated cellular hero; Default keeps the original landing page.": "Choose the design shown on the public home page. Spark shows a full-screen animated cellular hero; Default keeps the original landing page.",
     "Choose where to fetch upstream metadata.": "Choose where to fetch upstream metadata.",
     "Choose which charts are selected by default when opening model analytics.": "Choose which charts are selected by default when opening model analytics.",
     "Clamped to": "Clamped to",
@@ -5499,7 +5500,13 @@
     "Invitation code is required": "Invitation code is required",
     "Required when creating a new account via third-party sign-in": "Required when creating a new account via third-party sign-in",
     "exhausted": "exhausted",
-    "invitation code": "invitation code"
+    "invitation code": "invitation code",
+    "Home Page Style": "Home Page Style",
+    "Spark animated hero": "Spark animated hero",
+    "Default landing page": "Default landing page",
+    "Select a home page style": "Select a home page style",
+    "One gateway.": "One gateway.",
+    "Every model.": "Every model."
   },
   "Cache Usage Aggregation": "Cache Usage Aggregation",
   "Cache Usage Aggregation Enabled": "Cache Usage Aggregation Enabled",

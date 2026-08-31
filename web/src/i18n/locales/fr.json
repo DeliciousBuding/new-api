@@ -841,6 +841,7 @@
     "Choose one SMTP transport security mode": "Choisissez un mode de sécurité de transport SMTP",
     "Choose the bundle type and define the items inside it.": "Choisissez le type de bundle et définissez les éléments qu'il contient.",
     "Choose the default charts, range, and time granularity for model analytics.": "Choisissez les graphiques, la plage et la granularité temporelle par défaut pour l'analyse des modèles.",
+    "Choose the design shown on the public home page. Spark shows a full-screen animated cellular hero; Default keeps the original landing page.": "Choisissez le design de la page d’accueil publique. Spark affiche un héros cellulaire animé en plein écran ; Default conserve la page d’atterrissage d’origine.",
     "Choose where to fetch upstream metadata.": "Choisissez où récupérer les métadonnées amont.",
     "Choose which charts are selected by default when opening model analytics.": "Choisissez les graphiques sélectionnés par défaut à l'ouverture de l'analyse des modèles.",
     "Clamped to": "Limité à",
@@ -5499,7 +5500,13 @@
     "Invitation code is required": "Le code d'invitation est requis",
     "Required when creating a new account via third-party sign-in": "Requis lors de la création d'un nouveau compte via une connexion tierce",
     "exhausted": "épuisé",
-    "invitation code": "code d'invitation"
+    "invitation code": "code d'invitation",
+    "Home Page Style": "Style de la page d’accueil",
+    "Spark animated hero": "Héros animé Spark",
+    "Default landing page": "Page d’atterrissage par défaut",
+    "Select a home page style": "Sélectionner un style de page d’accueil",
+    "One gateway.": "Une seule passerelle.",
+    "Every model.": "Tous les modèles."
   },
   "Cache Usage Aggregation": "Cache Usage Aggregation",
   "Cache Usage Aggregation Enabled": "Cache Usage Aggregation Enabled",

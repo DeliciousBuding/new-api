@@ -31,6 +31,13 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 
 import { FormDirtyIndicator } from '../components/form-dirty-indicator'
@@ -52,6 +59,7 @@ const _systemInfoSchema = z.object({
   Footer: z.string().optional(),
   About: z.string().optional(),
   HomePageContent: z.string().optional(),
+  HomePageStyle: z.enum(['spark', 'default']).optional(),
   legal: z.object({
     user_agreement: z.string().optional(),
     privacy_policy: z.string().optional(),
@@ -69,6 +77,10 @@ function normalizeValue(value: unknown): string {
   return typeof value === 'string' ? value : String(value)
 }
 
+function normalizeHomePageStyle(value: unknown): 'spark' | 'default' {
+  return normalizeValue(value) === 'default' ? 'default' : 'spark'
+}
+
 export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
@@ -80,6 +92,7 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
     Footer: normalizeValue(defaultValues.Footer),
     About: normalizeValue(defaultValues.About),
     HomePageContent: normalizeValue(defaultValues.HomePageContent),
+    HomePageStyle: normalizeHomePageStyle(defaultValues.HomePageStyle),
     legal: {
       user_agreement: normalizeValue(defaultValues.legal?.user_agreement),
       privacy_policy: normalizeValue(defaultValues.legal?.privacy_policy),
@@ -95,6 +108,7 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
     Footer: z.string().optional(),
     About: z.string().optional(),
     HomePageContent: z.string().optional(),
+    HomePageStyle: z.enum(['spark', 'default']).optional(),
     legal: z.object({
       user_agreement: z.string().optional(),
       privacy_policy: z.string().optional(),
@@ -241,6 +255,47 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
                   </FormItem>
                 )}
               />
+
+              <SettingsFormGridItem span='full'>
+                <FormField
+                  control={form.control}
+                  name='HomePageStyle'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Home Page Style')}</FormLabel>
+                      <FormControl>
+                        <Select
+                          value={field.value}
+                          onValueChange={(value) =>
+                            value !== null &&
+                            field.onChange(value as 'spark' | 'default')
+                          }
+                        >
+                          <SelectTrigger className='w-full'>
+                            <SelectValue
+                              placeholder={t('Select a home page style')}
+                            />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value='spark'>
+                              {t('Spark animated hero')}
+                            </SelectItem>
+                            <SelectItem value='default'>
+                              {t('Default landing page')}
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Choose the design shown on the public home page. Spark shows a full-screen animated cellular hero; Default keeps the original landing page.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </SettingsFormGridItem>
 
               <SettingsFormGridItem span='full'>
                 <FormField

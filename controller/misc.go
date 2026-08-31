@@ -231,6 +231,10 @@ func GetHomePageContent(c *gin.Context) {
 		"success": true,
 		"message": "",
 		"data":    common.OptionMap["HomePageContent"],
+		// Home page design preset: "spark" (animated cellular hero) or
+		// "default" (original full landing). Read through the same option
+		// endpoint the admin writes, so a single fetch drives both.
+		"home_page_style": common.OptionMap["HomePageStyle"],
 	})
 	return
 }

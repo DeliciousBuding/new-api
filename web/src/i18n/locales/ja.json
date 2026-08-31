@@ -841,6 +841,7 @@
     "Choose one SMTP transport security mode": "SMTP の転送暗号化方式を 1 つ選択してください",
     "Choose the bundle type and define the items inside it.": "バンドルタイプを選択し、その中のアイテムを定義してください。",
     "Choose the default charts, range, and time granularity for model analytics.": "モデル分析のデフォルトチャート、範囲、時間粒度を選択します。",
+    "Choose the design shown on the public home page. Spark shows a full-screen animated cellular hero; Default keeps the original landing page.": "公開ホームページのデザインを選択します。Spark は全画面のアニメーションヒーローを表示し、デフォルトは元のランディングページを維持します。",
     "Choose where to fetch upstream metadata.": "アップストリームのメタデータをどこからフェッチするかを選択してください。",
     "Choose which charts are selected by default when opening model analytics.": "モデル分析を開いたときにデフォルトで選択されるチャートを選択します。",
     "Clamped to": "制限後の値",
@@ -5499,7 +5500,13 @@
     "Invitation code is required": "招待コードを入力してください",
     "Required when creating a new account via third-party sign-in": "サードパーティログインで新規アカウントを作成する際に必要です",
     "exhausted": "使い切り",
-    "invitation code": "招待コード"
+    "invitation code": "招待コード",
+    "Home Page Style": "ホームページスタイル",
+    "Spark animated hero": "Spark アニメーションヒーロー",
+    "Default landing page": "デフォルトのランディングページ",
+    "Select a home page style": "ホームページスタイルを選択",
+    "One gateway.": "ひとつのゲートウェイ。",
+    "Every model.": "すべてのモデルへ。"
   },
   "Cache Usage Aggregation": "Cache Usage Aggregation",
   "Cache Usage Aggregation Enabled": "Cache Usage Aggregation Enabled",

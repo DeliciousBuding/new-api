@@ -26,7 +26,7 @@ import { useTheme } from '@/context/theme-provider'
 import { isLikelyHtml } from '@/lib/content-format'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { CTA, Features, Hero, HowItWorks, Stats } from './components'
+import { CTA, Features, Hero, HowItWorks, SparkHero, Stats } from './components'
 import { useHomePageContent } from './hooks'
 
 export function Home() {
@@ -35,7 +35,7 @@ export function Home() {
   const { resolvedTheme } = useTheme()
   const { auth } = useAuthStore()
   const isAuthenticated = !!auth.user
-  const { content, isLoaded, isUrl } = useHomePageContent()
+  const { content, homePageStyle, isLoaded, isUrl } = useHomePageContent()
 
   const syncIframePreferences = useCallback(() => {
     try {
@@ -118,6 +118,18 @@ export function Home() {
         </div>
       </PublicLayout>
     )
+  }
+
+  const isSparkStyle = homePageStyle === 'spark'
+
+  const sparkHome = (
+    <PublicLayout showMainContainer={false}>
+      <SparkHero isAuthenticated={isAuthenticated} theme={resolvedTheme} />
+    </PublicLayout>
+  )
+
+  if (isSparkStyle) {
+    return sparkHome
   }
 
   return (

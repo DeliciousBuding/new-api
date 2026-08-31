@@ -841,6 +841,7 @@
     "Choose one SMTP transport security mode": "選擇一種 SMTP 傳輸加密方式",
     "Choose the bundle type and define the items inside it.": "選擇捆綁包類型並定義其中的項目。",
     "Choose the default charts, range, and time granularity for model analytics.": "選擇模型呼叫分析的預設圖表、範圍和時間粒度。",
+    "Choose the design shown on the public home page. Spark shows a full-screen animated cellular hero; Default keeps the original landing page.": "選擇公開首頁的設計。Spark 顯示全螢幕動畫版首頁；預設保留原始落地頁。",
     "Choose where to fetch upstream metadata.": "選擇從何處獲取上游元數據。",
     "Choose which charts are selected by default when opening model analytics.": "選擇打開模型呼叫分析時預設選中的圖表。",
     "Clamped to": "限制為",
@@ -5499,7 +5500,13 @@
     "Invitation code is required": "邀請碼為必填項",
     "Required when creating a new account via third-party sign-in": "透過第三方登入建立新帳號時需要提供邀請碼",
     "exhausted": "已耗盡",
-    "invitation code": "邀請碼"
+    "invitation code": "邀請碼",
+    "Home Page Style": "首頁樣式",
+    "Spark animated hero": "Spark 動畫版首頁",
+    "Default landing page": "預設落地頁",
+    "Select a home page style": "選擇首頁樣式",
+    "One gateway.": "一個網關。",
+    "Every model.": "連接所有模型。"
   },
   "Cache Usage Aggregation": "Cache Usage Aggregation",
   "Cache Usage Aggregation Enabled": "Cache Usage Aggregation Enabled",

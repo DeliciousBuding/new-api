@@ -841,6 +841,7 @@
     "Choose one SMTP transport security mode": "Chọn một chế độ bảo mật truyền tải SMTP",
     "Choose the bundle type and define the items inside it.": "Chọn loại gói và định nghĩa các mục bên trong nó.",
     "Choose the default charts, range, and time granularity for model analytics.": "Chọn biểu đồ, khoảng thời gian và độ chi tiết thời gian mặc định cho phân tích mô hình.",
+    "Choose the design shown on the public home page. Spark shows a full-screen animated cellular hero; Default keeps the original landing page.": "Chọn thiết kế cho trang chủ công khai. Spark hiển thị hero di động toàn màn hình; Default giữ nguyên trang đích gốc.",
     "Choose where to fetch upstream metadata.": "Chọn nơi để tìm nạp siêu dữ liệu thượng nguồn.",
     "Choose which charts are selected by default when opening model analytics.": "Chọn biểu đồ được chọn mặc định khi mở phân tích mô hình.",
     "Clamped to": "Giới hạn thành",
@@ -5499,7 +5500,13 @@
     "Invitation code is required": "Vui lòng nhập mã mời",
     "Required when creating a new account via third-party sign-in": "Cần thiết khi tạo tài khoản mới qua đăng nhập bên thứ ba",
     "exhausted": "đã cạn kiệt",
-    "invitation code": "mã mời"
+    "invitation code": "mã mời",
+    "Home Page Style": "Kiểu trang chủ",
+    "Spark animated hero": "Hero hoạt hình Spark",
+    "Default landing page": "Trang đích mặc định",
+    "Select a home page style": "Chọn kiểu trang chủ",
+    "One gateway.": "Một cổng duy nhất.",
+    "Every model.": "Mọi mô hình."
   },
   "Cache Usage Aggregation": "Cache Usage Aggregation",
   "Cache Usage Aggregation Enabled": "Cache Usage Aggregation Enabled",

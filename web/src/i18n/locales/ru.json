@@ -841,6 +841,7 @@
     "Choose one SMTP transport security mode": "Выберите один из режимов защиты SMTP-транспорта",
     "Choose the bundle type and define the items inside it.": "Выберите тип пакета и определите элементы внутри него.",
     "Choose the default charts, range, and time granularity for model analytics.": "Выберите графики, диапазон и временную детализацию по умолчанию для аналитики моделей.",
+    "Choose the design shown on the public home page. Spark shows a full-screen animated cellular hero; Default keeps the original landing page.": "Выберите дизайн публичной главной страницы. Spark показывает полноэкранный анимированный герой; Default сохраняет исходную страницу входа.",
     "Choose where to fetch upstream metadata.": "Выберите, откуда получать метаданные вышестоящего источника.",
     "Choose which charts are selected by default when opening model analytics.": "Выберите графики, которые будут выбраны по умолчанию при открытии аналитики моделей.",
     "Clamped to": "Ограничено до",
@@ -5499,7 +5500,13 @@
     "Invitation code is required": "Необходимо указать код приглашения",
     "Required when creating a new account via third-party sign-in": "Требуется при создании нового аккаунта через сторонний вход",
     "exhausted": "исчерпано",
-    "invitation code": "код приглашения"
+    "invitation code": "код приглашения",
+    "Home Page Style": "Стиль главной страницы",
+    "Spark animated hero": "Анимированный герой Spark",
+    "Default landing page": "Обычная страница входа",
+    "Select a home page style": "Выберите стиль главной страницы",
+    "One gateway.": "Один шлюз.",
+    "Every model.": "Все модели."
   },
   "Cache Usage Aggregation": "Cache Usage Aggregation",
   "Cache Usage Aggregation Enabled": "Cache Usage Aggregation Enabled",
