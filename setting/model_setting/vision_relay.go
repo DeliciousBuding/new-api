@@ -236,8 +236,8 @@ func parseVisionRelayFields(snap *VisionRelaySnapshot, targetsRaw, modelsRaw, ba
 	}
 	if timeoutRaw != "" {
 		v, err := strconv.Atoi(timeoutRaw)
-		if err != nil || v <= 0 {
-			return fmt.Errorf("vision_relay.timeout_sec: must be positive integer, got %q", timeoutRaw)
+		if err != nil || v < visionRelayTimeoutSecMin || v > visionRelayTimeoutSecMax {
+			return fmt.Errorf("vision_relay.timeout_sec: must be in [%d, %d], got %q", visionRelayTimeoutSecMin, visionRelayTimeoutSecMax, timeoutRaw)
 		}
 		snap.TimeoutSec = v
 	}
@@ -323,8 +323,8 @@ func (v *VisionRelaySettings) Validate() error {
 // ValidateEndpoint 校验端点相关配置（enabled 且模型命中后调用）。
 // 失败 = 配置错误 → Service 返回 5xx（绝不把原图发给纯文本模型）。
 func (v *VisionRelaySettings) ValidateEndpoint() error {
-	if v.TimeoutSec <= 0 {
-		return fmt.Errorf("timeout_sec must be > 0, got %d", v.TimeoutSec)
+	if v.TimeoutSec < visionRelayTimeoutSecMin || v.TimeoutSec > visionRelayTimeoutSecMax {
+		return fmt.Errorf("timeout_sec must be in [%d, %d], got %d", visionRelayTimeoutSecMin, visionRelayTimeoutSecMax, v.TimeoutSec)
 	}
 	if v.Enabled {
 		baseURL := strings.TrimSpace(v.BaseURL)
@@ -425,8 +425,8 @@ func ValidateVisionRelayWrite(key, value string) error {
 		return nil
 	case "vision_relay.timeout_sec":
 		n, err := strconv.Atoi(value)
-		if err != nil || n <= 0 {
-			return fmt.Errorf("vision_relay.timeout_sec: must be a positive integer, got %q", value)
+		if err != nil || n < visionRelayTimeoutSecMin || n > visionRelayTimeoutSecMax {
+			return fmt.Errorf("vision_relay.timeout_sec: must be in [%d, %d], got %q", visionRelayTimeoutSecMin, visionRelayTimeoutSecMax, value)
 		}
 		return nil
 	case "vision_relay.cache_ttl_sec", "vision_relay.max_images",
@@ -479,6 +479,7 @@ const (
 // （TTL 过长会让陈旧描述滞留 Redis 且绕过识图指令变更后的自然失效）。
 const (
 	visionRelayCacheTTLSecondsMin, visionRelayCacheTTLSecondsMax         = 0, 604_800 // 0=禁用缓存
+	visionRelayTimeoutSecMin, visionRelayTimeoutSecMax                   = 1, 600
 	visionRelayMaxImagesMin, visionRelayMaxImagesMax                     = 1, 200
 	visionRelayRequestConcurrencyMin, visionRelayRequestConcurrencyMax   = 1, 8
 	visionRelayMaxDescriptionBytesMin, visionRelayMaxDescriptionBytesMax = 1_000, 32_000

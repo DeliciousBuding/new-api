@@ -1,6 +1,9 @@
 package vision_relay
 
-import "sync"
+import (
+	"strings"
+	"sync"
+)
 
 // 主模型瞬态失败自适应熔断（请求级）：
 //   - 同一请求内主模型（models[0]）连续瞬态失败达到 threshold 次后，
@@ -32,6 +35,19 @@ func newPrimaryBreaker(threshold, probeEvery int) *primaryBreaker {
 	return &primaryBreaker{threshold: threshold, probeEvery: probeEvery}
 }
 
+// normalizeModels 与 DescribeOne 的模型解析保持一致：trim 空白并丢弃空项。
+// describeGrouped 在创建 breaker 前先归一化一次，保证 breaker 视角的
+// “主模型名” 与 DescribeOne 实际返回的 r.Model（已 trim）一致。
+func normalizeModels(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, m := range in {
+		if m = strings.TrimSpace(m); m != "" {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 // decide 返回本张图应使用的配置副本，以及该副本是否仍包含主模型。
 // 熔断关闭时正常返回完整链；熔断开启时跳过主模型，但按 probeEvery 放行探测图。
 func (b *primaryBreaker) decide(cfg Config) (Config, bool) {
@@ -54,22 +70,31 @@ func (b *primaryBreaker) decide(cfg Config) (Config, bool) {
 func (b *primaryBreaker) observe(primary string, r DescribeResult, includePrimary bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if !includePrimary {
+		// 跳过主模型的识图：成功与否都不提供主模型健康信号，维持现有熔断状态。
+		return
+	}
 	if r.Enum == "" {
 		if r.Model == primary {
 			b.resetLocked()
-		} else if includePrimary {
+		} else {
 			b.noteFailureLocked()
 		}
 		return
 	}
 	// 失败且发生了回退：说明主模型先瞬态失败过（非回退型失败如 blocked/auth/
 	// size_limit/unsupported 不会把 Fallbacks 计入），记一次主模型失败。
-	if includePrimary && r.Fallbacks > 0 {
+	if r.Fallbacks > 0 {
 		b.noteFailureLocked()
 	}
 }
 
 func (b *primaryBreaker) noteFailureLocked() {
+	if b.open {
+		// 已熔断：探测图再次失败只重置探测窗口，失败计数封顶，不无界增长。
+		b.sinceProbe = 0
+		return
+	}
 	b.failures++
 	if b.failures >= b.threshold {
 		b.open = true

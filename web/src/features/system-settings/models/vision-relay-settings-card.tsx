@@ -76,7 +76,8 @@ const schema = z.object({
   timeout_sec: z.coerce
     .number()
     .int({ message: 'Must be an integer' })
-    .min(1, { message: 'Must be at least 1' }),
+    .min(1, { message: 'Must be at least 1' })
+    .max(600, { message: 'Must be at most 600' }),
   sidecall_secret: z.string().optional(),
   disable_proxy_fetch: z.boolean(),
   // v0.4：每请求策略上限 + 缓存 TTL（范围与后端写时校验一致，见
@@ -637,7 +638,7 @@ export function VisionRelaySettingsCard({
                 </FormControl>
                 <FormDescription>
                   {t(
-                    'Total time budget per request in seconds. Must be a positive integer.'
+                    'Total time budget per request in seconds (1-600). Scale with max_images and the slowest fallback model so all images can finish within the deadline.'
                   )}
                 </FormDescription>
                 <FormMessage />

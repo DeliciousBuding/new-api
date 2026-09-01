@@ -87,3 +87,41 @@ func TestPrimaryBreakerSingleModelNoop(t *testing.T) {
 	assert.True(t, includePrimary)
 	assert.Equal(t, []string{"only"}, got.Models)
 }
+
+func TestNormalizeModels(t *testing.T) {
+	assert.Equal(t, []string{"gemma", "deepseek"}, normalizeModels([]string{" gemma ", "", "deepseek"}))
+	assert.Equal(t, []string{"gemma"}, normalizeModels([]string{"gemma", "  "}))
+	assert.Empty(t, normalizeModels(nil))
+	assert.Empty(t, normalizeModels([]string{"", "   "}))
+}
+
+func TestPrimaryBreakerSkippedCallDoesNotReset(t *testing.T) {
+	cfg := Config{Models: []string{"gemma", "deepseek"}}
+	b := newPrimaryBreaker(1, 4)
+
+	// 打开熔断
+	b.observe("gemma", DescribeResult{Enum: EnumServiceUnavailable, Fallbacks: 1}, true)
+	_, includePrimary := b.decide(cfg)
+	assert.False(t, includePrimary)
+
+	// 跳过主模型的调用即使恰好返回主模型名（重复/别名配置），也不能复位熔断
+	b.observe("gemma", DescribeResult{Enum: "", Model: "gemma"}, false)
+	_, includePrimary = b.decide(cfg)
+	assert.False(t, includePrimary)
+}
+
+func TestPrimaryBreakerFailedProbeStaysOpen(t *testing.T) {
+	cfg := Config{Models: []string{"gemma", "deepseek"}}
+	b := newPrimaryBreaker(1, 3)
+
+	b.observe("gemma", DescribeResult{Enum: EnumServiceUnavailable, Fallbacks: 1}, true)
+	_, includePrimary := b.decide(cfg)
+	assert.False(t, includePrimary)
+
+	// 探测图再次失败：保持熔断，且失败计数封顶不无界增长
+	for i := 0; i < 20; i++ {
+		b.observe("gemma", DescribeResult{Enum: EnumServiceUnavailable, Fallbacks: 1}, true)
+	}
+	_, includePrimary = b.decide(cfg)
+	assert.False(t, includePrimary)
+}
