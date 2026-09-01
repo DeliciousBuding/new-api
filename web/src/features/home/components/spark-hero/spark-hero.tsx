@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { CherryStudio } from '@lobehub/icons'
+import { ClaudeCode, Codex } from '@lobehub/icons'
 import { Link } from '@tanstack/react-router'
 import { ArrowRight, BookOpen } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -115,7 +115,7 @@ export function SparkHero(props: SparkHeroProps) {
               style={{ animationDelay: '120ms' }}
             >
               {t(
-                'Access a vast selection of models via a standard, unified API protocol. Power AI applications, manage digital assets, and connect the Future.'
+                'One standard protocol to every frontier model. Power production AI, own your digital assets, and reach what is next.'
               )}
             </p>
 
@@ -162,49 +162,33 @@ export function SparkHero(props: SparkHeroProps) {
             >
               <div className='mb-4 flex flex-col gap-1'>
                 <span className='text-muted-foreground/50 text-[10px] font-bold tracking-[0.15em] uppercase'>
-                  {t('Supported Applications')}
+                  {t('Native integrations')}
                 </span>
                 <p className='text-muted-foreground/60 text-xs leading-relaxed'>
                   {t(
-                    'Supports one-click configuration and perfectly adapts to NewAPI multi-protocol configuration.'
+                    'Claude Code, Codex and the wider AI toolchain connect in one click - no glue code.'
                   )}
                 </p>
               </div>
               <div className='flex flex-wrap items-center gap-3'>
                 <a
-                  href='https://cherry-ai.com'
+                  href='https://claude.com/claude-code'
                   target='_blank'
                   rel='noopener noreferrer'
                   className='group border-border/40 bg-muted/15 text-foreground/80 hover:border-border hover:bg-muted/30 hover:text-foreground flex items-center gap-3 rounded-full border px-5 py-2.5 text-sm font-medium shadow-[0_1px_2.5px_rgba(0,0,0,0.01)] backdrop-blur-xs transition-all duration-300 hover:scale-[1.02]'
                 >
-                  <CherryStudio.Color size={24} className='shrink-0' />
-                  <span>Cherry Studio</span>
+                  <ClaudeCode.Color size={24} className='shrink-0' />
+                  <span>Claude Code</span>
                 </a>
 
                 <a
-                  href='https://ccswitch.io'
+                  href='https://openai.com/codex'
                   target='_blank'
                   rel='noopener noreferrer'
                   className='group border-border/40 bg-muted/15 text-foreground/80 hover:border-border hover:bg-muted/30 hover:text-foreground flex items-center gap-3 rounded-full border px-5 py-2.5 text-sm font-medium shadow-[0_1px_2.5px_rgba(0,0,0,0.01)] backdrop-blur-xs transition-all duration-300 hover:scale-[1.02]'
                 >
-                  <img
-                    src='https://ccswitch.io/favicon.png'
-                    alt='CC Switch'
-                    className='size-6 shrink-0 rounded-md object-contain'
-                    onError={(e) => {
-                      e.currentTarget.style.display = 'none'
-                      const fallback = e.currentTarget
-                        .nextSibling as HTMLElement
-                      if (fallback) fallback.style.display = 'flex'
-                    }}
-                  />
-                  <span
-                    style={{ display: 'none' }}
-                    className='size-6 shrink-0 items-center justify-center rounded-md bg-blue-500/10 text-[10px] font-bold text-blue-600 dark:bg-blue-400/10 dark:text-blue-400'
-                  >
-                    CC
-                  </span>
-                  <span>CC Switch</span>
+                  <Codex.Color size={24} className='shrink-0' />
+                  <span>Codex</span>
                 </a>
 
                 <div className='group border-border/40 bg-muted/15 text-foreground/55 hover:border-border hover:bg-muted/30 hover:text-foreground flex cursor-default items-center gap-2.5 rounded-full border px-5 py-2.5 text-sm font-medium shadow-[0_1px_2.5px_rgba(0,0,0,0.01)] backdrop-blur-xs transition-all duration-300 hover:scale-[1.02]'>
