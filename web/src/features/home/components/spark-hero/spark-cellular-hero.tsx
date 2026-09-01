@@ -833,15 +833,24 @@ export function SparkCellularHero(props: SparkCellularHeroProps) {
       render(now, B * Math.exp(P * T - F))
     }
 
-    function startAnimation() {
-      running = true
+    /* primeOpening paints the OPENING framing (dot grid, empty colony) so the
+       first frame before the observer starts the growth never flashes the
+       settled full board. prime() stays reserved for reduced-motion and for
+       the settled state after a resize once the choreography has finished. */
+    function primeOpening() {
       const now = performance.now()
       colony = newColony(now)
-      seedColony(colony, now, false)
       P = 0
       F = isBars ? 0.12 * T : -0.04 * T
       R = 0
-      lastFrame = now
+      render(now, B * Math.exp(P * T - F))
+    }
+
+    function startAnimation() {
+      running = true
+      primeOpening()
+      seedColony(colony, performance.now(), false)
+      lastFrame = performance.now()
       rafId = requestAnimationFrame(frame)
     }
 
@@ -854,7 +863,7 @@ export function SparkCellularHero(props: SparkCellularHeroProps) {
     if (reduced) {
       prime()
     } else {
-      prime()
+      primeOpening()
       if (typeof IntersectionObserver !== 'undefined') {
         io = new IntersectionObserver(
           ([entry]) => {
@@ -875,7 +884,14 @@ export function SparkCellularHero(props: SparkCellularHeroProps) {
       }
       ro = new ResizeObserver(() => {
         resize()
-        prime()
+        if (running) {
+          // Mid-growth resize: keep the live colony, just reframe it.
+          render(performance.now(), B * Math.exp(P * T - F))
+        } else if (colony.doneAt) {
+          prime()
+        } else {
+          primeOpening()
+        }
       })
       ro.observe(hero)
     }
