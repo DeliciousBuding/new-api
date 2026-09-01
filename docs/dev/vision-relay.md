@@ -16,7 +16,7 @@ Vision Relay 在网关内把受支持请求中的图片替换为不可信文本�
 
 1. 从 `OptionMap` 读取一次不可变配置快照。
 2. 验证递归保护 HMAC marker；只有认证 marker 可以跳过接管。
-3. 检查总开关、原始目标模型 glob 和受支持协议。
+3. 检查总开关、实际请求模型（映射后）glob 和受支持协议。
 4. 在模型命中后严格校验视觉端点、模型链、API key 和 sidecall secret。
 5. 从 `BodyStorage` 读取原始请求，并在一个请求级总 deadline 内调用核心引擎。
 6. 核心引擎提取、去重、抓取、解码/缩放图片，按 fallback 链生成转写。

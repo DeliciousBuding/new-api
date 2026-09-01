@@ -477,7 +477,7 @@ func TestVisionRelayWillEngageForEstimate(t *testing.T) {
 				OriginModelName: tc.model,
 				RelayFormat:     tc.format,
 			}
-			got := VisionRelayWillEngageForEstimate(info)
+			got := VisionRelayWillEngageForEstimate(nil, info)
 			assert.Equal(t, tc.wantEngage, got)
 		})
 	}
@@ -486,5 +486,40 @@ func TestVisionRelayWillEngageForEstimate(t *testing.T) {
 // nil RelayInfo must not panic — helper is called from estimate path where
 // a partial RelayInfo could exist in edge cases.
 func TestVisionRelayWillEngageForEstimateNilInfo(t *testing.T) {
-	require.False(t, VisionRelayWillEngageForEstimate(nil))
+	require.False(t, VisionRelayWillEngageForEstimate(nil, nil))
+}
+
+// visionRelayTargetModel 必须按“实际请求模型（映射后）”解析：无/空/非法/循环
+// 映射回退到 OriginModelName；有效映射跟随链式重定向。
+func TestVisionRelayTargetModel(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	info := &relaycommon.RelayInfo{OriginModelName: "deepseek-v4-flash"}
+
+	// 无映射 → 原模型
+	require.Equal(t, "deepseek-v4-flash", visionRelayTargetModel(c, info))
+
+	// 空映射 → 原模型
+	c.Set("model_mapping", "{}")
+	require.Equal(t, "deepseek-v4-flash", visionRelayTargetModel(c, info))
+
+	// 有效映射 → 映射后模型
+	c.Set("model_mapping", `{"deepseek-v4-flash":"deepseek-v4-flash-vision-exp"}`)
+	require.Equal(t, "deepseek-v4-flash-vision-exp", visionRelayTargetModel(c, info))
+
+	// 链式映射 → 链尾模型
+	c.Set("model_mapping", `{"deepseek-v4-flash":"a","a":"b"}`)
+	require.Equal(t, "b", visionRelayTargetModel(c, info))
+
+	// 非法 JSON → 原模型
+	c.Set("model_mapping", "not-json")
+	require.Equal(t, "deepseek-v4-flash", visionRelayTargetModel(c, info))
+
+	// 循环映射 → 原模型（fail-closed 不 panic）
+	cyclicInfo := &relaycommon.RelayInfo{OriginModelName: "a"}
+	c.Set("model_mapping", `{"a":"b","b":"a"}`)
+	require.Equal(t, "a", visionRelayTargetModel(c, cyclicInfo))
+
+	// nil context → 原模型
+	require.Equal(t, "deepseek-v4-flash", visionRelayTargetModel(nil, info))
 }

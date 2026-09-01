@@ -259,7 +259,7 @@ func EstimateRequestToken(c *gin.Context, meta *types.TokenCountMeta, info *rela
 	// Relay 不接管它们。仅当 VisionRelayMaxImagesForEstimate > 0 时截断，
 	// 否则保持原行为（不破坏 >MaxImages 的合法多图请求）。
 	files := meta.Files
-	if maxImages := VisionRelayMaxImagesForEstimate(info); maxImages > 0 {
+	if maxImages := VisionRelayMaxImagesForEstimate(c, info); maxImages > 0 {
 		files = boundVisionImageFiles(meta.Files, maxImages)
 	}
 
