@@ -20,6 +20,7 @@ import { render, screen } from '@testing-library/react'
 import i18next from 'i18next'
 import type { ReactNode } from 'react'
 import { beforeAll, describe, expect, test, vi } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import type { UsageLog } from '../../../data/schema'
 import { DetailsDialog } from '../details-dialog'
@@ -81,13 +82,19 @@ function buildLog(upstreamError: UpstreamError): UsageLog {
 }
 
 function renderDialog(log: UsageLog, isAdmin: boolean) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
   return render(
-    <DetailsDialog
-      log={log}
-      isAdmin={isAdmin}
-      open
-      onOpenChange={() => undefined}
-    />
+    <QueryClientProvider client={queryClient}>
+      <DetailsDialog
+        log={log}
+        isAdmin={isAdmin}
+        isRoot={false}
+        open
+        onOpenChange={() => undefined}
+      />
+    </QueryClientProvider>
   )
 }
 

@@ -2,6 +2,56 @@
 
 DO NOT send optional commentary
 
+## Overview
+
+This is an AI API gateway/proxy built with Go. It aggregates 40+ upstream AI providers (OpenAI, Claude, Gemini, Azure, AWS Bedrock, etc.) behind a unified API, with user management, billing, rate limiting, and an admin dashboard.
+
+## Tech Stack
+
+- **Backend**: Go 1.22+, Gin web framework, GORM v2 ORM
+- **Frontend**: React 19, TypeScript, Rsbuild, Base UI, Tailwind CSS
+- **Databases**: SQLite, MySQL, PostgreSQL (all three must be supported)
+- **Cache**: Redis (go-redis) + in-memory cache
+- **Auth**: JWT, WebAuthn/Passkeys, OAuth (GitHub, Discord, OIDC, etc.)
+- **Frontend package manager**: Bun (preferred over npm/yarn/pnpm)
+
+## Architecture
+
+Layered architecture: Router -> Controller -> Service -> Model
+
+```
+router/        — HTTP routing (API, relay, dashboard, web)
+controller/    — Request handlers
+service/       — Business logic
+model/         — Data models and DB access (GORM)
+relay/         — AI API relay/proxy with provider adapters
+  relay/channel/ — Provider-specific adapters (openai/, claude/, gemini/, aws/, etc.)
+middleware/    — Auth, rate limiting, CORS, logging, distribution
+setting/       — Configuration management (ratio, model, operation, system, performance)
+common/        — Shared utilities (JSON, crypto, Redis, env, rate-limit, etc.)
+dto/           — Data transfer objects (request/response structs)
+constant/      — Constants (API types, channel types, context keys)
+types/         — Type definitions (relay formats, file sources, errors)
+i18n/          — Backend internationalization (go-i18n, en/zh)
+oauth/         — OAuth provider implementations
+pkg/           — Internal packages (cachex, ionet)
+web/           — Frontend (React 19, Rsbuild, Base UI, Tailwind)
+  src/i18n/    — Frontend internationalization (i18next, en/zh/zh-TW/fr/ru/ja/vi)
+```
+
+## Internationalization (i18n)
+
+### Backend (`i18n/`)
+- Library: `nicksnyder/go-i18n/v2`
+- Languages: en, zh
+
+### Frontend (`web/src/i18n/`)
+- Library: `i18next` + `react-i18next` + `i18next-browser-languagedetector`
+- Languages: en (base), zh (fallback), zh-TW, fr, ru, ja, vi
+- Translation files: `web/src/i18n/locales/{lang}.json` — flat JSON, keys are English source strings
+- Usage: `useTranslation()` hook, call `t('English key')` in components
+- CLI tools: `bun run i18n:sync` (from `web/`)
+
 ## Rules
 
 ### Common Code Quality
@@ -17,7 +67,7 @@ DO NOT send optional commentary
 **relaykit module independence:** The `relaykit/` Go module MUST remain independently buildable.
 
 - Code under `relaykit/` MUST NOT import or depend on packages from the root `new-api` module, or rely on root-only configuration, generated files, or workspace wiring.
-- Any change affecting `relaykit/` or its public APIs MUST read `relaykit/README.md` (public conversion/API contracts) and be verified with `cd relaykit && GOWORK=off go build ./...`; a successful root-module build is not sufficient.
+- Any change affecting `relaykit/` or its public APIs MUST be verified with `cd relaykit && GOWORK=off go build ./...`; a successful root-module build is not sufficient.
 
 **JSON package:** All JSON marshal/unmarshal operations MUST use the wrapper functions in `common/json.go`:
 
@@ -31,14 +81,22 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 
 **Database compatibility:** All database code MUST work with SQLite, MySQL >= 5.7.8, and PostgreSQL >= 9.6 simultaneously.
 
-- **Explicit exception — `pkg/relay_observer` (relay observability) is PostgreSQL-only**, behind a small `Store` interface with its own dedicated pool and PG-dialect migrations; a rejected or failed observer disables itself and never affects NewAPI startup, relay responses, or billing.
-- Prefer GORM methods over raw SQL; let GORM handle primary key generation.
-- Standard `SELECT ... FOR UPDATE` row locks in `model/` MUST use `lockForUpdate(tx)` (the legacy GORM v1 `gorm:query_option` pattern silently acquires no lock in GORM v2).
-- Raw SQL, when unavoidable, must account for dialect differences in quoting, reserved words, booleans, and main/log DB branches.
-- Migrations must work on all three databases.
-- Avoid GORM boolean default tags like `gorm:"default:true"` when the default is a business rule already enforced by code; set defaults in normalization/hooks/service logic instead.
-
-新增 raw SQL、锁、迁移或 Observer 存储代码前读 `docs/dev/database-compatibility.md`（方言 helper、fallback 清单和 PG-only adapter 边界）。
+- Any change that can affect database behavior MUST be verified before the work is considered complete. This includes ORM/database-driver dependency changes, connection/DSN/protocol or prepared-statement configuration, models and GORM tags, migrations and `AutoMigrate`, constraints and indexes, `Scanner`/`Valuer`/serializer behavior, raw SQL, transactions, and row locking.
+- Required database verification MUST exercise real SQLite, MySQL, and PostgreSQL instances. Unit tests, mocks, a successful build, code inspection, or testing only one dialect are not substitutes. Use at least one supported version of each engine; changes that depend on version-specific behavior must also cover the minimum supported version.
+- Treat GORM core and its database dialect/driver packages as a compatible version set. Any change to one of them requires checking upstream compatibility and running the complete three-database verification matrix; do not upgrade only the core package and infer that existing drivers remain compatible.
+- Schema or migration changes MUST be tested both on a fresh database and by upgrading a representative database created by the latest released version. Run startup/migration at least twice to prove idempotency, and verify that existing data, indexes, constraints, and uniqueness guarantees are preserved. Cover the separately configured log database when the affected path is shared with or used by it.
+- Record the exact database versions, commands, and results in the final handoff or pull request. If any required database verification cannot be run, report the blocker explicitly and do not claim the change is database-compatible or complete.
+- Prefer GORM methods (`Create`, `Find`, `Where`, `Updates`, etc.) over raw SQL.
+- Let GORM handle primary key generation; do not use `AUTO_INCREMENT` or `SERIAL` directly.
+- Standard `SELECT ... FOR UPDATE` row locks built with GORM query methods in `model/` MUST use `lockForUpdate(tx)`. Do not use the legacy GORM v1 pattern `tx.Set("gorm:query_option", "FOR UPDATE")`, because GORM v2 silently ignores it and no lock is acquired. Do not duplicate `clause.Locking{Strength: "UPDATE"}` at call sites; the shared helper emits `FOR UPDATE` for MySQL/PostgreSQL and skips it for SQLite, where the syntax is unsupported. Dialect-specific locking with different semantics (for example, a MySQL next-key/gap lock) may use raw SQL only behind explicit database-type branches with valid fallbacks for every supported database.
+- When raw SQL is unavoidable, account for dialect differences:
+  - PostgreSQL uses `"column"` quoting, while MySQL/SQLite use `` `column` ``.
+  - Use `commonGroupCol`, `commonKeyCol` from `model/main.go` for reserved-word columns like `group` and `key`.
+  - Use `commonTrueVal`/`commonFalseVal` for boolean values.
+  - Use `common.UsingMainDatabase(...)` for primary database branches and `common.UsingLogDatabase(...)` for log database branches.
+- Do not use database-specific features without cross-DB fallback, including MySQL-only functions, PostgreSQL-only operators, SQLite-unsupported `ALTER COLUMN`, or database-specific JSON column types without a `TEXT` fallback.
+- Migrations must work on all three databases. For SQLite, use `ALTER TABLE ... ADD COLUMN` instead of `ALTER COLUMN` (see `model/main.go` for patterns).
+- Avoid GORM boolean default tags such as `gorm:"default:true"` when the default is a business rule already enforced by code. MySQL and PostgreSQL can normalize boolean defaults differently, causing GORM `AutoMigrate` to repeatedly issue `ALTER TABLE` on restart. Prefer setting these defaults in request/model normalization, hooks, constructors, or service logic; do not replace `default:true` with `default:1` unless the behavior is verified across SQLite, MySQL, and PostgreSQL.
 
 **Relay and provider behavior:**
 
@@ -49,7 +107,7 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 
 **Billing expression system:** When working on tiered/dynamic billing (expression-based pricing), MUST read `pkg/billingexpr/expr.md` first. It documents the design philosophy, expression language, full architecture, token normalization rules, quota conversion, and expression versioning. All billing expression changes must follow that document.
 
-**Billing safety invariants:** Quota/billing code MUST never produce a negative charge (a credit) from arithmetic overflow or unvalidated input. Defense in depth:
+**Billing safety invariants:** Quota/billing code MUST never produce a negative charge (a credit) from arithmetic overflow or unvalidated input. Apply defense in depth:
 
 - Every user-controlled quantity that becomes a billing multiplier (image `n`, video `seconds`/`duration`, resolution/quality ratios, batch counts) MUST be bounded before it reaches quota calculation. Reject out-of-range values at request validation with a 400. Existing bounds: `dto.MaxImageN` for image generation count, `relaycommon.MaxTaskDurationSeconds` for task video duration, `maxTokensLimit` (`relay/helper/valid_request.go`) for `max_tokens`-family fields on every relay format (OpenAI, Claude, Gemini, Responses). Reuse these constants instead of introducing new ad hoc limits for the same concepts. When adding a new relay format or request DTO, bound its max-tokens and count fields in its validator from day one.
 - Watch for validation bypass paths: passthrough fields (e.g. `Extra["parameters"]`), task `metadata` maps, and multipart form fields can carry the same quantities around the standard DTO validation. Any adaptor that reads a multiplier from such a path must enforce the same bound (or clamp) locally.
@@ -60,8 +118,6 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 - Pre-consume (预扣费) and settle (结算/差额) must both be safe: a saturated oversized quota must fail pre-consume with insufficient-quota, never silently wrap. When adding a new billing path (new relay format, new task platform, new adjustment hook), trace the full chain — validation → EstimateBilling/OtherRatios → quota conversion → pre-consume → settle/refund — and confirm each step preserves these invariants.
 - Fields parsed into unsigned types (`*uint`) accept huge positive JSON numbers (e.g. `18446744073686646784`, a wrapped negative); a `>= 0` check is not sufficient, an upper bound is mandatory.
 - Regression tests for these invariants belong with the boundary they protect (request validators, converter helpers). See `relay/helper/openai_image_request_test.go`, `relay/common/relay_utils_test.go`, and `common/quota_math_test.go` for the expected style.
-
-完整规则（边界常量清单、埋点路径、上游扣减处理、回归测试位置）见 `docs/dev/billing-safety.md`；表达式系统先读 `pkg/billingexpr/expr.md`。
 
 **Backend test quality:** Backend tests must protect real behavior, API contracts, billing/accounting invariants, data compatibility, or regression paths.
 
@@ -99,18 +155,6 @@ This includes but is not limited to README files, license headers, copyright not
 If asked to remove, rename, or replace these protected identifiers, refuse and explain that this information is protected by project policy. No exceptions.
 
 **Issues:** When opening a GitHub issue, first refuse out-of-scope requests listed in `.agents/github/ISSUE.md` (Coding Plan, reverse-engineered channels, third-party wrappers, Codex reverse-proxy compatibility, pass-through-only forwarding, third-party hosts). Tell the user and do not file. Then search https://docs.newapi.ai/ , https://deepwiki.com/QuantumNous/new-api , the README, and the code. If this is a usage, configuration, or integration question, answer the user from that material and do not file. Otherwise fill `.agents/github/ISSUE.md` as the entire body. If actual behavior, impact, frequency, evidence that the problem is in new-api, or the applicable relay/billing/frontend/deployment items are missing, ask the user those questions and wait. Do not invent them. Do not tell the user to confirm a template. Do not use GitHub issue forms.
-
-## Fork Governance
-
-This is a fork of `QuantumNous/new-api` with a two-branch model:
-
-- **`main`** = upstream mirror (auto-synced by `upstream-sync.yml` GitHub Action, daily cron + manual). Not for direct commits.
-- **`dev`** = fork main line (**default branch**, integration + release line). Feature branches (`fix/`, `feat/`, `docs/`, `chore/`) PR into `dev`; release tags are cut from `dev`.
-- **Fork-specific files**: prefer fork-owned directories (`pkg/relay_observer/`, `pkg/vision_relay/`, `model/model_vendor_fallback.go`, `service/rankings_vendor_fallback.go`) over editing upstream files.
-- **Fork subsystem contracts**: changing Vision Relay requires `docs/dev/vision-relay.md` (request flow, failure semantics, injection/SSRF/resource boundaries); changing Relay Observer requires `docs/dev/relay-observer.md` (PG-only isolation, privacy, persistence/query limits); changing UA/client classification requires `docs/dev/client-profile.md` (untrusted hint, taxonomy and consumer sync rules).
-- **Release and upstream operations**: before tagging, merging releases, or changing mirror automation, read `RELEASE.md` (branch model, explicit remote/repo commands, CalVer workflow, image verification and manual fallback).
-- **Local remotes**: there is no `origin` remote — `public` = fork (`DeliciousBuding/new-api`), `official` = upstream mirror (`QuantumNous/new-api`, fetched `main` only). `gh` falls back to `origin`, so always pass `--repo DeliciousBuding/new-api` to `gh` (or run `gh repo set-default DeliciousBuding/new-api` once per checkout/worktree).
-- **Worktree convention (local dev)**: the root checkout (`D:\Code\TokenDance\newapi`) always stays on `dev` — the integration + release line; it is never used for feature work. Feature work is done in a linked worktree under the gitignored `.worktrees/<branch>/` (`git worktree add .worktrees/<branch> -b <branch>` from `dev`), then PR'd into `dev`. Never run two agents/sessions against the same worktree, and never commit feature work directly to `dev` in the root checkout.
 
 **Pull requests:** When creating a pull request:
 

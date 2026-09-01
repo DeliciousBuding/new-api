@@ -33,6 +33,7 @@ const defaultSiteSettings: SiteSettings = {
   HomePageContent: '',
   HomePageStyle: 'spark',
   ServerAddress: '',
+  TaskPublicAddress: '',
   'legal.user_agreement': '',
   'legal.privacy_policy': '',
   HeaderNavModules: '',
