@@ -42,11 +42,12 @@ type Config struct {
 // 这些是资源防线而非每请求策略——尤其全局闸容量，热改瞬间并发突变会
 // 放大进程内存峰值（见 setting 层对"哪些进 DB、哪些只进 env"的划分）。
 var (
-	MaxDecodedBytes   = envInt64("VISION_RELAY_MAX_DECODED_BYTES", 15<<20) // 单图解码后字节上限（含远程下载限量）
-	MaxPixels         = envInt64("VISION_RELAY_MAX_PIXELS", 12_000_000)    // 单图像素上限（宽*高，DecodeConfig 阶段校验）
-	MaxDimension      = envInt("VISION_RELAY_MAX_DIMENSION", 4096)         // 单图边长上限
-	GlobalDecodeSlots = envInt("VISION_RELAY_DECODE_SLOTS", 2)             // 进程级解码/压缩并发槽（内存闸门）
-	GlobalCallSlots   = envInt("VISION_RELAY_CALL_SLOTS", 8)               // 进程级旁路调用并发槽
+	MaxDecodedBytes      = envInt64("VISION_RELAY_MAX_DECODED_BYTES", 15<<20)        // 单图解码后字节上限（含远程下载限量）
+	MaxTotalDecodedBytes = envInt64("VISION_RELAY_MAX_TOTAL_DECODED_BYTES", 512<<20) // 单请求累计解码字节上限（多图请求内存防线）
+	MaxPixels            = envInt64("VISION_RELAY_MAX_PIXELS", 12_000_000)           // 单图像素上限（宽*高，DecodeConfig 阶段校验）
+	MaxDimension         = envInt("VISION_RELAY_MAX_DIMENSION", 4096)                // 单图边长上限
+	GlobalDecodeSlots    = envInt("VISION_RELAY_DECODE_SLOTS", 2)                    // 进程级解码/压缩并发槽（内存闸门）
+	GlobalCallSlots      = envInt("VISION_RELAY_CALL_SLOTS", 8)                      // 进程级旁路调用并发槽
 )
 
 // envInt / envInt64 启动期读取进程级环境变量（未设置/非法值 → 回退默认）。
@@ -75,7 +76,7 @@ func envInt64(name string, fallback int64) int64 {
 const (
 	MaxImages           = 20            // 单请求最多处理图片数（fetch/decode 前生效）
 	MaxDescriptionBytes = 8_000         // 单图描述注入上限
-	MaxTotalBytes       = 24_000        // 全部注入（含边界文本）总上限
+	MaxTotalBytes       = 48_000        // 全部注入（含边界文本）总上限
 	RequestConcurrency  = 4             // 每请求图片并发度
 	DefaultMaxTokens    = 2000          // 视觉模型输出上限
 	MaxFallbackModels   = 3             // fallback 链最多尝试模型数

@@ -80,6 +80,7 @@ func (e *Engine) Enhance(ctx context.Context, raw []byte, format Format, cfg Con
 	//    digest 准备保持串行，但必须在全局 decode gate 外；该 gate 只保护后续
 	//    CompressForVision 中的图像解析、完整解码、resize 和重编码。
 	images := make([]*PatchedImage, 0, min(len(patches), cfg.Limits.MaxImages))
+	var totalDecoded int64
 	for i := range patches {
 		if i >= cfg.Limits.MaxImages {
 			img := &PatchedImage{Patch: patches[i], Err: ErrImageLimit}
@@ -88,6 +89,16 @@ func (e *Engine) Enhance(ctx context.Context, raw []byte, format Format, cfg Con
 			continue
 		}
 		img := PrepareImage(ctx, patches[i], e.Fetcher, MaxDecodedBytes)
+		if img.Err == nil && len(img.Data) > 0 {
+			totalDecoded += int64(len(img.Data))
+			if totalDecoded > MaxTotalDecodedBytes {
+				// 请求级累计解码字节超限：超出部分按 size_limit 占位，避免
+				// max_images 抬高后 N×单图上限叠加放大进程内存峰值。
+				img.Err = ErrSizeLimit
+				img.Data = nil
+				img.Digest = ""
+			}
+		}
 		images = append(images, img)
 		if img.Err != nil {
 			recordFailure(stats, enumFromErr(img.Err), img)
@@ -138,9 +149,15 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 		client = &VisionClient{}
 	}
 	instruction := BuildInstruction(cfg)
+	models := normalizeModels(cfg.Models)
+	if len(models) == 0 {
+		return map[string]string{}
+	}
+	cfg.Models = models
 	results := make(map[string]string, len(groups))
 	var mu sync.Mutex
 	sem := make(chan struct{}, cfg.Limits.RequestConcurrency)
+	breaker := newPrimaryBreaker(primaryBreakerThreshold, primaryBreakerProbeEvery)
 	var wg sync.WaitGroup
 	var abort atomic.Bool // 请求级熔断：401/403 后停止所有后续 sidecall
 	for digest, group := range groups {
@@ -156,6 +173,13 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 		go func(d string, g []*PatchedImage) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// batch：本组识别/占位结束后原始解码字节已无下游消费者，立即释放，
+			// 降低高 max_images（如 200 张）下 images 切片长期持有原始字节的内存峰值。
+			defer func() {
+				for _, im := range g {
+					im.Data = nil
+				}
+			}()
 			mu.Lock()
 			if abort.Load() {
 				recordFailure(stats, EnumServiceUnavailable, g...) // 在途队列中已被熔断
@@ -212,13 +236,21 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 			if enum == "" && !abort.Load() {
 				callGateCh, err := globalCallGate.acquire(ctx)
 				if err == nil {
-					r := client.DescribeOne(ctx, instruction, compressed, mediaType, cfg)
-					globalCallGate.release(callGateCh)
-					desc, enum, model = r.Desc, r.Enum, r.Model
-					calls, fallbacks = r.HTTPCalls, r.Fallbacks
-					attempts = r.Attempts
-					if r.Abort {
-						abort.Store(true) // 请求级熔断：后续任务不再发起 sidecall
+					if abort.Load() {
+						// 闸后复查：等待期间收到 401/403 → 不再发起 sidecall
+						globalCallGate.release(callGateCh)
+						enum = EnumServiceUnavailable
+					} else {
+						callCfg, includePrimary := breaker.decide(cfg)
+						r := client.DescribeOne(ctx, instruction, compressed, mediaType, callCfg)
+						breaker.observe(cfg.Models[0], r, includePrimary)
+						globalCallGate.release(callGateCh)
+						desc, enum, model = r.Desc, r.Enum, r.Model
+						calls, fallbacks = r.HTTPCalls, r.Fallbacks
+						attempts = r.Attempts
+						if r.Abort {
+							abort.Store(true) // 请求级熔断：后续任务不再发起 sidecall
+						}
 					}
 				} else {
 					// 闸获取失败（ctx 取消/超时）→ 与 decode 闸失败对称，占位兜底
@@ -298,8 +330,12 @@ func truncateResults(images []*PatchedImage, results map[string]string, stats *S
 	for _, img := range images {
 		desc, ok := results[img.Digest]
 		if !ok {
-			// 占位文本（含边界），计入总量
-			total += len(placeholderUnavailable(img.Patch, imageEnum(img), len(images)))
+			// 占位文本（含边界），计入总量；超预算时塌缩为最短占位，保持总量硬上限。
+			ph := placeholderUnavailable(img.Patch, imageEnum(img), len(images))
+			if total+len(ph) > limits.MaxTotalBytes {
+				ph = "[omitted]"
+			}
+			total += len(ph)
 			continue
 		}
 		// wrap 后注入长度：prefix + \n + desc + \n + suffix
