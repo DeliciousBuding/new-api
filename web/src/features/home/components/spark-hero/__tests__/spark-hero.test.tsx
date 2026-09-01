@@ -26,7 +26,8 @@ vi.mock('@/hooks/use-status', () => ({
 }))
 
 vi.mock('@lobehub/icons', () => ({
-  CherryStudio: { Color: () => <span aria-hidden='true'>CS</span> },
+  ClaudeCode: { Color: () => <span aria-hidden='true'>CC</span> },
+  Codex: { Color: () => <span aria-hidden='true'>CX</span> },
 }))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
@@ -40,7 +41,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 })
 
 describe('spark hero layout', () => {
-  test('renders slogan, actions and the full-bleed background', () => {
+  test('renders slogan, actions and the centred integration pills', () => {
     render(<SparkHero theme='light' />)
 
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
@@ -57,6 +58,12 @@ describe('spark hero layout', () => {
     )
     expect(
       document.querySelector('a[href="https://docs.newapi.pro"]')
+    ).not.toBeNull()
+    expect(
+      document.querySelector('a[href="https://claude.com/claude-code"]')
+    ).not.toBeNull()
+    expect(
+      document.querySelector('a[href="https://openai.com/codex"]')
     ).not.toBeNull()
   })
 
