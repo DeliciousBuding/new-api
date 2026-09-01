@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/vision_relay"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -87,12 +89,38 @@ func (f visionRelayFetcher) Fetch(ctx context.Context, url string, maxBytes int6
 	return vision_relay.LimitedFetch(ctx, client, url, maxBytes)
 }
 
+// visionRelayTargetModel resolves the model name that will actually be sent
+// upstream after the selected channel's model mapping is applied.
+//
+// Vision Relay 的 target_models 按“实际请求模型（映射后）”匹配：渠道把纯文本
+// 模型映射到视觉模型时，实际模型已具备原生视觉能力，不应再触发识图；否则会在
+// 旁路识图后又把文本描述发给视觉模型，既重复计费又浪费一次 sidecall。
+// 无映射 / 空映射 / 解析失败 / 映射循环时回退到 OriginModelName（映射前语义）。
+func visionRelayTargetModel(c *gin.Context, relayInfo *relaycommon.RelayInfo) string {
+	if c == nil {
+		return relayInfo.OriginModelName
+	}
+	raw := c.GetString("model_mapping")
+	if raw == "" || raw == "{}" {
+		return relayInfo.OriginModelName
+	}
+	var modelMap map[string]string
+	if err := json.Unmarshal([]byte(raw), &modelMap); err != nil {
+		return relayInfo.OriginModelName
+	}
+	resolved, cyclic := model.FollowChannelModelMapping(modelMap, relayInfo.OriginModelName)
+	if cyclic || resolved == "" {
+		return relayInfo.OriginModelName
+	}
+	return resolved
+}
+
 // PrepareVisionRelayRequest 预扣费成功后、retry 循环前调用（controller 唯一钩子）。
 //
 // 职责（v0.2.1 service 边界 + v0.2.2 修复）：
 //  1. 检查递归头
 //  2. 获取配置快照（OptionMap 同步读取，不可变）
-//  3. 检查 enabled + target model（OriginModelName，映射前）——未命中 → no-op
+//  3. 检查 enabled + target model（实际请求模型，映射后）——未命中 → no-op
 //  4. **命中后**校验端点配置（ValidateEndpoint）——失败 = 5xx，绝不 fail-open
 //  5. 从 BodyStorage 读取原始 body
 //  6. 创建请求级总 deadline（TimeoutSec 全局预算，核心全部继承）
@@ -128,7 +156,7 @@ func PrepareVisionRelayRequest(c *gin.Context, relayInfo *relaycommon.RelayInfo)
 	if err != nil {
 		return visionRelayFail(relayInfo, "target_models", &cfg, nil, fmt.Errorf("vision relay target models: %w", err))
 	}
-	if !visionRelayMatchPatterns(patterns, relayInfo.OriginModelName) {
+	if !visionRelayMatchPatterns(patterns, visionRelayTargetModel(c, relayInfo)) {
 		return nil
 	}
 	// 4. 格式判定（Claude/OpenAI/Responses；未知格式不处理）——先于端点必填校验：
@@ -314,7 +342,7 @@ func visionRelayAttempts(stats *vision_relay.Stats) string {
 // model 匹配 + 支持的 relay format），但故意省略递归头 bypass：estimate 阶段
 // 的请求是原始请求而非已认证旁路，头检查对边界决策无关。
 // 命中返回配置快照；未命中返回 ok=false。
-func visionRelaySnapshotForEstimate(info *relaycommon.RelayInfo) (model_setting.VisionRelaySnapshot, bool) {
+func visionRelaySnapshotForEstimate(c *gin.Context, info *relaycommon.RelayInfo) (model_setting.VisionRelaySnapshot, bool) {
 	if info == nil {
 		return model_setting.VisionRelaySnapshot{}, false
 	}
@@ -323,7 +351,7 @@ func visionRelaySnapshotForEstimate(info *relaycommon.RelayInfo) (model_setting.
 		return model_setting.VisionRelaySnapshot{}, false
 	}
 	patterns, err := cfg.TargetModelPatterns()
-	if err != nil || !visionRelayMatchPatterns(patterns, info.OriginModelName) {
+	if err != nil || !visionRelayMatchPatterns(patterns, visionRelayTargetModel(c, info)) {
 		return model_setting.VisionRelaySnapshot{}, false
 	}
 	if _, ok := visionRelayFormat(info.RelayFormat); !ok {
@@ -333,8 +361,8 @@ func visionRelaySnapshotForEstimate(info *relaycommon.RelayInfo) (model_setting.
 }
 
 // VisionRelayWillEngageForEstimate 是否将接管（bool 版，供既有调用方/测试）。
-func VisionRelayWillEngageForEstimate(info *relaycommon.RelayInfo) bool {
-	_, ok := visionRelaySnapshotForEstimate(info)
+func VisionRelayWillEngageForEstimate(c *gin.Context, info *relaycommon.RelayInfo) bool {
+	_, ok := visionRelaySnapshotForEstimate(c, info)
 	return ok
 }
 
@@ -342,8 +370,8 @@ func VisionRelayWillEngageForEstimate(info *relaycommon.RelayInfo) bool {
 // （= 快照 max_images，v0.4 起 DB 可配）；未接管时返回 0（不截断）。
 // token_counter.go 用它预取边界：超限图不会被 fetch，也不计入 520 占位——
 // 避免远程抓取放大先于 Vision Relay 的 MaxImages 截断生效。
-func VisionRelayMaxImagesForEstimate(info *relaycommon.RelayInfo) int {
-	cfg, ok := visionRelaySnapshotForEstimate(info)
+func VisionRelayMaxImagesForEstimate(c *gin.Context, info *relaycommon.RelayInfo) int {
+	cfg, ok := visionRelaySnapshotForEstimate(c, info)
 	if !ok {
 		return 0
 	}
