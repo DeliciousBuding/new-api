@@ -141,6 +141,7 @@ export type SiteSettings = {
   HomePageContent: string
   HomePageStyle: 'spark' | 'default'
   ServerAddress: string
+  TaskPublicAddress: string
   'legal.user_agreement': string
   'legal.privacy_policy': string
   HeaderNavModules: string
