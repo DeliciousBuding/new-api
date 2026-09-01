@@ -87,13 +87,8 @@ export function SparkHero(props: SparkHeroProps) {
 
   return (
     <section className='relative min-h-svh w-full overflow-hidden'>
-      {/* Full-bleed cellular-growth background (grid dots + TokenDance bars) */}
-      <div className='absolute inset-0 hidden lg:block'>
-        <SparkCellularHero theme={props.theme} />
-      </div>
-
       <div className='relative z-10 flex min-h-svh flex-col justify-center'>
-        <div className='mx-auto flex w-full max-w-6xl flex-col justify-center px-6 pt-28 pb-16 md:px-12 lg:px-16'>
+        <div className='mx-auto grid w-full max-w-7xl grid-cols-1 items-center gap-y-12 px-6 pt-28 pb-16 md:px-12 lg:grid-cols-2 lg:gap-x-24 lg:px-16 xl:gap-x-36 2xl:gap-x-48'>
           {/* Left Column: badge, slogan, description, actions, supported apps */}
           <div className='max-w-xl'>
             <div
@@ -218,6 +213,12 @@ export function SparkHero(props: SparkHeroProps) {
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Growth art column: contained + centred in its own block so the
+              copy and the artwork read as one balanced, centred pair */}
+          <div className='relative hidden h-[min(62vh,540px)] w-full lg:block'>
+            <SparkCellularHero theme={props.theme} />
           </div>
         </div>
 
