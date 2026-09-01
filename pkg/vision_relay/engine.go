@@ -141,6 +141,7 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 	results := make(map[string]string, len(groups))
 	var mu sync.Mutex
 	sem := make(chan struct{}, cfg.Limits.RequestConcurrency)
+	breaker := newPrimaryBreaker(primaryBreakerThreshold, primaryBreakerProbeEvery)
 	var wg sync.WaitGroup
 	var abort atomic.Bool // 请求级熔断：401/403 后停止所有后续 sidecall
 	for digest, group := range groups {
@@ -219,7 +220,9 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 			if enum == "" && !abort.Load() {
 				callGateCh, err := globalCallGate.acquire(ctx)
 				if err == nil {
-					r := client.DescribeOne(ctx, instruction, compressed, mediaType, cfg)
+					callCfg, includePrimary := breaker.decide(cfg)
+					r := client.DescribeOne(ctx, instruction, compressed, mediaType, callCfg)
+					breaker.observe(cfg.Models[0], r, includePrimary)
 					globalCallGate.release(callGateCh)
 					desc, enum, model = r.Desc, r.Enum, r.Model
 					calls, fallbacks = r.HTTPCalls, r.Fallbacks
