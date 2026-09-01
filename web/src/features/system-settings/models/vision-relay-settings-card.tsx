@@ -90,7 +90,7 @@ const schema = z.object({
     .number()
     .int({ message: 'Must be an integer' })
     .min(1)
-    .max(50),
+    .max(200),
   request_concurrency: z.coerce
     .number()
     .int({ message: 'Must be an integer' })
@@ -105,7 +105,7 @@ const schema = z.object({
     .number()
     .int({ message: 'Must be an integer' })
     .min(4000)
-    .max(256000),
+    .max(2000000),
   default_max_tokens: z.coerce
     .number()
     .int({ message: 'Must be an integer' })
@@ -661,7 +661,7 @@ export function VisionRelaySettingsCard({
                 </FormControl>
                 <FormDescription>
                   {t(
-                    'Maximum number of images transcribed per request (1-50). Images beyond this become image_limit placeholders.'
+                    'Maximum number of images transcribed per request (1-200). Images beyond this become image_limit placeholders.'
                   )}
                 </FormDescription>
                 <FormMessage />
@@ -731,7 +731,7 @@ export function VisionRelaySettingsCard({
                 </FormControl>
                 <FormDescription>
                   {t(
-                    'Total byte budget for all injected descriptions (4000-256000). Scale with max_images or later images get [omitted].'
+                    'Total byte budget for all injected descriptions (4000-2000000). Scale with max_images or later images get [omitted].'
                   )}
                 </FormDescription>
                 <FormMessage />

@@ -156,6 +156,13 @@ func (e *Engine) describeGrouped(ctx context.Context, images []*PatchedImage, cf
 		go func(d string, g []*PatchedImage) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// batch：本组识别/占位结束后原始解码字节已无下游消费者，立即释放，
+			// 降低高 max_images（如 200 张）下 images 切片长期持有原始字节的内存峰值。
+			defer func() {
+				for _, im := range g {
+					im.Data = nil
+				}
+			}()
 			mu.Lock()
 			if abort.Load() {
 				recordFailure(stats, EnumServiceUnavailable, g...) // 在途队列中已被熔断

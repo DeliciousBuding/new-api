@@ -479,10 +479,10 @@ const (
 // （TTL 过长会让陈旧描述滞留 Redis 且绕过识图指令变更后的自然失效）。
 const (
 	visionRelayCacheTTLSecondsMin, visionRelayCacheTTLSecondsMax         = 0, 604_800 // 0=禁用缓存
-	visionRelayMaxImagesMin, visionRelayMaxImagesMax                     = 1, 50
+	visionRelayMaxImagesMin, visionRelayMaxImagesMax                     = 1, 200
 	visionRelayRequestConcurrencyMin, visionRelayRequestConcurrencyMax   = 1, 8
 	visionRelayMaxDescriptionBytesMin, visionRelayMaxDescriptionBytesMax = 1_000, 32_000
-	visionRelayMaxTotalBytesMin, visionRelayMaxTotalBytesMax             = 4_000, 256_000
+	visionRelayMaxTotalBytesMin, visionRelayMaxTotalBytesMax             = 4_000, 2_000_000
 	visionRelayDefaultMaxTokensMin, visionRelayDefaultMaxTokensMax       = 256, 16_384
 	visionRelayMaxFallbackModelsMin, visionRelayMaxFallbackModelsMax     = 1, 8
 )
