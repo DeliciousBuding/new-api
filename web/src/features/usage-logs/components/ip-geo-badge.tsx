@@ -48,9 +48,20 @@ interface IpGeoBadgeProps {
 // shows city/country and ASN details. The IP is an audit element and stays
 // visible to admins — it does not join the sensitive-value masking that
 // applies to usernames, channel names, and token names.
+// Locality display parts: "Province·City" first (ip2region overlay), then
+// ISP, country and ASN. Empty parts are dropped.
+function localityParts(geo?: GeoInfo): string[] {
+  if (!geo) return []
+  const locality = [geo.province, geo.city].filter(Boolean).join('·')
+  return [locality, geo.isp, geo.country, geo.asn ? `AS${geo.asn}` : ''].filter(
+    Boolean
+  )
+}
+
 export function IpGeoBadge({ ip, geo, className, compact }: IpGeoBadgeProps) {
   const flag = flagClass(geo?.country_code)
-  const hasGeoDetails = Boolean(geo && (geo.city || geo.country || geo.asn))
+  const parts = localityParts(geo)
+  const hasGeoDetails = parts.length > 0
 
   const flagEl = flag && (
     <span
@@ -75,11 +86,11 @@ export function IpGeoBadge({ ip, geo, className, compact }: IpGeoBadgeProps) {
           />
         )}
         <span className='font-mono whitespace-nowrap'>{ip}</span>
-        {geo?.city && <span className='text-muted-foreground'>{geo.city}</span>}
-        {geo?.country && (
-          <span className='text-muted-foreground'>{geo.country}</span>
-        )}
-        {geo?.asn && <span className='text-muted-foreground'>AS{geo.asn}</span>}
+        {parts.map((part) => (
+          <span key={part} className='text-muted-foreground'>
+            {part}
+          </span>
+        ))}
       </span>
     )
   }
@@ -114,13 +125,7 @@ export function IpGeoBadge({ ip, geo, className, compact }: IpGeoBadgeProps) {
   // Hover: quick locality glance (city first, then country/ASN). When the chip
   // abbreviates a long address, lead with the full IP so the audit value stays
   // one hover away.
-  const localityLine = [
-    geo?.city,
-    geo?.country,
-    geo?.asn ? `AS${geo.asn}` : null,
-  ]
-    .filter(Boolean)
-    .join(' · ')
+  const localityLine = parts.join(' · ')
 
   const tooltipContent = isAbbreviated ? (
     <div className='flex flex-col gap-0.5'>

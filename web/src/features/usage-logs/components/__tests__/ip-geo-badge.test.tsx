@@ -35,7 +35,9 @@ function renderBadge(props: {
   geo?: {
     country_code?: string
     country?: string
+    province?: string
     city?: string
+    isp?: string
     asn?: number
     asn_org?: string
   }
@@ -106,6 +108,27 @@ describe('IpGeoBadge', () => {
     const text = container.textContent ?? ''
     expect(text).toContain('192.168.1.1')
     expect(text).not.toContain('…')
+  })
+
+  test('compact mode shows province·city, ISP and ASN inline', () => {
+    const { container } = render(
+      <IpGeoBadge
+        ip='223.104.132.182'
+        geo={{
+          country_code: 'CN',
+          country: '中国',
+          province: '湖南',
+          city: '长沙',
+          isp: '移动',
+          asn: 56047,
+        }}
+        compact
+      />
+    )
+    const text = container.textContent ?? ''
+    expect(text).toContain('湖南·长沙')
+    expect(text).toContain('移动')
+    expect(text).toContain('AS56047')
   })
 
   test('keeps the geo hover trigger when the IP is abbreviated', () => {

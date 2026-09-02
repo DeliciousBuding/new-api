@@ -153,7 +153,9 @@ export type ClientProfile =
 export interface GeoInfo {
   country_code?: string
   country?: string
+  province?: string
   city?: string
+  isp?: string
   asn?: number
   asn_org?: string
 }
