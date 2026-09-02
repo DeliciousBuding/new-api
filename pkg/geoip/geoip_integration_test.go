@@ -6,10 +6,11 @@ import (
 	"testing"
 )
 
-// Integration test against real DB-IP Lite databases. Skipped unless
-// GEOIP_TEST_DB_DIR points at a directory containing dbip-city-lite.mmdb
-// and dbip-asn-lite.mmdb. Run locally once with real data to validate the
-// lookup chain; CI and the image build exercise the databases separately.
+// Integration test against real databases. Skipped unless GEOIP_TEST_DB_DIR
+// points at a directory containing dbip-city-lite.mmdb and
+// dbip-asn-lite.mmdb (ip2region_v4.xdb optional). Run locally once with real
+// data to validate the lookup chain; CI and the image build exercise the
+// databases separately.
 func TestLookupWithRealDatabases(t *testing.T) {
 	dir := os.Getenv("GEOIP_TEST_DB_DIR")
 	if dir == "" {
@@ -18,6 +19,7 @@ func TestLookupWithRealDatabases(t *testing.T) {
 	if err := Init(
 		filepath.Join(dir, "dbip-city-lite.mmdb"),
 		filepath.Join(dir, "dbip-asn-lite.mmdb"),
+		filepath.Join(dir, "ip2region_v4.xdb"),
 	); err != nil {
 		t.Fatalf("Init: %v", err)
 	}

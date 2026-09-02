@@ -50,7 +50,9 @@ func attachGeoInfoToOther(other map[string]interface{}, ip string) {
 	adminInfo["geo"] = map[string]interface{}{
 		"country_code": info.CountryCode,
 		"country":      info.Country,
+		"province":     info.Province,
 		"city":         info.City,
+		"isp":          info.ISP,
 		"asn":          info.ASN,
 		"asn_org":      info.ASNOrg,
 	}

@@ -337,7 +337,22 @@ func InitResources() error {
 	if geoipDir == "" {
 		geoipDir = "/opt/geoip"
 	}
-	geoip.Init(filepath.Join(geoipDir, "dbip-city-lite.mmdb"), filepath.Join(geoipDir, "dbip-asn-lite.mmdb"))
+	geoip.Init(
+		filepath.Join(geoipDir, "dbip-city-lite.mmdb"),
+		filepath.Join(geoipDir, "dbip-asn-lite.mmdb"),
+		filepath.Join(geoipDir, "ip2region_v4.xdb"),
+	)
+	// Hot-swap geo data when files change on disk (data refresh without
+	// rebuild/restart). GEOIP_RELOAD_INTERVAL seconds; 0 disables.
+	reloadSecs := 300
+	if v := os.Getenv("GEOIP_RELOAD_INTERVAL"); v != "" {
+		if n, convErr := strconv.Atoi(v); convErr == nil {
+			reloadSecs = n
+		} else {
+			common.SysLog("invalid GEOIP_RELOAD_INTERVAL, using default 300s")
+		}
+	}
+	geoip.AutoReload(time.Duration(reloadSecs) * time.Second)
 
 	// Initialize SQL Database
 	err = model.InitDB()
