@@ -49,19 +49,26 @@ interface IpGeoBadgeProps {
 // visible to admins — it does not join the sensitive-value masking that
 // applies to usernames, channel names, and token names.
 // Locality display parts: "Province·City" first (ip2region overlay), then
-// ISP, country and ASN. Empty parts are dropped.
+// ISP and country. Empty parts are dropped. The ASN is rendered on its own
+// line/segment because it answers a different question (network ownership).
 function localityParts(geo?: GeoInfo): string[] {
   if (!geo) return []
   const locality = [geo.province, geo.city].filter(Boolean).join('·')
-  return [locality, geo.isp, geo.country, geo.asn ? `AS${geo.asn}` : ''].filter(
-    Boolean
-  )
+  return [locality, geo.isp, geo.country].filter(Boolean)
+}
+
+// ASN line with the organisation name when known, e.g.
+// "AS56047 · China Mobile Communications Corporation".
+function asnLine(geo?: GeoInfo): string {
+  if (!geo?.asn) return ''
+  return geo.asn_org ? `AS${geo.asn} · ${geo.asn_org}` : `AS${geo.asn}`
 }
 
 export function IpGeoBadge({ ip, geo, className, compact }: IpGeoBadgeProps) {
   const flag = flagClass(geo?.country_code)
   const parts = localityParts(geo)
-  const hasGeoDetails = parts.length > 0
+  const asn = asnLine(geo)
+  const hasGeoDetails = parts.length > 0 || asn !== ''
 
   const flagEl = flag && (
     <span
@@ -86,11 +93,14 @@ export function IpGeoBadge({ ip, geo, className, compact }: IpGeoBadgeProps) {
           />
         )}
         <span className='font-mono whitespace-nowrap'>{ip}</span>
-        {parts.map((part) => (
-          <span key={part} className='text-muted-foreground'>
+        {parts.map((part, i) => (
+          <span key={i} className='text-muted-foreground'>
             {part}
           </span>
         ))}
+        {geo?.asn && (
+          <span className='text-muted-foreground'>AS{geo.asn}</span>
+        )}
       </span>
     )
   }
@@ -125,17 +135,14 @@ export function IpGeoBadge({ ip, geo, className, compact }: IpGeoBadgeProps) {
   // Hover: quick locality glance (city first, then country/ASN). When the chip
   // abbreviates a long address, lead with the full IP so the audit value stays
   // one hover away.
-  const localityLine = parts.join(' · ')
-
-  const tooltipContent = isAbbreviated ? (
+  const tooltipContent = (
     <div className='flex flex-col gap-0.5'>
-      <span className='font-mono'>{ip}</span>
-      {localityLine && (
-        <span className='text-muted-foreground'>{localityLine}</span>
+      {isAbbreviated && <span className='font-mono'>{ip}</span>}
+      {parts.length > 0 && (
+        <span className='text-muted-foreground'>{parts.join(' · ')}</span>
       )}
+      {asn && <span className='text-muted-foreground'>{asn}</span>}
     </div>
-  ) : (
-    localityLine
   )
 
   return (

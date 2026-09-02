@@ -43,3 +43,13 @@ overlay fixes CN city accuracy. Attribution lives in NOTICE.
 
 The known-answer gate is the contract: data that misattributes the pinned
 regression IPs can never ship silently.
+
+## Precision ceiling
+
+City + ISP is the honest offline ceiling for IP geolocation: addresses are
+allocated per province/city and mobile CGN shares egresses, so no reliable
+offline source resolves district level. Coordinates in the mmdb files are
+city centroids (false precision) and are deliberately not surfaced;
+district-claiming online CN APIs would require sending user IPs to third
+parties, which the request-audit privacy boundary forbids. The ASN is the
+most stable attribution signal and is always shown with its org name.
