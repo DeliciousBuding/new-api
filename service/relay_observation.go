@@ -266,7 +266,7 @@ func buildTurnEvent(c *gin.Context, info *relaycommon.RelayInfo, usage TurnUsage
 		ev.ErrorType = string(info.LastError.GetErrorType())
 		ev.ErrorCode = string(info.LastError.GetErrorCode())
 	}
-	// Dual-opt-in IP capture (SSOT IP And GeoIP): the effective trust tier of
+	// Dual-opt-in IP capture (policy SSOT: docs/dev/relay-observer.md, IP/GeoIP dual opt-in): the effective trust tier of
 	// the running configuration comes from the runtime status, which is
 	// "none" unless both opt-ins hold at startup. The system-level opt-in
 	// (common.LogRecordIpEnabled) is a runtime-dynamic option, so it is

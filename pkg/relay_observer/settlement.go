@@ -62,7 +62,7 @@ func (r *Runtime) TryPublishTurn(ev Event, reservation int64) (ok bool) {
 }
 
 // CaptureClientIP applies the dual-opt-in capture policy to one peer string
-// (SSOT IP And GeoIP): a "none" trust tier — either opt-in off, as derived by
+// (policy SSOT: docs/dev/relay-observer.md, IP/GeoIP dual opt-in): a "none" trust tier — either opt-in off, as derived by
 // the runtime's effective-tier logic — yields no IP at all; otherwise the
 // peer is parsed and returned with its tier. An unparseable peer yields a nil
 // IP without changing the tier: capture is best-effort and never alters the

@@ -228,7 +228,7 @@ func TestStatusReasonCodeContract(t *testing.T) {
 	assert.NotContains(t, body, rawErr)
 	assert.NotContains(t, body, "pq:")
 	// The status exposes the effective trust tier of the running
-	// configuration (SSOT IP And GeoIP: "observer status exposes the
+	// configuration (policy SSOT: docs/dev/relay-observer.md, IP/GeoIP dual opt-in: "observer status exposes the
 	// effective tier").
 	assert.Contains(t, body, `"IPTrust":"none"`)
 }

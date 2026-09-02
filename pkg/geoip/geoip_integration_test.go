@@ -9,8 +9,9 @@ import (
 // Integration test against real databases. Skipped unless GEOIP_TEST_DB_DIR
 // points at a directory containing dbip-city-lite.mmdb and
 // dbip-asn-lite.mmdb (ip2region_v4.xdb optional). Run locally once with real
-// data to validate the lookup chain; CI and the image build exercise the
-// databases separately.
+// data to validate the lookup chain (the update script does this
+// automatically); the image build bakes the pinned files validated at
+// pin-bump time.
 func TestLookupWithRealDatabases(t *testing.T) {
 	dir := os.Getenv("GEOIP_TEST_DB_DIR")
 	if dir == "" {

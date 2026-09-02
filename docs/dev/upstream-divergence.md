@@ -146,10 +146,13 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 
 | 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
 |---|---|---|---|---|
-| `main.go` | observer runtime init（fail-open）+ geoip 引入 + embed 基线 | `847829bca` | `docs/dev/relay-observer.md` | **高** |
+| `main.go` | observer runtime init（fail-open）+ geoip 引入与热更新接线 + embed 基线 | `847829bca` `6f2d26993` | `docs/dev/relay-observer.md`、`docs/dev/geoip.md` | **高** |
 | `controller/relay.go` | vision relay 钩子 + observer 观测 + channel affinity 软失败解绑 + SSE 诊断落库（#152：message 脱敏 + request_id 截断 + 每轮重试清 key） | `847829bca` `8fdbbff9e` | `docs/dev/vision-relay.md`、`docs/dev/relay-observer.md` | 中 |
 | `controller/log.go` | 缓存用量聚合统计 + 90 天窗口限制 + cache 用量预聚合三段选路（水位 fail-safe 回退全实时） | `847829bca` | `docs/dev/database-compatibility.md`（Cache 用量聚合表节） | 中 |
-| `model/log.go` | 日志 locality 提示（`attachGeoInfoToOther`/geoip）+ 品牌注释 scrub | `847829bca` `c178e645e` | — | **高** |
+| `model/log.go` | 日志 locality 提示（`attachGeoInfoToOther`/geoip）+ 品牌注释 scrub | `847829bca` `c178e645e` `6f2d26993` | `docs/dev/geoip.md` | **高** |
+| `pkg/geoip/*` | fork 包：ip2region 城市覆盖层 + DB-IP 兜底/ASN + known-answer 门禁 + mtime 热更新 | `6f2d26993` | `docs/dev/geoip.md` | 中 |
+| `Dockerfile` | geoip stage 增 pinned `IP2REGION_XDB_REV`（xdb 与 mmdb 同机制烘焙） | `2b0250ab5` | `docs/dev/geoip.md` | 低 |
+| `scripts/update-geoip-data.py` | 门禁式数据刷新（staging → KAT → 原子 promote） | `415c6609d` | `docs/dev/geoip.md` | 低 |
 | `model/option.go` | `LogRecordIpEnabled` 选项接入 | `847829bca` | — | 中 |
 | `middleware/distributor.go` | channel affinity 软失败计数重置 | `847829bca` | — | 中 |
 | `model/main.go` | cache 用量预聚合两表 AutoMigrate（token_cache_usage_hourly / cache_usage_aggregation_meta） | — | `docs/dev/database-compatibility.md`（Cache 用量聚合表节） | 低 |

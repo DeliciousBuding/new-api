@@ -27,7 +27,10 @@ overlay fixes CN city accuracy. Attribution lives in NOTICE.
 - `GEOIP_RELOAD_INTERVAL` (seconds, default 300, 0 disables): mtime polling
   hot-swaps the readers atomically, so a data refresh needs neither an image
   rebuild nor a container restart. Mount a volume over `GEOIP_DB_DIR` in
-  production to use live updates.
+  production to use live updates. Promotion replaces the three files one
+  atomic rename at a time, so a reload can momentarily observe a mixed
+  version set (e.g. new city + old ASN); for a display hint this is
+  acceptable and self-heals on the next tick.
 
 ## Updating data
 
@@ -40,6 +43,10 @@ overlay fixes CN city accuracy. Attribution lives in NOTICE.
 2. Image bump: extend `pkg/geoip/known_answers_test.go` when new regression
    cases are known, run the gate on candidate files, then bump
    `GEOIP_DB_MONTH` / `IP2REGION_XDB_REV` in the Dockerfile.
+
+The gate has exactly these two entry points (update script, pin bump); there
+is no CI job by design — baked pins are immutable, so re-testing them in CI
+would only burn minutes without catching anything new.
 
 The known-answer gate is the contract: data that misattributes the pinned
 regression IPs can never ship silently.

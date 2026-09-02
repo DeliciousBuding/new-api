@@ -9,8 +9,10 @@ import (
 // Known-answer gate for the geo data supply chain. Skipped unless
 // GEOIP_TEST_DB_DIR points at a directory containing dbip-city-lite.mmdb,
 // dbip-asn-lite.mmdb and ip2region_v4.xdb. scripts/update-geoip-data.py runs
-// this gate before promoting any data refresh, and CI runs it on image
-// builds, so a data regression can never ship silently.
+// this gate before promoting any data refresh, and it must be run again on
+// every Dockerfile pin bump, so a data regression can never ship silently.
+// There is deliberately no CI job: data enters only through those two
+// validated gates (pinned files are immutable once baked).
 func TestKnownAnswers(t *testing.T) {
 	dir := os.Getenv("GEOIP_TEST_DB_DIR")
 	if dir == "" {
