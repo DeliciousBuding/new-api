@@ -32,15 +32,21 @@ COPY . .
 COPY --from=builder /build/web/dist ./web/dist
 RUN go build -ldflags "-s -w -X 'github.com/QuantumNous/new-api/common.Version=${VERSION}'" -o new-api
 
-# GeoIP databases (DB-IP Lite City + ASN, CC-BY-4.0) — pinned monthly snapshot.
+# GeoIP databases — pinned snapshots; supply chain documented in
+# docs/dev/geoip.md. DB-IP Lite City + ASN (CC-BY-4.0) plus the ip2region
+# community xdb (Apache-2.0 OR MIT) as the primary city source.
 # Fails the build when the download fails: an image without these files would
 # silently ship without locality hints.
 FROM golang:1.26.1-alpine@sha256:2389ebfa5b7f43eeafbd6be0c3700cc46690ef842ad962f6c5bd6be49ed82039 AS geoip
 ARG GEOIP_DB_MONTH=2026-07
+# ip2region xdb pinned by upstream commit SHA; bump only after the
+# known-answer gate (scripts/update-geoip-data.py) passes on the new file.
+ARG IP2REGION_XDB_REV=7e4c5b6761451c734db51e2b0652219ffc1aba36
 RUN wget -q "https://download.db-ip.com/free/dbip-city-lite-${GEOIP_DB_MONTH}.mmdb.gz" -O /tmp/city.mmdb.gz \
     && gunzip -c /tmp/city.mmdb.gz > /tmp/dbip-city-lite.mmdb \
     && wget -q "https://download.db-ip.com/free/dbip-asn-lite-${GEOIP_DB_MONTH}.mmdb.gz" -O /tmp/asn.mmdb.gz \
     && gunzip -c /tmp/asn.mmdb.gz > /tmp/dbip-asn-lite.mmdb \
+    && wget -q "https://raw.githubusercontent.com/lionsoul2014/ip2region/${IP2REGION_XDB_REV}/data/ip2region_v4.xdb" -O /tmp/ip2region_v4.xdb \
     && rm /tmp/*.mmdb.gz
 
 FROM debian:bookworm-slim@sha256:f06537653ac770703bc45b4b113475bd402f451e85223f0f2837acbf89ab020a
@@ -51,7 +57,7 @@ RUN apt-get update \
     && update-ca-certificates
 
 COPY --from=builder2 /build/new-api /
-COPY --from=geoip /tmp/dbip-city-lite.mmdb /tmp/dbip-asn-lite.mmdb /opt/geoip/
+COPY --from=geoip /tmp/dbip-city-lite.mmdb /tmp/dbip-asn-lite.mmdb /tmp/ip2region_v4.xdb /opt/geoip/
 COPY LICENSE NOTICE THIRD-PARTY-LICENSES.md /licenses/
 EXPOSE 3000
 WORKDIR /data

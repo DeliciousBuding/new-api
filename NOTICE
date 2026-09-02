@@ -63,4 +63,13 @@ Copyright © db-ip.com — licensed under the Creative Commons Attribution
 4.0 International License (CC BY 4.0).
 https://db-ip.com/db/lite.php
 
+==== IP Localization Overlay ====
+
+Container images bundle the ip2region offline IP localization database
+(ip2region_v4.xdb), the primary city source with DB-IP Lite as fallback:
+
+Copyright (c) 2015 Lionsoul — dual-licensed under the Apache License 2.0
+and the MIT License.
+https://github.com/lionsoul2014/ip2region
+
 ==== End of Notices ====
