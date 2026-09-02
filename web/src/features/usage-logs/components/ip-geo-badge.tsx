@@ -100,9 +100,7 @@ export function IpGeoBadge({ ip, geo, className, compact }: IpGeoBadgeProps) {
             {part}
           </span>
         ))}
-        {geo?.asn && (
-          <span className='text-muted-foreground'>AS{geo.asn}</span>
-        )}
+        {asn && <span className='text-muted-foreground'>{asn}</span>}
       </span>
     )
   }

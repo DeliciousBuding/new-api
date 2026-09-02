@@ -131,6 +131,24 @@ describe('IpGeoBadge', () => {
     expect(text).toContain('AS56047')
   })
 
+  test('compact mode surfaces the ASN organisation (egress provider name)', () => {
+    const { container } = render(
+      <IpGeoBadge
+        ip='129.146.51.1'
+        geo={{
+          country_code: 'US',
+          country: 'United States',
+          city: 'Austin',
+          asn: 31898,
+          asn_org: 'Oracle Corporation',
+        }}
+        compact
+      />
+    )
+    const text = container.textContent ?? ''
+    expect(text).toContain('AS31898 · Oracle Corporation')
+  })
+
   test('keeps the geo hover trigger when the IP is abbreviated', () => {
     const { container } = renderBadge({
       ip: '2001:0db8:85a3:0000:0000:8a2e:0370:7334',
