@@ -652,3 +652,15 @@ func TestChannelSettingsValidateResponseModel(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "response_model")
 }
+
+func TestChannelOtherSettingsValidateToolLossPolicy(t *testing.T) {
+	require.NoError(t, (*ChannelOtherSettings)(nil).ValidateToolLossPolicy())
+	require.NoError(t, (&ChannelOtherSettings{}).ValidateToolLossPolicy())
+	require.NoError(t, (&ChannelOtherSettings{ToolLossPolicy: "allow"}).ValidateToolLossPolicy())
+	require.NoError(t, (&ChannelOtherSettings{ToolLossPolicy: "safe"}).ValidateToolLossPolicy())
+	require.NoError(t, (&ChannelOtherSettings{ToolLossPolicy: "strict"}).ValidateToolLossPolicy())
+
+	err := (&ChannelOtherSettings{ToolLossPolicy: "drop"}).ValidateToolLossPolicy()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tool_loss_policy")
+}
