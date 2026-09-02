@@ -54,7 +54,9 @@ interface IpGeoBadgeProps {
 function localityParts(geo?: GeoInfo): string[] {
   if (!geo) return []
   const locality = [geo.province, geo.city].filter(Boolean).join('·')
-  return [locality, geo.isp, geo.country].filter(Boolean)
+  return [locality, geo.isp, geo.country].filter(
+    (part): part is string => Boolean(part)
+  )
 }
 
 // ASN line with the organisation name when known, e.g.
