@@ -381,6 +381,7 @@ export const CLIENT_PROFILE_LABELS: Record<string, string> = {
   deepseek: 'DeepSeek',
   chatgpt: 'ChatGPT',
   http_client: 'HTTP Client',
+  omp: 'Oh My Pi',
 }
 
 export function clientProfileLabel(profile: string | undefined): string {

@@ -79,7 +79,7 @@ func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other
 //   - litellm（UA + x-litellm-* 头）
 //   - 品牌客户端（IDE/chat/agent/平台）：cherry_studio、trae、qoder、cursor、windsurf、
 //     cline、roo_code、continue、zed、copilot、gemini_cli、perplexity、poe、openrouter、
-//     groq、grok、ollama、kimi、qwen、doubao、zhipu、deepseek、chatgpt、minis、opencode、
+//     groq、grok、ollama、kimi、qwen、doubao、zhipu、deepseek、chatgpt、minis、opencode、omp、
 //     hermes_agent、workbuddy、openclaw、rikkahub、sub2api（UA 特异性词，见函数内矩阵）
 //   - LLM 框架与自动化：openai_agents、semantic_kernel、langchain、llama_index、mcp_sdk、
 //     n8n、zapier、make（自动化工作流）
@@ -321,6 +321,12 @@ func DetectClientProfile(c *gin.Context) string {
 	case strings.Contains(ua, "minis/"):
 		// Minis/<version> 安卓客户端（nginx 流量实证）
 		return "minis"
+	case strings.Contains(ua, "oh-my-pi"), strings.Contains(ua, "oh_my_pi"),
+		strings.Contains(ua, "oh my pi"), strings.Contains(ua, "omp/"):
+		// Oh My Pi（OMP）— pi 的增强版/超集。官方 UA 形如 omp/<ver>（如 omp/18.1.6，
+		// nginx 流量实证）；"oh my pi"/"oh-my-pi"/"oh_my_pi" 为产品名拼写变体。
+		// 不匹配裸 "pi/"（会误伤 api/、openai/ 等子串），前端无 OMP 品牌图时复用 Pi。
+		return "omp"
 	// LLM 框架（empirical caller-labels：langchain 系列嵌入 UA 不带锚定）
 	case strings.Contains(ua, "agents/python"), strings.Contains(ua, "openai-agents"):
 		// OpenAI Agents SDK（openai/openai-agents-python 源码 _USER_AGENT =

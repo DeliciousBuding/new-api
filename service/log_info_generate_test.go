@@ -723,6 +723,16 @@ func TestDetectClientProfile(t *testing.T) {
 			want:    "chatgpt",
 		},
 		{
+			name:    "omp (oh my pi) ua",
+			headers: map[string]string{"User-Agent": "omp/18.1.6"},
+			want:    "omp",
+		},
+		{
+			name:    "oh my pi ua variant",
+			headers: map[string]string{"User-Agent": "oh-my-pi/1.0"},
+			want:    "omp",
+		},
+		{
 			name:    "curl ua",
 			headers: map[string]string{"User-Agent": "curl/8.7.1"},
 			want:    "http_client",

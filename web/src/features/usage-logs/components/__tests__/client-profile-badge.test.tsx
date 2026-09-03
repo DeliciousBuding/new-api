@@ -85,6 +85,7 @@ describe('ClientProfileBadge', () => {
     'sub2api',
     'deepseek_harness',
     'deepseek',
+    'omp',
   ]) {
     test(`renders ${profile} without crashing`, () => {
       const { container } = renderBadge(profile)

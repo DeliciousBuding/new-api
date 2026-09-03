@@ -147,6 +147,7 @@ export type ClientProfile =
   | 'deepseek'
   | 'chatgpt'
   | 'http_client'
+  | 'omp'
 
 // Locality hint resolved from the client IP by the backend GeoIP lookup
 // (DB-IP Lite, admin-only).

@@ -67,6 +67,8 @@ export const BRAND_ICONS: Partial<Record<ClientProfile, string>> = {
   deepseek_harness: 'DeepSeek.Color',
   deepseek: 'DeepSeek.Color',
   chatgpt: 'ChatGPT.Color',
+  // Oh My Pi（OMP）无独立品牌图，复用 Pi 图标（oh-my-pi 是 pi 的超集）。
+  omp: 'Pi.Color',
 }
 
 const FALLBACK_ICONS: Partial<
