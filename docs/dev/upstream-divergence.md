@@ -139,7 +139,7 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 
 > **sync 合并丢失接线（2026-09-04 复核）**：`9d2a2d34b`（合并 `official/main` 到 `sync/upstream-20260904`）的冲突解决吞掉了两处 fork 接线，`0afb2b3a7` 的重放也没补回——
 > 1. `controller/relay.go` `shouldRetry` 里的 `service.IsNonRetryableUpstreamError`（#156）：**不恢复**，理由见上表。因此 `authFatalCodes` 当前只影响分类正确性，无运行时效果（`IsAccountFatalError`→auto-ban 分支仍在用）。
-> 2. `controller/relay.go` `processChannelError` 里的 `service.RecordChannelAffinitySoftFailure` + `ClearCurrentChannelAffinityCache`（issue #39 affinity 软失败解绑）：**应恢复**。它是「基础设施 / 基线」表中 `controller/relay.go` 行声明的「channel affinity 软失败解绑」，丢失后软失败会话会一直绑死到缓存 TTL，正是百炼坏渠道连续命中 12 次却不改绑的直接原因。
+> 2. `controller/relay.go` `processChannelError` 里的 `service.RecordChannelAffinitySoftFailure` + `ClearCurrentChannelAffinityCache`（issue #39 affinity 软失败解绑）：**已在 #173 复归**。它是「基础设施 / 基线」表中 `controller/relay.go` 行声明的「channel affinity 软失败解绑」，丢失后软失败会话会一直绑死到缓存 TTL，正是百炼坏渠道连续命中 12 次却不改绑的直接原因。
 
 ### 渠道测试（channel test）
 
