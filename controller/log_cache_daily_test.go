@@ -63,6 +63,12 @@ func setupCacheDailyTestDB(t *testing.T) {
 
 func postCacheDaily(t *testing.T, body string) cacheStatDailyResponse {
 	t.Helper()
+	return postCacheDailyAs(t, common.RoleAdminUser, 0, body)
+}
+
+// postCacheDailyAs 以指定角色/用户调用，用于验证归属过滤。
+func postCacheDailyAs(t *testing.T, role int, userId int, body string) cacheStatDailyResponse {
+	t.Helper()
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(
@@ -71,6 +77,8 @@ func postCacheDaily(t *testing.T, body string) cacheStatDailyResponse {
 		strings.NewReader(body),
 	)
 	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("role", role)
+	ctx.Set("id", userId)
 	GetLogsCacheStatDaily(ctx)
 	require.Equal(t, http.StatusOK, recorder.Code)
 	var payload cacheStatDailyResponse
@@ -179,4 +187,16 @@ func TestCacheRatePctSemantics(t *testing.T) {
 			require.Equal(t, c.want, cacheRatePct(c.read, c.input))
 		})
 	}
+}
+
+func TestGetLogsCacheStatDailyScopesNonAdminToOwnTokens(t *testing.T) {
+	setupCacheDailyTestDB(t)
+	db := model.DB
+	require.NoError(t, db.AutoMigrate(&model.Token{}))
+	require.NoError(t, db.Create(&model.Token{Id: 11, UserId: 1, Name: "a", Key: "sk-a", Status: 1}).Error)
+	require.NoError(t, db.Create(&model.Token{Id: 22, UserId: 2, Name: "b", Key: "sk-b", Status: 1}).Error)
+
+	payload := postCacheDailyAs(t, common.RoleCommonUser, 1, `{"start_timestamp":100000,"end_timestamp":200000}`)
+	require.Len(t, payload.Data.Items, 1)
+	require.Equal(t, int64(1000), payload.Data.Items[0].PromptTokens)
 }

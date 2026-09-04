@@ -302,6 +302,36 @@ func sumCacheUsageDailySegmented(tokenIds []int64, start int64, end int64) ([]mo
 	return rows, nil
 }
 
+// resolveCacheStatTokenScope 为非管理员收敛 cache 统计可查询范围。
+// batch：请求的 token_ids 与名下 token 取交集（越权 token 静默丢弃，不泄露）。
+// daily：token_ids 为空表示"全站"，非管理员降级为"名下全部 token"。
+func resolveCacheStatTokenScope(c *gin.Context, tokenIds []int64, emptyMeansAllMine bool) ([]int64, error) {
+	if c.GetInt("role") >= common.RoleAdminUser {
+		return tokenIds, nil
+	}
+	owned, err := model.GetUserTokenIds(c.GetInt("id"))
+	if err != nil {
+		return nil, err
+	}
+	if len(tokenIds) == 0 {
+		if emptyMeansAllMine {
+			return owned, nil
+		}
+		return tokenIds, nil
+	}
+	ownedSet := make(map[int64]struct{}, len(owned))
+	for _, id := range owned {
+		ownedSet[id] = struct{}{}
+	}
+	out := make([]int64, 0, len(tokenIds))
+	for _, id := range tokenIds {
+		if _, ok := ownedSet[id]; ok {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
 // GetLogsCacheStatBatch 批量返回多个 token 在窗口内的缓存用量聚合
 // （keys 页逐 key 缓存率展示）。默认窗口为最近 7 天；空 token 列表返回空。
 func GetLogsCacheStatBatch(c *gin.Context) {
@@ -322,6 +352,12 @@ func GetLogsCacheStatBatch(c *gin.Context) {
 		common.ApiErrorMsg(c, "invalid time range")
 		return
 	}
+	scoped, err := resolveCacheStatTokenScope(c, req.TokenIds, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	req.TokenIds = scoped
 	stats, err := sumCacheUsageByTokenIdsSegmented(req.TokenIds, start, end)
 	if err != nil {
 		common.ApiError(c, err)
@@ -379,6 +415,12 @@ func GetLogsCacheStatDaily(c *gin.Context) {
 		common.ApiErrorMsg(c, "invalid time range")
 		return
 	}
+	scoped, err := resolveCacheStatTokenScope(c, req.TokenIds, true)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	req.TokenIds = scoped
 	rows, err := sumCacheUsageDailySegmented(req.TokenIds, start, end)
 	if err != nil {
 		common.ApiError(c, err)

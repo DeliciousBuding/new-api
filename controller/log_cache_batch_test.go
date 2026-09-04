@@ -54,6 +54,12 @@ func setupCacheBatchTestDB(t *testing.T) {
 
 func postCacheBatch(t *testing.T, body string) cacheStatBatchResponse {
 	t.Helper()
+	return postCacheBatchAs(t, common.RoleAdminUser, 0, body)
+}
+
+// postCacheBatchAs 以指定角色/用户调用，用于验证归属过滤。
+func postCacheBatchAs(t *testing.T, role int, userId int, body string) cacheStatBatchResponse {
+	t.Helper()
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(
@@ -62,6 +68,8 @@ func postCacheBatch(t *testing.T, body string) cacheStatBatchResponse {
 		strings.NewReader(body),
 	)
 	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("role", role)
+	ctx.Set("id", userId)
 	GetLogsCacheStatBatch(ctx)
 	require.Equal(t, http.StatusOK, recorder.Code)
 	var payload cacheStatBatchResponse
@@ -113,4 +121,19 @@ func TestGetLogsCacheStatBatchRejectsInvalidTimeRange(t *testing.T) {
 	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
 	require.False(t, payload.Success)
 	require.Equal(t, "invalid time range", payload.Message)
+}
+
+func TestGetLogsCacheStatBatchScopesNonAdminToOwnTokens(t *testing.T) {
+	setupCacheBatchTestDB(t)
+	db := model.DB
+	require.NoError(t, db.AutoMigrate(&model.Token{}))
+	require.NoError(t, db.Create(&model.Token{Id: 11, UserId: 1, Name: "a", Key: "sk-a", Status: 1}).Error)
+	require.NoError(t, db.Create(&model.Token{Id: 22, UserId: 2, Name: "b", Key: "sk-b", Status: 1}).Error)
+
+	payload := postCacheBatchAs(t, common.RoleCommonUser, 1, `{"token_ids":[11,22],"start_timestamp":100000,"end_timestamp":200000}`)
+	require.Len(t, payload.Data.Items, 1)
+	require.Equal(t, int64(11), payload.Data.Items[0].TokenId)
+
+	payloadAdmin := postCacheBatch(t, `{"token_ids":[11,22],"start_timestamp":100000,"end_timestamp":200000}`)
+	require.Len(t, payloadAdmin.Data.Items, 2)
 }
