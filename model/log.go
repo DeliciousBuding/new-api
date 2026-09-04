@@ -31,33 +31,6 @@ func applyExplicitLogTextFilter(tx *gorm.DB, column string, value string) (*gorm
 	return tx.Where(column+" = ?", value), nil
 }
 
-// attachGeoInfoToOther nests locality hints under other.admin_info.geo
-// (admin-only via formatUserLogs, same as client_profile). No-op when the
-// geo lookup is unavailable or the IP is empty.
-func attachGeoInfoToOther(other map[string]interface{}, ip string) {
-	if other == nil || ip == "" {
-		return
-	}
-	info, ok := geoip.Lookup(ip)
-	if !ok {
-		return
-	}
-	adminInfo, ok := other["admin_info"].(map[string]interface{})
-	if !ok || adminInfo == nil {
-		adminInfo = map[string]interface{}{}
-		other["admin_info"] = adminInfo
-	}
-	adminInfo["geo"] = map[string]interface{}{
-		"country_code": info.CountryCode,
-		"country":      info.Country,
-		"province":     info.Province,
-		"city":         info.City,
-		"isp":          info.ISP,
-		"asn":          info.ASN,
-		"asn_org":      info.ASNOrg,
-	}
-}
-
 func buildLogLikeCondition(column string, value string) (string, string, error) {
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		pattern, err := sanitizeClickHouseLikePattern(value)
@@ -144,22 +117,7 @@ func assignDisplayLogIds(logs []*Log, startIdx int) {
 func formatUserLogs(logs []*Log, startIdx int) {
 	for i := range logs {
 		logs[i].ChannelName = ""
-		var otherMap map[string]interface{}
-		otherMap, _ = common.StrToMap(logs[i].Other)
-		if otherMap != nil {
-			// Remove admin-only debug fields.
-			delete(otherMap, "admin_info")
-			// Remove diagnostics reserved for root.
-			delete(otherMap, "root_info")
-			// Remove operation-audit details (operator/route info), admin-only.
-			delete(otherMap, "audit_info")
-			// delete(otherMap, "reject_reason")
-			// delete(otherMap, "stream_status")
-		}
-		// IP is an audit element, admin-only (admin paths keep it via
-		// GetAllLogs which does not go through formatUserLogs).
-		logs[i].Ip = ""
-		logs[i].Other = common.MapToJsonStr(otherMap)
+		logs[i].Other = formatLogOtherJSON(logs[i].Other, logOtherVisibilityUser)
 	}
 	assignDisplayLogIds(logs, startIdx)
 }
@@ -168,12 +126,15 @@ func formatUserLogs(logs []*Log, startIdx int) {
 // admin_info. Root callers must not pass their results through this formatter.
 func FormatAdminLogs(logs []*Log) {
 	for i := range logs {
-		otherMap, _ := common.StrToMap(logs[i].Other)
-		if otherMap == nil {
-			continue
-		}
-		delete(otherMap, "root_info")
-		logs[i].Other = common.MapToJsonStr(otherMap)
+		logs[i].Other = formatLogOtherJSON(logs[i].Other, logOtherVisibilityAdmin)
+	}
+}
+
+// FormatRootLogs normalizes legacy metadata into the current scoped shape
+// without removing root-only diagnostics.
+func FormatRootLogs(logs []*Log) {
+	for i := range logs {
+		logs[i].Other = formatLogOtherJSON(logs[i].Other, logOtherVisibilityRoot)
 	}
 }
 
@@ -219,10 +180,9 @@ func RecordLogWithAdminInfo(userId int, logType int, content string, adminInfo m
 		Content:   content,
 	}
 	if len(adminInfo) > 0 {
-		other := map[string]interface{}{
-			"admin_info": adminInfo,
-		}
-		log.Other = common.MapToJsonStr(other)
+		other := NewLogOther()
+		other.MergeAdmin(adminInfo)
+		log.Other = other.JSONString()
 	}
 	if err := createLog(log); err != nil {
 		common.SysLog("failed to record log: " + err.Error())
@@ -247,15 +207,9 @@ func buildOpField(action string, params map[string]interface{}) map[string]inter
 // content 为英文兜底文本（用于导出）；action+params 供前端本地化渲染。
 // extra 可携带 login_method、user_agent 等附加信息（普通用户可见）。
 func RecordLoginLog(userId int, username string, content string, ip string, action string, params map[string]interface{}, extra map[string]interface{}) {
-	other := map[string]interface{}{}
-	for k, v := range extra {
-		other[k] = v
-	}
-	other["op"] = buildOpField(action, params)
-	// Locality hints nested under admin_info (admin-only, same as consume logs).
-	if ip != "" {
-		attachGeoInfoToOther(other, ip)
-	}
+	other := NewLogOther()
+	other.MergePublic(extra)
+	other.SetPublic("op", buildOpField(action, params))
 	log := &Log{
 		UserId:    userId,
 		Username:  username,
@@ -263,7 +217,7 @@ func RecordLoginLog(userId int, username string, content string, ip string, acti
 		Type:      LogTypeLogin,
 		Content:   content,
 		Ip:        ip,
-		Other:     common.MapToJsonStr(other),
+		Other:     other.JSONString(),
 	}
 	if err := createLog(log); err != nil {
 		common.SysLog("failed to record login log: " + err.Error())
@@ -278,20 +232,10 @@ func RecordLoginLog(userId int, username string, content string, ip string, acti
 // auditInfo 存放路由/方法/结果等中间件兜底信息（写入 Other.audit_info，普通用户查询时剥离）。
 func RecordOperationAuditLog(logUserId int, content string, ip string, action string, params map[string]interface{}, adminInfo map[string]interface{}, auditInfo map[string]interface{}) {
 	username, _ := GetUsernameById(logUserId, false)
-	other := map[string]interface{}{
-		"op": buildOpField(action, params),
-	}
-	if len(adminInfo) > 0 {
-		other["admin_info"] = adminInfo
-	}
-	if len(auditInfo) > 0 {
-		other["audit_info"] = auditInfo
-	}
-	// Serialize after locality hints are attached so admin_info.geo is included
-	// (same pattern as RecordConsumeLog / RecordErrorLog).
-	if ip != "" {
-		attachGeoInfoToOther(other, ip)
-	}
+	other := NewLogOther()
+	other.SetPublic("op", buildOpField(action, params))
+	other.MergeAdmin(adminInfo)
+	other.MergeAudit(auditInfo)
 	log := &Log{
 		UserId:    logUserId,
 		Username:  username,
@@ -299,7 +243,7 @@ func RecordOperationAuditLog(logUserId int, content string, ip string, action st
 		Type:      LogTypeManage,
 		Content:   content,
 		Ip:        ip,
-		Other:     common.MapToJsonStr(other),
+		Other:     other.JSONString(),
 	}
 	if err := createLog(log); err != nil {
 		common.SysLog("failed to record operation audit log: " + err.Error())
@@ -308,22 +252,15 @@ func RecordOperationAuditLog(logUserId int, content string, ip string, action st
 
 func RecordTopupLog(userId int, content string, callerIp string, paymentMethod string, callbackPaymentMethod string) {
 	username, _ := GetUsernameById(userId, false)
-	adminInfo := map[string]interface{}{
+	other := NewLogOther()
+	other.MergeAdmin(map[string]interface{}{
 		"server_ip":               common.GetIp(),
 		"node_name":               common.NodeName,
 		"caller_ip":               callerIp,
 		"payment_method":          paymentMethod,
 		"callback_payment_method": callbackPaymentMethod,
 		"version":                 common.Version,
-	}
-	other := map[string]interface{}{
-		"admin_info": adminInfo,
-	}
-	// Serialize after locality hints are attached so admin_info.geo is included
-	// (same pattern as RecordConsumeLog / RecordErrorLog).
-	if callerIp != "" {
-		attachGeoInfoToOther(other, callerIp)
-	}
+	})
 	log := &Log{
 		UserId:    userId,
 		Username:  username,
@@ -331,7 +268,7 @@ func RecordTopupLog(userId int, content string, callerIp string, paymentMethod s
 		Type:      LogTypeTopup,
 		Content:   content,
 		Ip:        callerIp,
-		Other:     common.MapToJsonStr(other),
+		Other:     other.JSONString(),
 	}
 	err := createLog(log)
 	if err != nil {
@@ -340,39 +277,41 @@ func RecordTopupLog(userId int, content string, callerIp string, paymentMethod s
 }
 
 func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string, tokenName string, content string, tokenId int, useTimeSeconds int,
-	isStream bool, group string, other map[string]interface{}) {
+	isStream bool, group string, other *LogOther) {
 	logger.LogInfo(c, fmt.Sprintf("record error log: userId=%d, channelId=%d, modelName=%s, tokenName=%s, content=%s", userId, channelId, modelName, tokenName, common.LocalLogPreview(content)))
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
-	// 判断是否需要记录 IP（audit topic：全局开关，默认记录；用户级 RecordIpLog 保留兼容）
-	needRecordIp := common.LogRecordIpEnabled
-	ip := ""
-	if needRecordIp {
-		ip = c.ClientIP()
+	otherStr := other.JSONString()
+	// 判断是否需要记录 IP
+	needRecordIp := false
+	if settingMap, err := GetUserSetting(userId, false); err == nil {
+		if settingMap.RecordIpLog {
+			needRecordIp = true
+		}
 	}
-	if ip != "" {
-		attachGeoInfoToOther(other, ip)
-	}
-	// Serialize after locality hints are attached so admin_info.geo is included.
-	otherStr := common.MapToJsonStr(other)
 	log := &Log{
-		UserId:            userId,
-		Username:          username,
-		CreatedAt:         common.GetTimestamp(),
-		Type:              LogTypeError,
-		Content:           content,
-		PromptTokens:      0,
-		CompletionTokens:  0,
-		TokenName:         tokenName,
-		ModelName:         modelName,
-		Quota:             0,
-		ChannelId:         channelId,
-		TokenId:           tokenId,
-		UseTime:           useTimeSeconds,
-		IsStream:          isStream,
-		Group:             group,
-		Ip:                ip,
+		UserId:           userId,
+		Username:         username,
+		CreatedAt:        common.GetTimestamp(),
+		Type:             LogTypeError,
+		Content:          content,
+		PromptTokens:     0,
+		CompletionTokens: 0,
+		TokenName:        tokenName,
+		ModelName:        modelName,
+		Quota:            0,
+		ChannelId:        channelId,
+		TokenId:          tokenId,
+		UseTime:          useTimeSeconds,
+		IsStream:         isStream,
+		Group:            group,
+		Ip: func() string {
+			if needRecordIp {
+				return c.ClientIP()
+			}
+			return ""
+		}(),
 		RequestId:         requestId,
 		UpstreamRequestId: upstreamRequestId,
 		Other:             otherStr,
@@ -384,18 +323,18 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 }
 
 type RecordConsumeLogParams struct {
-	ChannelId        int                    `json:"channel_id"`
-	PromptTokens     int                    `json:"prompt_tokens"`
-	CompletionTokens int                    `json:"completion_tokens"`
-	ModelName        string                 `json:"model_name"`
-	TokenName        string                 `json:"token_name"`
-	Quota            int                    `json:"quota"`
-	Content          string                 `json:"content"`
-	TokenId          int                    `json:"token_id"`
-	UseTimeSeconds   int                    `json:"use_time_seconds"`
-	IsStream         bool                   `json:"is_stream"`
-	Group            string                 `json:"group"`
-	Other            map[string]interface{} `json:"other"`
+	ChannelId        int       `json:"channel_id"`
+	PromptTokens     int       `json:"prompt_tokens"`
+	CompletionTokens int       `json:"completion_tokens"`
+	ModelName        string    `json:"model_name"`
+	TokenName        string    `json:"token_name"`
+	Quota            int       `json:"quota"`
+	Content          string    `json:"content"`
+	TokenId          int       `json:"token_id"`
+	UseTimeSeconds   int       `json:"use_time_seconds"`
+	IsStream         bool      `json:"is_stream"`
+	Group            string    `json:"group"`
+	Other            *LogOther `json:"other"`
 }
 
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
@@ -407,17 +346,24 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
 	createdAt := common.GetTimestamp()
-	// 判断是否需要记录 IP（audit topic：全局开关，默认记录；用户级 RecordIpLog 保留兼容）
-	needRecordIp := common.LogRecordIpEnabled
+	// 判断是否需要记录 IP（全局开关作为总闸，用户级 RecordIpLog 保留兼容）
+	needRecordIp := false
+	if common.LogRecordIpEnabled {
+		if settingMap, err := GetUserSetting(userId, false); err == nil {
+			if settingMap.RecordIpLog {
+				needRecordIp = true
+			}
+		}
+	}
 	ip := ""
 	if needRecordIp {
 		ip = c.ClientIP()
 	}
-	if ip != "" {
-		attachGeoInfoToOther(params.Other, ip)
-	}
 	// Serialize after locality hints are attached so admin_info.geo is included.
-	otherStr := common.MapToJsonStr(params.Other)
+	if ip != "" && params.Other != nil {
+		attachGeoInfoToLogOther(params.Other, ip)
+	}
+	otherStr := params.Other.JSONString()
 	log := &Log{
 		UserId:            userId,
 		Username:          username,
@@ -468,7 +414,7 @@ type RecordTaskBillingLogParams struct {
 	Quota     int
 	TokenId   int
 	Group     string
-	Other     map[string]interface{}
+	Other     *LogOther
 	NodeName  string // 任务发起节点；为空时回退当前节点
 }
 
@@ -496,7 +442,7 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 		ChannelId: params.ChannelId,
 		TokenId:   params.TokenId,
 		Group:     params.Group,
-		Other:     common.MapToJsonStr(params.Other),
+		Other:     params.Other.JSONString(),
 	}
 	err := createLog(log)
 	if err != nil {
@@ -807,6 +753,55 @@ func SumCacheUsageDaily(tokenIds []int64, startTimestamp int64, endTimestamp int
 		return nil, err
 	}
 	return rows, nil
+}
+
+// attachGeoInfoToOther nests locality hints under other.admin_info.geo for
+// map-shaped log metadata (audit/login/topup paths). Degrades to a no-op when
+// the lookup fails or the log database has no mmdb; see pkg/geoip.
+func attachGeoInfoToOther(other map[string]interface{}, ip string) {
+	if other == nil || ip == "" {
+		return
+	}
+	info, ok := geoip.Lookup(ip)
+	if !ok {
+		return
+	}
+	adminInfo, ok := other["admin_info"].(map[string]interface{})
+	if !ok || adminInfo == nil {
+		adminInfo = map[string]interface{}{}
+		other["admin_info"] = adminInfo
+	}
+	adminInfo["geo"] = map[string]interface{}{
+		"country_code": info.CountryCode,
+		"country":      info.Country,
+		"province":     info.Province,
+		"city":         info.City,
+		"isp":          info.ISP,
+		"asn":          info.ASN,
+		"asn_org":      info.ASNOrg,
+	}
+}
+
+// attachGeoInfoToLogOther nests locality hints under other.admin_info.geo for
+// *LogOther-shaped consume logs. Degrades to a no-op when the lookup fails or
+// no mmdb is loaded; see pkg/geoip.
+func attachGeoInfoToLogOther(other *LogOther, ip string) {
+	if other == nil || ip == "" {
+		return
+	}
+	info, ok := geoip.Lookup(ip)
+	if !ok {
+		return
+	}
+	other.SetAdmin("geo", map[string]interface{}{
+		"country_code": info.CountryCode,
+		"country":      info.Country,
+		"province":     info.Province,
+		"city":         info.City,
+		"isp":          info.ISP,
+		"asn":          info.ASN,
+		"asn_org":      info.ASNOrg,
+	})
 }
 
 func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {

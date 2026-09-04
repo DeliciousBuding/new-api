@@ -88,6 +88,8 @@ export type ClientProfile =
   | 'codex_cli'
   | 'codex_desktop'
   | 'codex_app'
+  | 'codex_vscode'
+  | 'codex_browser'
   | 'claude_cli'
   | 'claude_desktop'
   | 'claude_desktop_3p'
@@ -96,8 +98,16 @@ export type ClientProfile =
   | 'claude_app'
   | 'claude_sdk'
   | 'openai_sdk'
+  | 'mistral_sdk'
+  | 'cohere_sdk'
+  | 'ai_sdk'
+  | 'gemini_cli'
+  | 'gemini_code_assist'
+  | 'gemini_sdk'
+  | 'litellm'
   | 'gohttp'
   | 'cliproxyapi'
+  | 'http_client'
   | 'chat'
   | 'hermes_agent'
   | 'workbuddy'
@@ -107,6 +117,7 @@ export type ClientProfile =
   | 'sub2api'
   | 'opencode'
   | 'minis'
+  | 'omp'
   | 'trae'
   | 'cursor'
   | 'windsurf'
@@ -115,39 +126,28 @@ export type ClientProfile =
   | 'continue'
   | 'zed'
   | 'copilot'
-  | 'codex_vscode'
-  | 'codex_browser'
-  | 'gemini_cli'
-  | 'gemini_code_assist'
-  | 'gemini_sdk'
   | 'qoder'
   | 'openai_agents'
   | 'semantic_kernel'
   | 'langchain'
   | 'llama_index'
-  | 'grok'
   | 'mcp_sdk'
   | 'n8n'
   | 'zapier'
   | 'make'
-  | 'mistral_sdk'
-  | 'litellm'
-  | 'cohere_sdk'
-  | 'ai_sdk'
-  | 'perplexity'
-  | 'poe'
-  | 'openrouter'
-  | 'groq'
+  | 'grok'
   | 'ollama'
   | 'kimi'
   | 'qwen'
   | 'doubao'
   | 'zhipu'
-  | 'deepseek_harness'
   | 'deepseek'
+  | 'deepseek_harness'
   | 'chatgpt'
-  | 'http_client'
-  | 'omp'
+  | 'perplexity'
+  | 'poe'
+  | 'openrouter'
+  | 'groq'
 
 // Locality hint resolved from the client IP by the backend GeoIP lookup
 // (DB-IP Lite, admin-only).
@@ -238,6 +238,8 @@ export interface LogOtherData {
       message?: string
       request_id?: string
     }
+    // Reject / intercept reason (admin only)
+    reject_reason?: string
     task_plugin?: TaskPluginInfo
   }
   root_info?: {
@@ -333,8 +335,6 @@ export interface LogOtherData {
   violation_fee_code?: string
   violation_fee_marker?: string
   fee_quota?: number
-  // Reject / intercept reason (admin)
-  reject_reason?: string
   // Task-related fields (for refund logs, type=6)
   is_task?: boolean
   task_id?: string

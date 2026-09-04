@@ -787,7 +787,7 @@ func TestGenerateTextOtherInfoClientUA(t *testing.T) {
 			other := GenerateTextOtherInfo(c, &relaycommon.RelayInfo{
 				ChannelMeta: &relaycommon.ChannelMeta{},
 			}, 1, 1, 1, 0, 0, 0, 1)
-			adminInfo, ok := other["admin_info"].(map[string]interface{})
+			adminInfo, ok := other.Snapshot()["admin_info"].(map[string]interface{})
 			require.True(t, ok, "admin_info should be present")
 			uaVal, hasUA := adminInfo["client_ua"]
 			if !tc.wantPresent {
