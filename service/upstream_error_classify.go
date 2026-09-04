@@ -54,6 +54,7 @@ var authFatalCodes = []string{
 	"authenticationfailed",
 	"unauthorized",
 	"accessdenied",
+	"modelaccessdenied",
 	"permissiondenied",
 	"apikeynotfound",
 }

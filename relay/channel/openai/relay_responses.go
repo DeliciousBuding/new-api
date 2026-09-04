@@ -90,6 +90,18 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	var responseTextBuilder strings.Builder
 	imageCounter := &relaycommon.ImageGenerationCallCounter{}
 	imageCommitted := false
+	// streamErr captures an in-stream error event (an "error", "response.error"
+	// or "response.failed" frame inside an HTTP 200 SSE stream). Once set, later
+	// chunks are dropped and the stream stops, mirroring chat_via_responses.go.
+	var streamErr *types.NewAPIError
+	// terminalSeen records whether the upstream emitted a terminal event before
+	// the stream closed. A well-formed Responses stream always ends with one.
+	terminalSeen := false
+	// outputSeen records whether the upstream produced any output (text deltas or
+	// a completed output item). Together with terminalSeen it separates a stream
+	// that died before producing anything from one that was merely truncated
+	// after delivering content.
+	outputSeen := false
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 
@@ -98,6 +110,24 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
 			logger.LogError(c, "failed to unmarshal stream response: "+err.Error())
 			sr.Error(err)
+			return
+		}
+		// In-stream error frames: some upstreams (notably Bailian/DashScope) answer
+		// a streaming request with HTTP 200 and end the SSE stream with an error
+		// event instead of a non-2xx status. Return it as an error so the relay loop
+		// runs the normal channel-error path (error log, cross-channel retry,
+		// auto-ban, affinity rebind) instead of recording a quota=0 success consume
+		// log. The frame is not forwarded to the client; mirrors
+		// chat_via_responses.go.
+		if streamErr = service.NewResponsesStreamEventError(&streamResponse, data); streamErr != nil {
+			// A failed response is not billable: discard pending image generation
+			// counts exactly like the terminal branch below does.
+			if !imageCommitted {
+				imageCounter.Reset()
+				imageCounter.Commit(info)
+				imageCommitted = true
+			}
+			sr.Stop(streamErr)
 			return
 		}
 		// 响应模型名回显策略：origin 模式下改写 response.created/completed
@@ -114,6 +144,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		sendResponsesStreamData(c, streamResponse, data)
 		switch streamResponse.Type {
 		case "response.completed", "response.done":
+			terminalSeen = true
 			if streamResponse.Response != nil {
 				if streamResponse.Response.Usage != nil {
 					incomingUsage := relayconvert.NormalizeResponsesUsage(streamResponse.Response.Usage)
@@ -137,7 +168,8 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				imageCounter.Commit(info)
 				imageCommitted = true
 			}
-		case "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
+		case "response.incomplete", "response.cancelled", "response.canceled":
+			terminalSeen = true
 			if !imageCommitted {
 				imageCounter.Reset()
 				imageCounter.Commit(info)
@@ -145,8 +177,10 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			}
 		case "response.output_text.delta":
 			// 处理输出文本
+			outputSeen = true
 			responseTextBuilder.WriteString(streamResponse.Delta)
 		case dto.ResponsesOutputTypeItemDone:
+			outputSeen = true
 			if streamResponse.Item != nil {
 				switch streamResponse.Item.Type {
 				case dto.BuildInCallWebSearchCall:
@@ -163,6 +197,29 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			}
 		}
 	})
+
+	if streamErr != nil {
+		return nil, streamErr
+	}
+
+	// The upstream closed an HTTP 200 stream without a terminal event (e.g.
+	// "stream closed before response.completed") and without producing any output
+	// or usage. Report it as an upstream failure so it never becomes a quota=0
+	// success consume log. Anything the client may already have received (output
+	// items, text deltas, usage) keeps the legacy estimate-and-bill path instead,
+	// because turning a delivered response into an error would retry work the
+	// client already got. A client disconnect is not an upstream failure, and an
+	// explicit [DONE] is treated as a complete stream. The guard never keys on
+	// end_reason alone: a healthy upstream also ends with eof.
+	if !terminalSeen && !outputSeen && usage.PromptTokens == 0 && usage.CompletionTokens == 0 {
+		reason := relaycommon.StreamEndReasonEOF
+		if info.StreamStatus != nil && info.StreamStatus.EndReason != "" {
+			reason = info.StreamStatus.EndReason
+		}
+		if reason != relaycommon.StreamEndReasonClientGone && reason != relaycommon.StreamEndReasonDone {
+			return nil, types.NewError(fmt.Errorf("responses stream ended without a terminal event (reason=%s)", reason), types.ErrorCodeBadResponse)
+		}
+	}
 
 	if usage.CompletionTokens == 0 {
 		// 计算输出文本的 token 数量
