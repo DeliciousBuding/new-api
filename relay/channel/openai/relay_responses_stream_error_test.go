@@ -129,6 +129,10 @@ func TestOaiResponsesStreamHandlerErrorsOnTruncatedStream(t *testing.T) {
 	assert.Nil(t, usage)
 	assert.Contains(t, apiErr.Error(), "without a terminal event")
 	assert.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)
+	// 500 keeps the error inside the retryable status-code matrix and outside
+	// ShouldDisableByStatusCode, so a truncated stream re-routes instead of
+	// auto-banning the channel.
+	assert.Equal(t, http.StatusInternalServerError, apiErr.StatusCode)
 }
 
 // The truncation guard must not fire on a stream that produced output: billing
