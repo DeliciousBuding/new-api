@@ -278,3 +278,37 @@ func requireOrderedSubstrings(t *testing.T, s string, parts ...string) {
 		offset += idx + len(part)
 	}
 }
+
+// A flat in-stream error event (the Bailian/DashScope shape) must surface as a
+// gateway error on the chat-via-responses path too, instead of being handed to
+// the converter and billed as an empty success.
+func TestOaiResponsesToChatStreamHandlerReturnsInStreamErrorEvent(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-test"}}`,
+		`data: {"type":"error","code":"Model.AccessDenied","message":"Model access denied.","request_id":"req-1"}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, recorder, resp, info := newResponsesChatTestContext(t, body, true)
+
+	usage, apiErr := OaiResponsesToChatStreamHandler(c, info, resp)
+	require.NotNil(t, apiErr)
+	assert.Nil(t, usage)
+	require.Equal(t, http.StatusInternalServerError, apiErr.StatusCode)
+	require.Equal(t, "Model access denied.", apiErr.Error())
+
+	detail := apiErr.GetUpstreamErrorDetail()
+	require.NotNil(t, detail)
+	assert.Equal(t, "Model.AccessDenied", detail.Code)
+	assert.Equal(t, "req-1", detail.RequestID)
+	assert.NotContains(t, recorder.Body.String(), "Model access denied.")
+}

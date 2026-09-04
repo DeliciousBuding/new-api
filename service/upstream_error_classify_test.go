@@ -22,6 +22,7 @@ func TestClassifyUpstreamErrorCode(t *testing.T) {
 		{name: "invalid api key", code: "InvalidApiKey", expected: UpstreamErrorClassAuthFatal},
 		{name: "authentication error", code: "authentication_error", expected: UpstreamErrorClassAuthFatal},
 		{name: "unauthorized", code: "Unauthorized", expected: UpstreamErrorClassAuthFatal},
+		{name: "bailian model access denied", code: "Model.AccessDenied", expected: UpstreamErrorClassAuthFatal},
 		{name: "parameter error is unknown", code: "InvalidParameter", expected: UpstreamErrorClassUnknown},
 		{name: "content inspection is unknown", code: "data_inspection_failed", expected: UpstreamErrorClassUnknown},
 		{name: "empty code is unknown", code: "", expected: UpstreamErrorClassUnknown},

@@ -102,15 +102,17 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 
 > 曾改动 `relaykit/relayconvert/internal/oai_chat/to_claude_messages_req.go`（不注入空 tools，`04fc5c49b`）；上游 #6862 已合入等价修复，现该文件与 upstream **零差异**，不再计入台账。relaykit 其余文件与 upstream 一致。
 
-### 上游错误诊断（SSE，事故修复 #143 + 加固 #152）
+### 上游错误诊断（SSE，事故修复 #143 + 加固 #152 + 流内错误 20260904）
 
 | 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
 |---|---|---|---|---|
 | `service/error.go` | `RelayErrorHandler` 钩子：JSON 解析失败时提取 SSE 错误诊断（不改客户端语义）；#152 换用 `FormatUpstreamErrorDetail` 格式化并清洗换行 | `ac6944e27` `8fdbbff9e` | — | 中 |
 | `service/error_test.go` | RelayErrorHandler SSE 诊断契约测试 | `ac6944e27` | — | 低 |
 | `relaykit/types/error.go` | 新增 `UpstreamErrorDetail` 结构化诊断类型（#152 删 `PayloadFormat`/`String()`，transport/日志关切归 host） | `ac6944e27` `8fdbbff9e` | `relaykit/README.md` | 中 |
+| `relay/channel/openai/relay_responses.go` | 原生 Responses 流：流内错误事件（`error`/`response.error`/`response.failed`）在透传前拦截为 500 网关错误、不下发客户端、图片计数按不可计费清零（百炼 200 SSE + `Model.AccessDenied` 收尾曾落成 quota=0 消耗日志）；另补「无终止事件且无输出/usage」截断守卫，守卫只看内容与 usage，不按 `end_reason` 单独判定 | `b6f8688bc` | — | 中 |
+| `relay/channel/openai/chat_via_responses.go` | 流式 + buffered 两处内联错误分支收敛到 `service.NewResponsesStreamEventError`，并补上此前不覆盖的扁平 `error` 事件 | `b6f8688bc` | — | 中 |
 
-> 提取器本体是 fork-owned 新文件 `service/upstream_error_extract.go`（上游不存在，永不冲突），不在本表。
+> 提取器本体 `service/upstream_error_extract.go` 与流内错误构造器 `service/upstream_stream_error.go` 都是 fork-owned 新文件（上游不存在，永不冲突），不在本表。
 
 ### Relay 韧性（尝试预算 + 状态归因，#155）
 
@@ -130,10 +132,14 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 | 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
 |---|---|---|---|---|
 | `service/channel.go` | `ShouldDisableChannel` 按结构化码 `IsAccountFatalError` 直接禁用（不依赖关键词，SSE 体解析失败时仍可靠） | #156 | — | 中 |
-| `controller/relay.go` | `shouldRetry` 按 `IsNonRetryableUpstreamError`（账户/鉴权级）快速失败 | #156 | — | 中 |
+| `controller/relay.go` | ~~`shouldRetry` 按 `IsNonRetryableUpstreamError`（账户/鉴权级）快速失败~~ **接线已在合并 `9d2a2d34b` 时丢失，现无生产调用方**；2026-09-04 复核后刻意不恢复——多 key 机群里 `Model.AccessDenied` 只说明当前 key 无该模型权限，跨渠道重试比快速失败更有价值 | #156 | — | 中 |
 | `controller/channel.go` | `auto_ban` 变更进 `changed_fields` + 记录前后值（1→0 漂移归因） | #157 | — | 中 |
 
 > 分类器本体是 fork-owned 新文件 `service/upstream_error_classify.go`（保守精确匹配，未知码原样走既有状态码/关键词逻辑），不在本表。
+
+> **sync 合并丢失接线（2026-09-04 复核）**：`9d2a2d34b`（合并 `official/main` 到 `sync/upstream-20260904`）的冲突解决吞掉了两处 fork 接线，`0afb2b3a7` 的重放也没补回——
+> 1. `controller/relay.go` `shouldRetry` 里的 `service.IsNonRetryableUpstreamError`（#156）：**不恢复**，理由见上表。因此 `authFatalCodes` 当前只影响分类正确性，无运行时效果（`IsAccountFatalError`→auto-ban 分支仍在用）。
+> 2. `controller/relay.go` `processChannelError` 里的 `service.RecordChannelAffinitySoftFailure` + `ClearCurrentChannelAffinityCache`（issue #39 affinity 软失败解绑）：**已在 #173 复归**。它是「基础设施 / 基线」表中 `controller/relay.go` 行声明的「channel affinity 软失败解绑」，丢失后软失败会话会一直绑死到缓存 TTL，正是百炼坏渠道连续命中 12 次却不改绑的直接原因。
 
 ### 渠道测试（channel test）
 
@@ -210,7 +216,7 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 | SSE 错误体提取器（#143/#152） | `service/upstream_error_extract.go`（fork-owned） | #6523 `isOpenAITextStreamErrorChunk`、#6446 流内 429 重试 | #6523 合入后：评估直接用上游检测结果喂 `admin_info.upstream_error`，退役 fork 提取器 |
 | channel-test 追加探测 | `controller/channel-test.go`（上游文件内 additive 6 行） | 上游 #6917 gjson 检测器（已合，我们保留原样） | 冲突时优先保留上游；fork 探测保持 additive 不变 |
 | `UpstreamErrorDetail` 类型 | `relaykit/types/error.go` | —（上游暂无同概念） | 上游若在 relaykit 引入同概念：fork 侧回退 `Metadata`；host 格式化/transport 关切**永不回迁 relaykit**（#152 已删 PayloadFormat/String） |
-| 异常流中断追踪缺口 | 无（现仅靠 `stream_status.end_reason`，如 `client_gone`） | #6927（type=5 `stream_incomplete` transport 错误日志） | #6927 合入后吸收：核对它的字段（`error_type=transport` 等）与 `admin_info` 不打架，补上 `client_gone` 场景的独立 transport 错误记录 |
+| 异常流中断追踪缺口（**语义层已修，transport 层仍缺**） | 语义层：`service/upstream_stream_error.go`（fork-owned）+ `relay/channel/openai/relay_responses.go` 流内错误事件拦截与无终止事件截断守卫（`b6f8688bc`）；transport 层：无（现仅靠 `stream_status.end_reason`，如 `client_gone`） | #6927（type=5 `stream_incomplete` transport 错误日志） | #6927 合入后吸收：核对它的字段（`error_type=transport` 等）与 `admin_info` 不打架，补上 `client_gone` 场景的独立 transport 错误记录。**勿把 #6927 当成语义层已覆盖**——200 SSE 里的 `error`/`response.failed` 事件由本 fork 钉子负责 |
 
 ### 上游同域追踪
 
@@ -220,7 +226,7 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 | #6446 pre-stream 429 重试 | open | 与 #143/#152 相邻，无冲突 |
 | #6523 流错误检测 + 渠道回退 | open | **收敛主目标**（见上表第一行） |
 | #6580 exclude-driven failover | open | 我们的 #145 直接采用，勿自造 |
-| #6927 异常流中断日志 | open | 补 `stream_incomplete` transport 错误，吸收时核对字段 |
+| #6927 异常流中断日志 | open | 补 `stream_incomplete` transport 错误，吸收时核对字段；语义层（200 SSE 内错误事件）已由 `b6f8688bc` 独立修复，两者互补不重叠 |
 | #6938 xAI 流内错误转发 | open | xAI 专用，与我们的非 2xx SSE 提取**互补**（不同机制） |
 | #6305/#6317 邀请码注册 | open | fork #165 已独立实现（明文码、仿兑换码习语）；上游 PR 为 SHA-256 哈希存储 + Classic/Default 双前端，表结构不互通，若合入需收敛/迁移评估 |
 
