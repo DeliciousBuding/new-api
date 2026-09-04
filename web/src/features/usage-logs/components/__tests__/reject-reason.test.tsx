@@ -18,11 +18,23 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import type { UsageLog } from '../../data/schema'
 import type { LogOtherData } from '../../types'
 import { DetailsDialog } from '../dialogs/details-dialog'
+
+// @lobehub/icons (behind the fork's lobe-icon loader) uses ESM directory
+// imports that Vite's resolver cannot follow. This test covers the reject
+// reason display, so stub the loader to keep the suite importable without
+// emoji-mart JSON.
+vi.mock('@/lib/lobe-icon', async () => {
+  const React = await import('react')
+  return {
+    getLobeIcon: () =>
+      React.createElement('svg', { 'data-mock-lobe-icon': 'true' }),
+  }
+})
 
 const queryClients: QueryClient[] = []
 
