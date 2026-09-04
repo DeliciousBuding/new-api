@@ -106,5 +106,8 @@ func ShouldPreserveEffortTail(modelName string) bool {
 			return true
 		}
 	}
-	return false
+	// Fork: vendor families whose real model IDs end in an effort-like token
+	// (effort_tail_families.go). Additive to the exact-match list above, so an
+	// operator-edited option value can never re-expose a whole family.
+	return isEffortTailRealModelFamily(bare)
 }
