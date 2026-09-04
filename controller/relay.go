@@ -183,6 +183,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}()
 
+	// Vision Relay：预扣费后、retry 前单点钩子（默认关闭，
+	// 配置见 setting/model_setting/vision_relay.go；失败 = 5xx，绝不 fail-open）
+	if visionErr := service.PrepareVisionRelayRequest(c, relayInfo); visionErr != nil {
+		newAPIError = visionErr
+		return
+	}
+
 	retryParam := &service.RetryParam{
 		Ctx:         c,
 		TokenGroup:  relayInfo.TokenGroup,
@@ -419,6 +426,19 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		other.SetPublic("error_code", err.GetErrorCode())
 		other.SetPublic("status_code", err.StatusCode)
 		service.AppendRelayLogAdminInfo(c, relayInfo, other)
+		if upstreamDetail := err.GetUpstreamErrorDetail(); upstreamDetail != nil {
+			// Mask upstream-controlled message text before persisting (defense
+			// in depth: providers may echo credentials in error bodies).
+			detail := *upstreamDetail
+			detail.Message = common.MaskSensitiveInfo(detail.Message)
+			other.SetAdmin("upstream_error", detail)
+			// The upstream request id may only exist inside the error body
+			// (e.g. DashScope SSE errors); surface it through the existing
+			// logs.upstream_request_id column when no header carried one.
+			if detail.RequestID != "" && c.GetString(common.UpstreamRequestIdKey) == "" {
+				c.Set(common.UpstreamRequestIdKey, detail.RequestID)
+			}
+		}
 		service.AppendTaskPluginContextAuditInfo(c, other)
 		startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
 		if startTime.IsZero() {

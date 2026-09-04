@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -67,6 +68,284 @@ func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other
 
 // AppendRelayLogAdminInfo records relay routing and conversion diagnostics in
 // the admin-only scope shared by successful and failed request logs.
+func DetectClientProfile(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	h := c.Request.Header
+	// 小写归一 UA 只做一次：头部子分支（X-Codex-* 循环、X-App=cli）与下方
+	// 主 UA switch 共用同一结果，避免对同一 UA 重复 ToLower。
+	ua := strings.ToLower(c.Request.UserAgent())
+	if v := h.Get("Originator"); v != "" {
+		lv := strings.ToLower(v)
+		switch {
+		case strings.HasPrefix(lv, "codex_cli"):
+			return "codex_cli"
+		case strings.HasPrefix(lv, "codex-tui"):
+			// CLIProxyAPI 的 Codex 上游路径（codex-tui/… 伪装 UA + Originator: codex-tui）
+			return "codex_cli"
+		case strings.HasPrefix(lv, "codex cli"):
+			// 与 codex_desktop 空格变体对称的 CLI 形态（openai/codex #31481 同源头清单）
+			return "codex_cli"
+		case strings.HasPrefix(lv, "codex_desktop"):
+			return "codex_desktop"
+		case strings.HasPrefix(lv, "codex desktop"):
+			// OpenAI 官方 desktop app 发送的 Originator 为 "Codex Desktop"（带空格，
+			// openai/codex #31481 实证），与 codex_desktop 下划线变体等价。
+			return "codex_desktop"
+		case strings.HasPrefix(lv, "codex_vscode"):
+			// OpenAI 官方 VS Code 扩展的 Originator 为 codex_vscode（openai/codex
+			// PR #8873 clientInfo.name 实证）。须先于下方 codex 兜底，否则会落 codex_app。
+			return "codex_vscode"
+		case strings.HasPrefix(lv, "codex"):
+			return "codex_app"
+		}
+	}
+	for _, name := range []string{"X-Codex-Turn-State", "X-Codex-Turn-Metadata", "X-Codex-Window-Id", "X-OpenAI-Subagent"} {
+		if h.Get(name) != "" {
+			if strings.Contains(ua, "desktop") {
+				return "codex_desktop"
+			}
+			return "codex_cli"
+		}
+	}
+	if v := h.Get("X-App"); v != "" {
+		lv := strings.ToLower(v)
+		switch {
+		case strings.Contains(lv, "cli"):
+			// X-App=cli 只说明内核是 Claude Code CLI。官方 VS Code 扩展与第三方
+			// 桌面壳（claude-desktop-3p）同样发 X-App=cli，但 UA 的
+			// (external, <variant>) 括号里携带更精确的封装形态，须优先细分，
+			// 否则会整体落 claude_cli（生产日志实证：claude-vscode / claude-desktop-3p
+			// 两种 variant 曾都被识别为 claude_cli）。
+			switch {
+			case strings.Contains(ua, "claude-vscode"):
+				return "claude_vscode"
+			case strings.Contains(ua, "claude-desktop-3p"):
+				return "claude_desktop_3p"
+			default:
+				return "claude_cli"
+			}
+		case strings.Contains(lv, "desktop"):
+			return "claude_desktop"
+		case strings.Contains(lv, "vscode"):
+			// X-App=vscode 与 X-App=cli + UA claude-vscode 是同一个 VS Code
+			// 扩展的不同信号形态，统一归 claude_vscode，避免同一客户端因
+			// 头路径不同被标成两个档位（claude_plugin 保留给 JetBrains/
+			// IntelliJ/Cursor 等插件形态）。
+			return "claude_vscode"
+		case strings.Contains(lv, "jetbrains") || strings.Contains(lv, "intellij") || strings.Contains(lv, "cursor"):
+			return "claude_plugin"
+		default:
+			return "claude_app"
+		}
+	}
+	// LiteLLM 中转代理：默认 UA 是 python-httpx（无品牌词），x-litellm-* 头是
+	// 可靠信号（litellm 生态实现实证）。
+	for k := range h {
+		if strings.HasPrefix(strings.ToLower(k), "x-litellm-") {
+			return "litellm"
+		}
+	}
+	// UA 兜底：通用工具/中转代理/品牌客户端（在特征头之后、协议头兜底之前）。
+	// 匹配顺序 = 特异性降序：子串越泛化越靠后，避免互相覆盖。
+	// 品牌词都足够特异（正常请求 UA 不会含这些子串），Contains 误伤可控；
+	// 泛化形态（裸浏览器等）不做识别，落 chat 兜底。
+	switch {
+	// 通用 HTTP 客户端（Go 默认 UA / 中转代理）
+	case strings.Contains(ua, "go-http-client"):
+		return "gohttp"
+	case strings.Contains(ua, "cli-proxy-openai-compat"), strings.Contains(ua, "cliproxyapi"):
+		// CLIProxyAPI（router-for-me/CLIProxyAPI）openai-compat 路径硬编码
+		// User-Agent: cli-proxy-openai-compat（不透传下游 UA）；Kimi 路径为
+		// CLIProxyAPI/<version>。Go 默认 UA 为 Go-http-client/1.1 或 /2.0
+		// （由连接协议版本决定）。
+		return "cliproxyapi"
+	case strings.Contains(ua, "hermesagent"):
+		// HermesAgent/<version>（UA pattern from source analysis）
+		return "hermes_agent"
+	case strings.Contains(ua, "workbuddy"):
+		return "workbuddy"
+	case strings.Contains(ua, "openclaw"):
+		return "openclaw"
+	case strings.Contains(ua, "cherry studio"), strings.Contains(ua, "cherry-studio"), strings.Contains(ua, "cherrystudio"):
+		// Cherry Studio 官方 UA 为 "Cherry Studio"（无版本号）
+		return "cherry_studio"
+	case strings.Contains(ua, "rikkahub"):
+		return "rikkahub"
+	case strings.Contains(ua, "sub2api"):
+		// Sub2API-Discovery/1.0 探活（nginx 流量实证）
+		return "sub2api"
+	// IDE / 编码 agent
+	case strings.Contains(ua, "windsurf"):
+		return "windsurf"
+	case strings.Contains(ua, "cline"):
+		return "cline"
+	case strings.Contains(ua, "roo code"), strings.Contains(ua, "roo-code"), strings.Contains(ua, "roocode"):
+		return "roo_code"
+	case strings.Contains(ua, "trae"):
+		return "trae"
+	case strings.Contains(ua, "cursor"):
+		return "cursor"
+	case strings.Contains(ua, "opencode"):
+		// opencode/<version>（nginx 流量实证）。注意：opencode 含子串 "codex"，
+		// 必须保持在本分支先于下方 codex 族分支，否则会被 codex_cli 吞掉。
+		return "opencode"
+	case strings.Contains(ua, "continue/"):
+		return "continue"
+	case strings.Contains(ua, "zed/"):
+		return "zed"
+	case strings.Contains(ua, "copilot"):
+		return "copilot"
+	// Codex 族（UA 层兜底；Originator 头已在上层细分）
+	case strings.Contains(ua, "codex desktop"):
+		return "codex_desktop"
+	case strings.Contains(ua, "codex_vscode"):
+		return "codex_vscode"
+	case strings.Contains(ua, "codex-browser-use"):
+		return "codex_browser"
+	case strings.Contains(ua, "codex"):
+		return "codex_cli"
+	// Claude 族（UA 层兜底；X-App 头已在上层细分）
+	case strings.Contains(ua, "claude-desktop-3p"):
+		// 第三方 Claude Desktop 应用（UA 形态为 claude-cli/<ver> (external,
+		// claude-desktop-3p, agent-sdk/<ver>)），与官方 Claude Desktop（X-App:
+		// desktop）区分。须置于 claude-cli/ 之前，因该 UA 以 claude-cli/ 为前缀。
+		return "claude_desktop_3p"
+	case strings.Contains(ua, "claude-cli/"):
+		switch {
+		case strings.Contains(ua, "desktop"):
+			return "claude_desktop"
+		case strings.Contains(ua, "vscode"):
+			return "claude_vscode"
+		default:
+			return "claude_cli"
+		}
+	case strings.Contains(ua, "claude/") && (strings.Contains(ua, "electron") || strings.Contains(ua, "msix")):
+		return "claude_desktop"
+	// 官方 SDK / 平台客户端。Stainless 生成器覆盖 OpenAI/Anthropic/Mistral/Groq/
+	// Cohere 等多家官方 SDK，其 UA 均自带品牌词（Anthropic/JS、OpenAI/Python 等），
+	// 在此统一识别；UA 无品牌信息时由下方 X-Stainless 协议头兜底。
+	case strings.Contains(ua, "anthropic/js"), strings.Contains(ua, "anthropic/python"),
+		strings.Contains(ua, "anthropic/go"), strings.Contains(ua, "anthropic-sdk-"):
+		// 已实证格式：Anthropic/JS <ver>（TS）、Anthropic/Python <ver>、Anthropic/Go <ver>；
+		// anthropic-sdk- 前缀兜底其余语言变体。
+		return "claude_sdk"
+	case strings.Contains(ua, "@ai-sdk/"):
+		// Vercel AI SDK（vercel/ai PR #8530 官方 UA 实证）。须置于 openai/ 之前：
+		// 实际 UA 形态为 "@ai-sdk/openai/..."（含子串 openai/）；仅匹配 @ai-sdk/
+		// 形态，裸 ai/ 会误伤 openai/，严禁放宽。
+		return "ai_sdk"
+	case strings.Contains(ua, "openai/"), strings.Contains(ua, "openai-python"):
+		// OpenAI/<lang> 覆盖 python/js/go/java/.NET/rust（stainless 统一格式）与
+		// Responses API（^OpenAI/）；openai-python 为历史格式。
+		return "openai_sdk"
+	case strings.Contains(ua, "mistralai"), strings.Contains(ua, "mistral-client-python/"):
+		// Mistral SDK UA（mistralai/client-python 源码 CustomUserAgentHook 实证）
+		return "mistral_sdk"
+	case strings.Contains(ua, "cohere-python"), strings.Contains(ua, "cohere-typescript"), strings.Contains(ua, "cohere-node"):
+		// Cohere 官方 SDK（empirical caller-labels）
+		return "cohere_sdk"
+	case strings.Contains(ua, "cloudcodevscode"), strings.Contains(ua, "aidev_client"):
+		// Google Gemini Code Assist VS Code 集成（google-gemini/gemini-cli
+		// PR #23256 统一 VS Code UA "CloudCodeVSCode/ (...; aidev_client; ...)"）
+		return "gemini_code_assist"
+	case strings.Contains(ua, "gemini-cli"), strings.Contains(ua, "gemini cli"):
+		return "gemini_cli"
+	case strings.Contains(ua, "google-genai-sdk"), strings.Contains(ua, "genai-py"),
+		strings.Contains(ua, "google-cloud-aiplatform"):
+		// google-genai（新版）/ google-generativeai（旧版 genai-py）SDK UA 实证；
+		// google-cloud-aiplatform 为 Vertex AI SDK（empirical UA samples）
+		return "gemini_sdk"
+	case strings.Contains(ua, "qoder"):
+		// Qoder / Qoder Work（阿里，千问办公前台）。Qoder-Cli UA 为 GitHub issue 实证
+		return "qoder"
+	case strings.Contains(ua, "perplexity"):
+		return "perplexity"
+	case strings.Contains(ua, "poe/"):
+		return "poe"
+	case strings.Contains(ua, "openrouter"):
+		return "openrouter"
+	case strings.Contains(ua, "groq"):
+		return "groq"
+	case strings.Contains(ua, "grok-user"), strings.Contains(ua, "grok/"):
+		// xAI Grok（Grok app/CLI）与 Groq 公司为不同实体（Grok-User/Grok/ 为
+		// empirical caller-label patterns），相邻放置便于对照
+		return "grok"
+	case strings.Contains(ua, "litellm/"):
+		// LiteLLM 中转代理 UA（litellm 生态检测实现实证；x-litellm-* 头已在上层捕获）
+		return "litellm"
+	case strings.Contains(ua, "ollama"):
+		return "ollama"
+	case strings.Contains(ua, "moonshot"), strings.Contains(ua, "kimi"):
+		return "kimi"
+	case strings.Contains(ua, "qwen"):
+		return "qwen"
+	case strings.Contains(ua, "doubao"), strings.Contains(ua, "volcengine"):
+		return "doubao"
+	case strings.Contains(ua, "chatglm"), strings.Contains(ua, "zhipu"):
+		return "zhipu"
+	case strings.Contains(ua, "deepseek-harness"):
+		// DeepSeek 官方 agent harness（deepseek-ai/deepseek-harness，UA 形如
+		// deepseek-harness/<ver>，nginx 流量实证）。须置于 deepseek 分支之前，
+		// 因 "deepseek-harness" 含子串 "deepseek"。
+		return "deepseek_harness"
+	case strings.Contains(ua, "deepseek"):
+		return "deepseek"
+	case strings.Contains(ua, "chatgpt"):
+		return "chatgpt"
+	case strings.Contains(ua, "minis/"):
+		// Minis/<version> 安卓客户端（nginx 流量实证）
+		return "minis"
+	case strings.Contains(ua, "oh-my-pi"), strings.Contains(ua, "oh_my_pi"),
+		strings.Contains(ua, "oh my pi"), strings.Contains(ua, "omp/"):
+		// Oh My Pi（OMP）— pi 的增强版/超集。官方 UA 形如 omp/<ver>（如 omp/18.1.6，
+		// nginx 流量实证）；"oh my pi"/"oh-my-pi"/"oh_my_pi" 为产品名拼写变体。
+		// 不匹配裸 "pi/"（会误伤 api/、openai/ 等子串），前端无 OMP 品牌图时复用 Pi。
+		return "omp"
+	// LLM 框架（empirical caller-labels：langchain 系列嵌入 UA 不带锚定）
+	case strings.Contains(ua, "agents/python"), strings.Contains(ua, "openai-agents"):
+		// OpenAI Agents SDK（openai/openai-agents-python 源码 _USER_AGENT =
+		// "Agents/Python <ver>"）
+		return "openai_agents"
+	case strings.Contains(ua, "semantic kernel"), strings.Contains(ua, "semantic-kernel"):
+		// Microsoft Semantic Kernel（microsoft/semantic-kernel PR #3074 加 UA
+		// "Semantic Kernel"）
+		return "semantic_kernel"
+	case strings.Contains(ua, "langchain"):
+		return "langchain"
+	case strings.Contains(ua, "llama_index"), strings.Contains(ua, "llama-index"):
+		return "llama_index"
+	// MCP SDK（empirical：mcp-python-sdk / mcp-typescript-sdk / @modelcontextprotocol/sdk）
+	case strings.Contains(ua, "mcp-python-sdk"), strings.Contains(ua, "mcp-typescript-sdk"), strings.Contains(ua, "modelcontextprotocol"):
+		return "mcp_sdk"
+	// 自动化工作流（empirical：n8n / Zapier / Make.com 作为客户端调用 LLM API）
+	case strings.Contains(ua, "n8n"):
+		return "n8n"
+	case strings.Contains(ua, "zapier"):
+		return "zapier"
+	case strings.Contains(ua, "make.com"):
+		return "make"
+	// 裸 HTTP 客户端（curl/wget/requests/httpx/urllib/okhttp/axios 等）
+	case strings.Contains(ua, "curl/"), strings.Contains(ua, "wget/"), strings.Contains(ua, "python-requests"),
+		strings.Contains(ua, "python-httpx"), strings.Contains(ua, "urllib"), strings.Contains(ua, "node-fetch"),
+		strings.Contains(ua, "reqwest"), strings.Contains(ua, "okhttp"), strings.Contains(ua, "axios"):
+		return "http_client"
+	}
+	// UA 未识别时的协议头兜底：特征头可伪造，但作为最后手段仍比 chat 有信息量。
+	// 注意两处兜底都在 UA switch 之后——stainless 生态（OpenAI/Anthropic/Mistral/
+	// Groq/Cohere 等官方 SDK）的 UA 均自带品牌词已被上方捕获；走到这里说明 UA
+	// 无品牌信息，此时才按协议头归类，避免分类随协议漂移。
+	if h.Get("Anthropic-Version") != "" {
+		return "claude_sdk"
+	}
+	if h.Get("X-Stainless-Lang") != "" || h.Get("X-Stainless-Runtime") != "" {
+		// X-Stainless-* 可被客户端 default_headers 覆盖/删除，UA 才是稳定信号；
+		// 作为兜底默认归 openai_sdk（stainless 生态中最常见的 SDK）。
+		return "openai_sdk"
+	}
+	return "chat"
+}
 func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
 	if ctx == nil || other == nil {
 		return
@@ -92,6 +371,27 @@ func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 	}
 
 	AppendChannelAffinityAdminInfo(ctx, other)
+
+	// Client fingerprint hint (admin-only, never used for auth/billing/routing).
+	// DetectClientProfile is a display hint; callers can spoof it.
+	profile := DetectClientProfile(ctx)
+	if profile != "" {
+		other.SetAdmin("client_profile", profile)
+	}
+	// Raw UA string alongside the profile for admin verification. UA is client
+	// controlled, truncated to 256 bytes with a UTF-8-safe boundary.
+	if ctx.Request != nil {
+		if ua := ctx.Request.UserAgent(); ua != "" {
+			const maxUaLen = 256
+			if len(ua) > maxUaLen {
+				ua = ua[:maxUaLen]
+				for len(ua) > 0 && !utf8.ValidString(ua) {
+					ua = ua[:len(ua)-1]
+				}
+			}
+			other.SetAdmin("client_ua", ua)
+		}
+	}
 }
 
 func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, modelRatio, groupRatio, completionRatio float64,

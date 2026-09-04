@@ -101,6 +101,12 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		maybeMarkClaudeRefusal(c, *claudeResponse.Delta.StopReason)
 	}
 	if info.RelayFormat == types.RelayFormatClaude {
+		// 响应模型名回显策略：origin 模式下直通 chunk 的 model 用请求名；
+		// 默认模式保持上游原值。
+		if info.ResponseModelOriginEnabled() &&
+			claudeResponse.Model != "" && claudeResponse.Model != info.OriginModelName {
+			claudeResponse.Model = info.OriginModelName
+		}
 		FormatClaudeResponseInfo(&claudeResponse, nil, claudeInfo)
 
 		if claudeResponse.Type == "message_start" {
@@ -360,7 +366,17 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 			return types.NewError(err, types.ErrorCodeBadResponseBody)
 		}
 	case types.RelayFormatClaude:
-		responseData = data
+		// 响应模型名回显策略：origin 模式下直通响应的 model 用请求名；
+		// 默认模式保持上游原字节透传。
+		if info.ResponseModelOriginEnabled() &&
+			claudeResponse.Model != "" && claudeResponse.Model != info.OriginModelName {
+			claudeResponse.Model = info.OriginModelName
+			if rewritten, err := common.Marshal(claudeResponse); err == nil {
+				responseData = rewritten
+			}
+		} else {
+			responseData = data
+		}
 	case types.RelayFormatGemini:
 		{
 			convertResult, convertErr := service.ConvertResponse(c, info, types.RelayFormatGemini, &claudeResponse)

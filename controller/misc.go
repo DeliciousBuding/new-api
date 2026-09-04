@@ -125,6 +125,7 @@ func GetStatus(c *gin.Context) {
 		"user_agreement_enabled":      legalSetting.UserAgreement != "",
 		"privacy_policy_enabled":      legalSetting.PrivacyPolicy != "",
 		"checkin_enabled":             operation_setting.GetCheckinSetting().Enabled,
+		"invitation_code_required":    common.InvitationCodeRequired,
 	}
 
 	// 根据启用状态注入可选内容
@@ -210,8 +211,9 @@ func GetMidjourney(c *gin.Context) {
 func GetHomePageContent(c *gin.Context) {
 	common.OptionMapRWMutex.RLock()
 	homePageContent := common.OptionMap["HomePageContent"]
+	homePageStyle := common.OptionMap["HomePageStyle"]
 	common.OptionMapRWMutex.RUnlock()
-	serveRevalidatedJSON(c, homePageContent)
+	serveRevalidatedJSON(c, homePageContent, map[string]any{"home_page_style": homePageStyle})
 }
 
 func SendEmailVerification(c *gin.Context) {

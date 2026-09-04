@@ -82,6 +82,85 @@ export type LogFilters = CommonLogFilters | DrawingLogFilters | TaskLogFilters
 /**
  * Parsed data from the 'other' field in usage logs
  */
+// Client fingerprint hint written by the backend (admin-only, never used
+// for auth/billing/routing).
+export type ClientProfile =
+  | 'codex_cli'
+  | 'codex_desktop'
+  | 'codex_app'
+  | 'codex_vscode'
+  | 'codex_browser'
+  | 'claude_cli'
+  | 'claude_desktop'
+  | 'claude_desktop_3p'
+  | 'claude_vscode'
+  | 'claude_plugin'
+  | 'claude_app'
+  | 'claude_sdk'
+  | 'openai_sdk'
+  | 'mistral_sdk'
+  | 'cohere_sdk'
+  | 'ai_sdk'
+  | 'gemini_cli'
+  | 'gemini_code_assist'
+  | 'gemini_sdk'
+  | 'litellm'
+  | 'gohttp'
+  | 'cliproxyapi'
+  | 'http_client'
+  | 'chat'
+  | 'hermes_agent'
+  | 'workbuddy'
+  | 'openclaw'
+  | 'cherry_studio'
+  | 'rikkahub'
+  | 'sub2api'
+  | 'opencode'
+  | 'minis'
+  | 'omp'
+  | 'trae'
+  | 'cursor'
+  | 'windsurf'
+  | 'cline'
+  | 'roo_code'
+  | 'continue'
+  | 'zed'
+  | 'copilot'
+  | 'qoder'
+  | 'openai_agents'
+  | 'semantic_kernel'
+  | 'langchain'
+  | 'llama_index'
+  | 'mcp_sdk'
+  | 'n8n'
+  | 'zapier'
+  | 'make'
+  | 'grok'
+  | 'ollama'
+  | 'kimi'
+  | 'qwen'
+  | 'doubao'
+  | 'zhipu'
+  | 'deepseek'
+  | 'deepseek_harness'
+  | 'chatgpt'
+  | 'perplexity'
+  | 'poe'
+  | 'openrouter'
+  | 'groq'
+
+// Locality hint resolved from the client IP by the backend GeoIP lookup
+// (DB-IP Lite, admin-only).
+export interface GeoInfo {
+  country_code?: string
+  country?: string
+  province?: string
+  city?: string
+  isp?: string
+  asn?: number
+  asn_org?: string
+}
+
 export interface ChannelAffinityInfo {
   rule_name?: string
   selected_group?: string
@@ -141,6 +220,23 @@ export interface LogOtherData {
       kind: 'overflow' | 'underflow' | 'nan'
       original: number
       clamped: number
+    }
+    // Locality hint resolved from the client IP (GeoIP). Admin-only.
+    geo?: GeoInfo
+    // Client fingerprint hint (UA/header profile). Admin-only, nested under
+    // admin_info so user-facing paths strip it with the whole object.
+    client_profile?: ClientProfile
+    // Raw User-Agent string the profile was derived from. Admin-only, same
+    // visibility rules as client_profile.
+    client_ua?: string
+    // Structured upstream error diagnostics recovered from a non-2xx upstream
+    // error body (e.g. SSE error frames). Admin-only, nested under admin_info
+    // so user-facing paths strip it with the whole object.
+    upstream_error?: {
+      code?: string
+      type?: string
+      message?: string
+      request_id?: string
     }
     // Reject / intercept reason (admin only)
     reject_reason?: string
@@ -206,6 +302,7 @@ export interface LogOtherData {
   request_rules?: RequestRuleTrace[]
   usage_facts?: Record<string, string | number>
   reasoning_effort?: string
+  input_tokens_total?: number
   image?: boolean
   image_ratio?: number
   image_output?: number
