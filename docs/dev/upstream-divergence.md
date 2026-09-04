@@ -102,6 +102,14 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 
 > 曾改动 `relaykit/relayconvert/internal/oai_chat/to_claude_messages_req.go`（不注入空 tools，`04fc5c49b`）；上游 #6862 已合入等价修复，现该文件与 upstream **零差异**，不再计入台账。relaykit 其余文件与 upstream 一致。
 
+### 模型名 reasoning 后缀解析（effort tail）
+
+| 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
+|---|---|---|---|---|
+| `setting/model_setting/global.go` | `ShouldPreserveEffortTail` 末尾追加一行 fork 家族规则调用（additive，精确匹配白名单语义不变）：真实模型 ID 以 effort-like token 结尾的厂商家族不再被当成 effort 别名。事故：上游 sync 带入的 suffix 解析把 `qwen3.8-max` 读成 base `qwen3.8` + effort `max`，客户端显式 `reasoning_effort=high` 时 400 `reasoning settings conflict`（v2026.09.04.2 上线后 36 分钟 24 次），无显式 effort 时凭空注入 `effort=max` | `1f746b9ce` | — | 中 |
+
+> 规则本体是 fork-owned 新文件 `setting/model_setting/effort_tail_families.go`（当前只有 `qwen` + `-max` 一条，刻意窄），不在本表。**不能用「目录里是否存在该模型名」判定**：合成别名（如 `grok-4.20-multi-agent-high`）与真实模型在渠道 models 列表里形状完全相同，base 也同样不在目录内。上游的精确匹配白名单 `EffortTailModelIDs`（运维可改 `global.effort_tail_model_ids`）继续作为 `gpt-5.1-codex-max` 这类单点例外的逃生口；家族规则与它是 OR 关系，改过的选项值不会把整个家族重新暴露。
+
 ### 上游错误诊断（SSE，事故修复 #143 + 加固 #152 + 流内错误 20260904）
 
 | 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
@@ -199,7 +207,7 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 以下目录/文件上游不存在，纯增量，`git merge official/main` 不会产生冲突，故不在台账内：
 
 - `pkg/relay_observer/`、`pkg/vision_relay/`
-- `model/model_vendor_fallback.go`、`service/rankings_vendor_fallback.go`
+- `model/model_vendor_fallback.go`、`service/rankings_vendor_fallback.go`、`setting/model_setting/effort_tail_families.go`
 - `docs/dev/*`（本文件所在目录，上游不存在）
 - 前端 fork 自有 feature 文件（`web/src/features/**` 中上游没有的部分）
 
