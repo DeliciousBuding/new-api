@@ -405,10 +405,21 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.Error())))
 	// 不要使用context获取渠道信息，异步处理时可能会出现渠道信息不一致的情况
 	// do not use context to get channel info, there may be inconsistent channel info when processing asynchronously
-	if service.ShouldDisableChannel(err) && channelError.AutoBan {
+	// 渠道健康判定只算一次：下面的 affinity 软失败解绑要用同一结论。
+	disableChannel := service.ShouldDisableChannel(err)
+	if disableChannel && channelError.AutoBan {
 		gopool.Go(func() {
 			service.DisableChannel(channelError, err.ErrorWithStatusCode())
 		})
+	}
+
+	// affinity 软失败解绑（issue #39）：5xx/超时等软失败不进上面的
+	// ShouldDisableChannel 分支，渠道保持 Enabled；SkipRetry=true 的
+	// affinity 会话会一直绑死到缓存 TTL（默认最长 4 小时）。连续软失败达到
+	// 阈值后清掉当前绑定，让下一次请求重新选渠道。每请求只计一次，
+	// 成功响应由 distributor 重置连击。
+	if !disableChannel && service.RecordChannelAffinitySoftFailure(c) {
+		service.ClearCurrentChannelAffinityCache(c)
 	}
 
 	if constant.ErrorLogEnabled && types.IsRecordErrorLog(err) {
