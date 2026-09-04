@@ -183,13 +183,6 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}()
 
-	// Vision Relay：预扣费后、retry 前单点钩子（默认关闭，
-	// 配置见 setting/model_setting/vision_relay.go；失败 = 5xx，绝不 fail-open）
-	if visionErr := service.PrepareVisionRelayRequest(c, relayInfo); visionErr != nil {
-		newAPIError = visionErr
-		return
-	}
-
 	retryParam := &service.RetryParam{
 		Ctx:         c,
 		TokenGroup:  relayInfo.TokenGroup,
@@ -202,10 +195,6 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
-		// Each attempt owns its own upstream request id; a stale value set by a
-		// failed attempt must not leak into a later attempt's log.
-		c.Set(common.UpstreamRequestIdKey, "")
-		service.ObserveTurnAttemptBegin(c)
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
@@ -213,7 +202,6 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		addUsedChannel(c, channel.Id)
-		retryParam.IncreaseAttempts()
 		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
 			newAPIError = billingErr
 			break
@@ -242,7 +230,6 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = relayHandler(c, relayInfo)
 		}
 
-		service.ObserveTurnAttemptEnd(c, relayInfo, channel.Id, newAPIError)
 		if newAPIError == nil {
 			relayInfo.LastError = nil
 			return
@@ -256,14 +243,6 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
-		// Global cap, checked after shouldRetry so a request that would not retry
-		// anyway is unaffected. Unlike RetryTimes this survives auto-group
-		// switches, which reset RetryParam.Retry and would otherwise let a single
-		// request walk every auto group with a fresh retry budget each time.
-		if retryParam.UpstreamBudgetExhausted() {
-			logger.LogInfo(c, fmt.Sprintf("upstream attempt budget exhausted (%d attempts, cap %d); stopping retries", retryParam.Attempts(), common.MaxUpstreamAttempts))
-			break
-		}
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
@@ -275,7 +254,6 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		gopool.Go(func() {
 			perfmetrics.RecordRelaySample(relayInfo, false, 0)
 		})
-		service.ObserveTurnFailure(c, relayInfo)
 	}
 }
 
@@ -394,12 +372,6 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if types.IsChannelError(openaiErr) {
 		return true
 	}
-	// Structured upstream codes (account/auth-fatal) cannot be resolved by
-	// retrying; fail fast instead of burning the retry budget. This complements
-	// the status-code matrix below with the provider's own error classification.
-	if service.IsNonRetryableUpstreamError(openaiErr) {
-		return false
-	}
 	if types.IsSkipRetryError(openaiErr) {
 		return false
 	}
@@ -432,14 +404,6 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		})
 	}
 
-	// affinity 软失败解绑（issue #39）：5xx/超时等软失败不进上面的
-	// ShouldDisableChannel 分支，渠道保持 Enabled；SkipRetry=true 的
-	// affinity 会话会一直绑死到缓存 TTL。连续软失败达到阈值后清掉当前
-	// 绑定，让下一次请求重新选渠道。
-	if !service.ShouldDisableChannel(err) && service.RecordChannelAffinitySoftFailure(c) {
-		service.ClearCurrentChannelAffinityCache(c)
-	}
-
 	if constant.ErrorLogEnabled && types.IsRecordErrorLog(err) {
 		// 保存错误日志到mysql中
 		userId := c.GetInt("id")
@@ -447,59 +411,21 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		modelName := c.GetString("original_model")
 		tokenId := c.GetInt("token_id")
 		userGroup := c.GetString("group")
-		channelId := c.GetInt("channel_id")
-		other := make(map[string]interface{})
+		other := model.NewLogOther()
 		if c.Request != nil && c.Request.URL != nil {
-			other["request_path"] = c.Request.URL.Path
+			other.SetPublic("request_path", c.Request.URL.Path)
 		}
-		other["error_type"] = err.GetErrorType()
-		other["error_code"] = err.GetErrorCode()
-		other["status_code"] = err.StatusCode
-		if upstreamStatus := err.GetUpstreamStatusCode(); upstreamStatus != 0 {
-			// A channel status_code_mapping rewrote the status. Keep the upstream
-			// value so error attribution can tell a rate limit from a genuine
-			// upstream failure; status_code above stays the client-visible one.
-			other["upstream_status_code"] = upstreamStatus
-		}
-		other["channel_id"] = channelId
-		other["channel_name"] = c.GetString("channel_name")
-		other["channel_type"] = c.GetInt("channel_type")
-		adminInfo := make(map[string]interface{})
-		adminInfo["use_channel"] = c.GetStringSlice("use_channel")
-		if relayInfo != nil {
-			if diagnostics := relayInfo.ConversionDiagnostics(); len(diagnostics) > 0 {
-				adminInfo["conversion_diagnostics"] = diagnostics
-			}
-			if relayInfo.ConversionDiagnosticsTruncated() {
-				adminInfo["conversion_diagnostics_truncated"] = true
-			}
-		}
-		isMultiKey := common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey)
-		if isMultiKey {
-			adminInfo["is_multi_key"] = true
-			adminInfo["multi_key_index"] = common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
-		}
-		service.AppendChannelAffinityAdminInfo(c, adminInfo)
-		if upstreamDetail := err.GetUpstreamErrorDetail(); upstreamDetail != nil {
-			// Mask upstream-controlled message text before persisting (defense
-			// in depth: providers may echo credentials in error bodies).
-			upstreamDetail.Message = common.MaskSensitiveInfo(upstreamDetail.Message)
-			adminInfo["upstream_error"] = upstreamDetail
-			// The upstream request id may only exist inside the error body
-			// (e.g. DashScope SSE errors); surface it through the existing
-			// logs.upstream_request_id column when no header carried one.
-			if upstreamDetail.RequestID != "" && c.GetString(common.UpstreamRequestIdKey) == "" {
-				c.Set(common.UpstreamRequestIdKey, upstreamDetail.RequestID)
-			}
-		}
-		other["admin_info"] = adminInfo
+		other.SetPublic("error_type", err.GetErrorType())
+		other.SetPublic("error_code", err.GetErrorCode())
+		other.SetPublic("status_code", err.StatusCode)
+		service.AppendRelayLogAdminInfo(c, relayInfo, other)
 		service.AppendTaskPluginContextAuditInfo(c, other)
 		startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
 		if startTime.IsZero() {
 			startTime = time.Now()
 		}
 		useTimeSeconds := int(time.Since(startTime).Seconds())
-		model.RecordErrorLog(c, userId, channelId, modelName, tokenName, err.MaskSensitiveErrorWithStatusCode(), tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
+		model.RecordErrorLog(c, userId, channelError.ChannelId, modelName, tokenName, err.MaskSensitiveErrorWithStatusCode(), tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
 	}
 
 }
@@ -818,6 +744,9 @@ func executeTaskSubmissionWith(
 	}
 	task.Quota = result.Quota
 	task.Data = result.TaskData
+	if len(result.PluginState) > 0 {
+		task.PrivateData.PluginState = result.PluginState
+	}
 	task.Action = relayInfo.Action
 	if immediate := result.Immediate; immediate != nil {
 		task.Status = model.TaskStatus(immediate.Status)

@@ -4,11 +4,11 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -23,22 +23,17 @@ import (
 // admin-only for free, since model.formatUserLogs strips the whole admin_info
 // object for non-admin viewers. Creates admin_info if absent. No-op when the
 // clamp is nil (the common case: no saturation happened).
-func attachQuotaSaturationToOther(other map[string]interface{}, clamp *common.QuotaClamp) {
+func attachQuotaSaturationToOther(other *model.LogOther, clamp *common.QuotaClamp) {
 	if clamp == nil || other == nil {
 		return
 	}
-	adminInfo, ok := other["admin_info"].(map[string]interface{})
-	if !ok || adminInfo == nil {
-		adminInfo = map[string]interface{}{}
-		other["admin_info"] = adminInfo
-	}
-	adminInfo["quota_saturation"] = clamp.AuditMap()
+	other.SetAdmin("quota_saturation", clamp.AuditMap())
 }
 
 // attachQuotaSaturation records the request's quota clamp (if any) onto the
 // consume log's other.admin_info and emits a request-correlated backend audit
 // line. Called right before RecordConsumeLog on the text/audio/wss paths.
-func attachQuotaSaturation(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {
+func attachQuotaSaturation(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
 	if relayInfo == nil {
 		return
 	}
@@ -51,13 +46,13 @@ func attachQuotaSaturation(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, o
 		clamp.Op, clamp.Kind, clamp.Original, clamp.Clamped, relayInfo.UserId, relayInfo.GetBillingModelName()))
 }
 
-func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {
+func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
 	if other == nil {
 		return
 	}
 	if ctx != nil && ctx.Request != nil && ctx.Request.URL != nil {
 		if path := ctx.Request.URL.Path; path != "" {
-			other["request_path"] = path
+			other.SetPublic("request_path", path)
 			return
 		}
 	}
@@ -66,380 +61,64 @@ func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other
 		if idx := strings.Index(path, "?"); idx != -1 {
 			path = path[:idx]
 		}
-		other["request_path"] = path
+		other.SetPublic("request_path", path)
 	}
 }
 
-// DetectClientProfile 按官方渠道亲和性同源的头清单识别客户端，返回细粒度档位：
-//   - codex_cli / codex_desktop / codex_app / codex_vscode / codex_browser（Originator 前缀 + X-Codex-* 头 + UA 兜底）
-//   - claude_cli / claude_desktop / claude_desktop_3p / claude_vscode / claude_plugin / claude_app
-//     （X-App 值 + claude-cli UA 细分：claude-desktop-3p 第三方桌面、claude-vscode VS Code 扩展）
-//   - claude_sdk / openai_sdk / mistral_sdk / cohere_sdk / ai_sdk（Stainless 生态官方 SDK UA）
-//   - gemini_cli / gemini_code_assist / gemini_sdk（Gemini-CLI UA / CloudCodeVSCode / google-genai、genai-py、Vertex SDK UA）
-//   - litellm（UA + x-litellm-* 头）
-//   - 品牌客户端（IDE/chat/agent/平台）：cherry_studio、trae、qoder、cursor、windsurf、
-//     cline、roo_code、continue、zed、copilot、gemini_cli、perplexity、poe、openrouter、
-//     groq、grok、ollama、kimi、qwen、doubao、zhipu、deepseek、chatgpt、minis、opencode、omp、
-//     hermes_agent、workbuddy、openclaw、rikkahub、sub2api（UA 特异性词，见函数内矩阵）
-//   - LLM 框架与自动化：openai_agents、semantic_kernel、langchain、llama_index、mcp_sdk、
-//     n8n、zapier、make（自动化工作流）
-//   - 通用工具：gohttp、cliproxyapi、http_client（curl/requests/httpx/urllib/okhttp/axios 等）
-//   - chat（兜底）
-//
-// 识别依据优先序：特征头（Originator / X-App / x-litellm-*）> 特异性 UA 词 >
-// 协议头兜底（Anthropic-Version / X-Stainless-*，仅当 UA 无品牌信息时生效）。
-// 每个分支的 UA 字符串均有实证来源（官方源码 / 逆向文档 / empirical UA samples ），
-// 见分支内注释。
-//
-// 结果仅作审计展示 hint，不参与鉴权/计费/路由；调用方可伪造。
-func DetectClientProfile(c *gin.Context) string {
-	if c == nil || c.Request == nil {
-		return ""
+// AppendRelayLogAdminInfo records relay routing and conversion diagnostics in
+// the admin-only scope shared by successful and failed request logs.
+func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
+	if ctx == nil || other == nil {
+		return
 	}
-	h := c.Request.Header
-	// 小写归一 UA 只做一次：头部子分支（X-Codex-* 循环、X-App=cli）与下方
-	// 主 UA switch 共用同一结果，避免对同一 UA 重复 ToLower。
-	ua := strings.ToLower(c.Request.UserAgent())
-	if v := h.Get("Originator"); v != "" {
-		lv := strings.ToLower(v)
-		switch {
-		case strings.HasPrefix(lv, "codex_cli"):
-			return "codex_cli"
-		case strings.HasPrefix(lv, "codex-tui"):
-			// CLIProxyAPI 的 Codex 上游路径（codex-tui/… 伪装 UA + Originator: codex-tui）
-			return "codex_cli"
-		case strings.HasPrefix(lv, "codex cli"):
-			// 与 codex_desktop 空格变体对称的 CLI 形态（openai/codex #31481 同源头清单）
-			return "codex_cli"
-		case strings.HasPrefix(lv, "codex_desktop"):
-			return "codex_desktop"
-		case strings.HasPrefix(lv, "codex desktop"):
-			// OpenAI 官方 desktop app 发送的 Originator 为 "Codex Desktop"（带空格，
-			// openai/codex #31481 实证），与 codex_desktop 下划线变体等价。
-			return "codex_desktop"
-		case strings.HasPrefix(lv, "codex_vscode"):
-			// OpenAI 官方 VS Code 扩展的 Originator 为 codex_vscode（openai/codex
-			// PR #8873 clientInfo.name 实证）。须先于下方 codex 兜底，否则会落 codex_app。
-			return "codex_vscode"
-		case strings.HasPrefix(lv, "codex"):
-			return "codex_app"
+	other.SetAdmin("use_channel", ctx.GetStringSlice("use_channel"))
+	if relayInfo != nil {
+		if billingModel := relayInfo.GetBillingModelName(); billingModel != "" && billingModel != relayInfo.OriginModelName {
+			other.SetAdmin("billing_model", billingModel)
+		}
+		if diagnostics := relayInfo.ConversionDiagnostics(); len(diagnostics) > 0 {
+			other.SetAdmin("conversion_diagnostics", diagnostics)
+		}
+		if relayInfo.ConversionDiagnosticsTruncated() {
+			other.SetAdmin("conversion_diagnostics_truncated", true)
 		}
 	}
-	for _, name := range []string{"X-Codex-Turn-State", "X-Codex-Turn-Metadata", "X-Codex-Window-Id", "X-OpenAI-Subagent"} {
-		if h.Get(name) != "" {
-			if strings.Contains(ua, "desktop") {
-				return "codex_desktop"
-			}
-			return "codex_cli"
-		}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyChannelIsMultiKey) {
+		other.SetAdmin("is_multi_key", true)
+		other.SetAdmin("multi_key_index", common.GetContextKeyInt(ctx, constant.ContextKeyChannelMultiKeyIndex))
 	}
-	if v := h.Get("X-App"); v != "" {
-		lv := strings.ToLower(v)
-		switch {
-		case strings.Contains(lv, "cli"):
-			// X-App=cli 只说明内核是 Claude Code CLI。官方 VS Code 扩展与第三方
-			// 桌面壳（claude-desktop-3p）同样发 X-App=cli，但 UA 的
-			// (external, <variant>) 括号里携带更精确的封装形态，须优先细分，
-			// 否则会整体落 claude_cli（生产日志实证：claude-vscode / claude-desktop-3p
-			// 两种 variant 曾都被识别为 claude_cli）。
-			switch {
-			case strings.Contains(ua, "claude-vscode"):
-				return "claude_vscode"
-			case strings.Contains(ua, "claude-desktop-3p"):
-				return "claude_desktop_3p"
-			default:
-				return "claude_cli"
-			}
-		case strings.Contains(lv, "desktop"):
-			return "claude_desktop"
-		case strings.Contains(lv, "vscode"):
-			// X-App=vscode 与 X-App=cli + UA claude-vscode 是同一个 VS Code
-			// 扩展的不同信号形态，统一归 claude_vscode，避免同一客户端因
-			// 头路径不同被标成两个档位（claude_plugin 保留给 JetBrains/
-			// IntelliJ/Cursor 等插件形态）。
-			return "claude_vscode"
-		case strings.Contains(lv, "jetbrains") || strings.Contains(lv, "intellij") || strings.Contains(lv, "cursor"):
-			return "claude_plugin"
-		default:
-			return "claude_app"
-		}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens) {
+		other.SetAdmin("local_count_tokens", true)
 	}
-	// LiteLLM 中转代理：默认 UA 是 python-httpx（无品牌词），x-litellm-* 头是
-	// 可靠信号（litellm 生态实现实证）。
-	for k := range h {
-		if strings.HasPrefix(strings.ToLower(k), "x-litellm-") {
-			return "litellm"
-		}
-	}
-	// UA 兜底：通用工具/中转代理/品牌客户端（在特征头之后、协议头兜底之前）。
-	// 匹配顺序 = 特异性降序：子串越泛化越靠后，避免互相覆盖。
-	// 品牌词都足够特异（正常请求 UA 不会含这些子串），Contains 误伤可控；
-	// 泛化形态（裸浏览器等）不做识别，落 chat 兜底。
-	switch {
-	// 通用 HTTP 客户端（Go 默认 UA / 中转代理）
-	case strings.Contains(ua, "go-http-client"):
-		return "gohttp"
-	case strings.Contains(ua, "cli-proxy-openai-compat"), strings.Contains(ua, "cliproxyapi"):
-		// CLIProxyAPI（router-for-me/CLIProxyAPI）openai-compat 路径硬编码
-		// User-Agent: cli-proxy-openai-compat（不透传下游 UA）；Kimi 路径为
-		// CLIProxyAPI/<version>。Go 默认 UA 为 Go-http-client/1.1 或 /2.0
-		// （由连接协议版本决定）。
-		return "cliproxyapi"
-	case strings.Contains(ua, "hermesagent"):
-		// HermesAgent/<version>（UA pattern from source analysis）
-		return "hermes_agent"
-	case strings.Contains(ua, "workbuddy"):
-		return "workbuddy"
-	case strings.Contains(ua, "openclaw"):
-		return "openclaw"
-	case strings.Contains(ua, "cherry studio"), strings.Contains(ua, "cherry-studio"), strings.Contains(ua, "cherrystudio"):
-		// Cherry Studio 官方 UA 为 "Cherry Studio"（无版本号）
-		return "cherry_studio"
-	case strings.Contains(ua, "rikkahub"):
-		return "rikkahub"
-	case strings.Contains(ua, "sub2api"):
-		// Sub2API-Discovery/1.0 探活（nginx 流量实证）
-		return "sub2api"
-	// IDE / 编码 agent
-	case strings.Contains(ua, "windsurf"):
-		return "windsurf"
-	case strings.Contains(ua, "cline"):
-		return "cline"
-	case strings.Contains(ua, "roo code"), strings.Contains(ua, "roo-code"), strings.Contains(ua, "roocode"):
-		return "roo_code"
-	case strings.Contains(ua, "trae"):
-		return "trae"
-	case strings.Contains(ua, "cursor"):
-		return "cursor"
-	case strings.Contains(ua, "opencode"):
-		// opencode/<version>（nginx 流量实证）。注意：opencode 含子串 "codex"，
-		// 必须保持在本分支先于下方 codex 族分支，否则会被 codex_cli 吞掉。
-		return "opencode"
-	case strings.Contains(ua, "continue/"):
-		return "continue"
-	case strings.Contains(ua, "zed/"):
-		return "zed"
-	case strings.Contains(ua, "copilot"):
-		return "copilot"
-	// Codex 族（UA 层兜底；Originator 头已在上层细分）
-	case strings.Contains(ua, "codex desktop"):
-		return "codex_desktop"
-	case strings.Contains(ua, "codex_vscode"):
-		return "codex_vscode"
-	case strings.Contains(ua, "codex-browser-use"):
-		return "codex_browser"
-	case strings.Contains(ua, "codex"):
-		return "codex_cli"
-	// Claude 族（UA 层兜底；X-App 头已在上层细分）
-	case strings.Contains(ua, "claude-desktop-3p"):
-		// 第三方 Claude Desktop 应用（UA 形态为 claude-cli/<ver> (external,
-		// claude-desktop-3p, agent-sdk/<ver>)），与官方 Claude Desktop（X-App:
-		// desktop）区分。须置于 claude-cli/ 之前，因该 UA 以 claude-cli/ 为前缀。
-		return "claude_desktop_3p"
-	case strings.Contains(ua, "claude-cli/"):
-		switch {
-		case strings.Contains(ua, "desktop"):
-			return "claude_desktop"
-		case strings.Contains(ua, "vscode"):
-			return "claude_vscode"
-		default:
-			return "claude_cli"
-		}
-	case strings.Contains(ua, "claude/") && (strings.Contains(ua, "electron") || strings.Contains(ua, "msix")):
-		return "claude_desktop"
-	// 官方 SDK / 平台客户端。Stainless 生成器覆盖 OpenAI/Anthropic/Mistral/Groq/
-	// Cohere 等多家官方 SDK，其 UA 均自带品牌词（Anthropic/JS、OpenAI/Python 等），
-	// 在此统一识别；UA 无品牌信息时由下方 X-Stainless 协议头兜底。
-	case strings.Contains(ua, "anthropic/js"), strings.Contains(ua, "anthropic/python"),
-		strings.Contains(ua, "anthropic/go"), strings.Contains(ua, "anthropic-sdk-"):
-		// 已实证格式：Anthropic/JS <ver>（TS）、Anthropic/Python <ver>、Anthropic/Go <ver>；
-		// anthropic-sdk- 前缀兜底其余语言变体。
-		return "claude_sdk"
-	case strings.Contains(ua, "@ai-sdk/"):
-		// Vercel AI SDK（vercel/ai PR #8530 官方 UA 实证）。须置于 openai/ 之前：
-		// 实际 UA 形态为 "@ai-sdk/openai/..."（含子串 openai/）；仅匹配 @ai-sdk/
-		// 形态，裸 ai/ 会误伤 openai/，严禁放宽。
-		return "ai_sdk"
-	case strings.Contains(ua, "openai/"), strings.Contains(ua, "openai-python"):
-		// OpenAI/<lang> 覆盖 python/js/go/java/.NET/rust（stainless 统一格式）与
-		// Responses API（^OpenAI/）；openai-python 为历史格式。
-		return "openai_sdk"
-	case strings.Contains(ua, "mistralai"), strings.Contains(ua, "mistral-client-python/"):
-		// Mistral SDK UA（mistralai/client-python 源码 CustomUserAgentHook 实证）
-		return "mistral_sdk"
-	case strings.Contains(ua, "cohere-python"), strings.Contains(ua, "cohere-typescript"), strings.Contains(ua, "cohere-node"):
-		// Cohere 官方 SDK（empirical caller-labels）
-		return "cohere_sdk"
-	case strings.Contains(ua, "cloudcodevscode"), strings.Contains(ua, "aidev_client"):
-		// Google Gemini Code Assist VS Code 集成（google-gemini/gemini-cli
-		// PR #23256 统一 VS Code UA "CloudCodeVSCode/ (...; aidev_client; ...)"）
-		return "gemini_code_assist"
-	case strings.Contains(ua, "gemini-cli"), strings.Contains(ua, "gemini cli"):
-		return "gemini_cli"
-	case strings.Contains(ua, "google-genai-sdk"), strings.Contains(ua, "genai-py"),
-		strings.Contains(ua, "google-cloud-aiplatform"):
-		// google-genai（新版）/ google-generativeai（旧版 genai-py）SDK UA 实证；
-		// google-cloud-aiplatform 为 Vertex AI SDK（empirical UA samples）
-		return "gemini_sdk"
-	case strings.Contains(ua, "qoder"):
-		// Qoder / Qoder Work（阿里，千问办公前台）。Qoder-Cli UA 为 GitHub issue 实证
-		return "qoder"
-	case strings.Contains(ua, "perplexity"):
-		return "perplexity"
-	case strings.Contains(ua, "poe/"):
-		return "poe"
-	case strings.Contains(ua, "openrouter"):
-		return "openrouter"
-	case strings.Contains(ua, "groq"):
-		return "groq"
-	case strings.Contains(ua, "grok-user"), strings.Contains(ua, "grok/"):
-		// xAI Grok（Grok app/CLI）与 Groq 公司为不同实体（Grok-User/Grok/ 为
-		// empirical caller-label patterns），相邻放置便于对照
-		return "grok"
-	case strings.Contains(ua, "litellm/"):
-		// LiteLLM 中转代理 UA（litellm 生态检测实现实证；x-litellm-* 头已在上层捕获）
-		return "litellm"
-	case strings.Contains(ua, "ollama"):
-		return "ollama"
-	case strings.Contains(ua, "moonshot"), strings.Contains(ua, "kimi"):
-		return "kimi"
-	case strings.Contains(ua, "qwen"):
-		return "qwen"
-	case strings.Contains(ua, "doubao"), strings.Contains(ua, "volcengine"):
-		return "doubao"
-	case strings.Contains(ua, "chatglm"), strings.Contains(ua, "zhipu"):
-		return "zhipu"
-	case strings.Contains(ua, "deepseek-harness"):
-		// DeepSeek 官方 agent harness（deepseek-ai/deepseek-harness，UA 形如
-		// deepseek-harness/<ver>，nginx 流量实证）。须置于 deepseek 分支之前，
-		// 因 "deepseek-harness" 含子串 "deepseek"。
-		return "deepseek_harness"
-	case strings.Contains(ua, "deepseek"):
-		return "deepseek"
-	case strings.Contains(ua, "chatgpt"):
-		return "chatgpt"
-	case strings.Contains(ua, "minis/"):
-		// Minis/<version> 安卓客户端（nginx 流量实证）
-		return "minis"
-	case strings.Contains(ua, "oh-my-pi"), strings.Contains(ua, "oh_my_pi"),
-		strings.Contains(ua, "oh my pi"), strings.Contains(ua, "omp/"):
-		// Oh My Pi（OMP）— pi 的增强版/超集。官方 UA 形如 omp/<ver>（如 omp/18.1.6，
-		// nginx 流量实证）；"oh my pi"/"oh-my-pi"/"oh_my_pi" 为产品名拼写变体。
-		// 不匹配裸 "pi/"（会误伤 api/、openai/ 等子串），前端无 OMP 品牌图时复用 Pi。
-		return "omp"
-	// LLM 框架（empirical caller-labels：langchain 系列嵌入 UA 不带锚定）
-	case strings.Contains(ua, "agents/python"), strings.Contains(ua, "openai-agents"):
-		// OpenAI Agents SDK（openai/openai-agents-python 源码 _USER_AGENT =
-		// "Agents/Python <ver>"）
-		return "openai_agents"
-	case strings.Contains(ua, "semantic kernel"), strings.Contains(ua, "semantic-kernel"):
-		// Microsoft Semantic Kernel（microsoft/semantic-kernel PR #3074 加 UA
-		// "Semantic Kernel"）
-		return "semantic_kernel"
-	case strings.Contains(ua, "langchain"):
-		return "langchain"
-	case strings.Contains(ua, "llama_index"), strings.Contains(ua, "llama-index"):
-		return "llama_index"
-	// MCP SDK（empirical：mcp-python-sdk / mcp-typescript-sdk / @modelcontextprotocol/sdk）
-	case strings.Contains(ua, "mcp-python-sdk"), strings.Contains(ua, "mcp-typescript-sdk"), strings.Contains(ua, "modelcontextprotocol"):
-		return "mcp_sdk"
-	// 自动化工作流（empirical：n8n / Zapier / Make.com 作为客户端调用 LLM API）
-	case strings.Contains(ua, "n8n"):
-		return "n8n"
-	case strings.Contains(ua, "zapier"):
-		return "zapier"
-	case strings.Contains(ua, "make.com"):
-		return "make"
-	// 裸 HTTP 客户端（curl/wget/requests/httpx/urllib/okhttp/axios 等）
-	case strings.Contains(ua, "curl/"), strings.Contains(ua, "wget/"), strings.Contains(ua, "python-requests"),
-		strings.Contains(ua, "python-httpx"), strings.Contains(ua, "urllib"), strings.Contains(ua, "node-fetch"),
-		strings.Contains(ua, "reqwest"), strings.Contains(ua, "okhttp"), strings.Contains(ua, "axios"):
-		return "http_client"
-	}
-	// UA 未识别时的协议头兜底：特征头可伪造，但作为最后手段仍比 chat 有信息量。
-	// 注意两处兜底都在 UA switch 之后——stainless 生态（OpenAI/Anthropic/Mistral/
-	// Groq/Cohere 等官方 SDK）的 UA 均自带品牌词已被上方捕获；走到这里说明 UA
-	// 无品牌信息，此时才按协议头归类，避免分类随协议漂移。
-	if h.Get("Anthropic-Version") != "" {
-		return "claude_sdk"
-	}
-	if h.Get("X-Stainless-Lang") != "" || h.Get("X-Stainless-Runtime") != "" {
-		// X-Stainless-* 可被客户端 default_headers 覆盖/删除，UA 才是稳定信号；
-		// 作为兜底默认归 openai_sdk（stainless 生态中最常见的 SDK）。
-		return "openai_sdk"
-	}
-	return "chat"
+
+	AppendChannelAffinityAdminInfo(ctx, other)
 }
 
 func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, modelRatio, groupRatio, completionRatio float64,
-	cacheTokens int, cacheRatio float64, modelPrice float64, userGroupRatio float64) map[string]interface{} {
-	other := make(map[string]interface{})
-	other["model_ratio"] = modelRatio
-	other["group_ratio"] = groupRatio
-	other["completion_ratio"] = completionRatio
-	other["cache_tokens"] = cacheTokens
-	other["cache_ratio"] = cacheRatio
-	other["model_price"] = modelPrice
-	other["user_group_ratio"] = userGroupRatio
-	other["frt"] = float64(relayInfo.FirstResponseTime.UnixMilli() - relayInfo.StartTime.UnixMilli())
+	cacheTokens int, cacheRatio float64, modelPrice float64, userGroupRatio float64) *model.LogOther {
+	other := model.NewLogOther()
+	other.SetPublic("model_ratio", modelRatio)
+	other.SetPublic("group_ratio", groupRatio)
+	other.SetPublic("completion_ratio", completionRatio)
+	other.SetPublic("cache_tokens", cacheTokens)
+	other.SetPublic("cache_ratio", cacheRatio)
+	other.SetPublic("model_price", modelPrice)
+	other.SetPublic("user_group_ratio", userGroupRatio)
+	other.SetPublic("frt", float64(relayInfo.FirstResponseTime.UnixMilli()-relayInfo.StartTime.UnixMilli()))
 	if relayInfo.ReasoningEffort != "" {
-		other["reasoning_effort"] = relayInfo.ReasoningEffort
+		other.SetPublic("reasoning_effort", relayInfo.ReasoningEffort)
 	}
 	if relayInfo.IsModelMapped {
-		other["is_model_mapped"] = true
-		other["upstream_model_name"] = relayInfo.UpstreamModelName
+		other.SetPublic("is_model_mapped", true)
+		other.SetPublic("upstream_model_name", relayInfo.UpstreamModelName)
 	}
 
 	isSystemPromptOverwritten := common.GetContextKeyBool(ctx, constant.ContextKeySystemPromptOverride)
 	if isSystemPromptOverwritten {
-		other["is_system_prompt_overwritten"] = true
+		other.SetPublic("is_system_prompt_overwritten", true)
 	}
 
-	adminInfo := make(map[string]interface{})
-	adminInfo["use_channel"] = ctx.GetStringSlice("use_channel")
-	adminInfo["client_profile"] = DetectClientProfile(ctx)
-	// 原始 UA 字符串随识别结果一并落盘，便于管理员核对识别依据；
-	// 仅管理员可见（admin_info 整体对非管理员剥离）。
-	// UA 是客户端可控输入，截断到 256 字符限制每行存储增量。
-	// Request 可能缺失（gin.CreateTestContext 不挂请求对象），
-	// nil 防护保持落盘不因缺失请求而崩溃。
-	if ctx.Request != nil {
-		if ua := ctx.Request.UserAgent(); ua != "" {
-			const maxUaLen = 256
-			if len(ua) > maxUaLen {
-				ua = ua[:maxUaLen]
-				// 字节截断可能切断多字节 UTF-8 字符，回退到最近的字边界，
-				// 避免落盘无效 UTF-8。
-				for len(ua) > 0 && !utf8.ValidString(ua) {
-					ua = ua[:len(ua)-1]
-				}
-			}
-			adminInfo["client_ua"] = ua
-		}
-	}
-	if billingModel := relayInfo.GetBillingModelName(); billingModel != "" && billingModel != relayInfo.OriginModelName {
-		adminInfo["billing_model"] = billingModel
-	}
-	if diagnostics := relayInfo.ConversionDiagnostics(); len(diagnostics) > 0 {
-		adminInfo["conversion_diagnostics"] = diagnostics
-	}
-	if relayInfo.ConversionDiagnosticsTruncated() {
-		adminInfo["conversion_diagnostics_truncated"] = true
-	}
-	isMultiKey := common.GetContextKeyBool(ctx, constant.ContextKeyChannelIsMultiKey)
-	if isMultiKey {
-		adminInfo["is_multi_key"] = true
-		adminInfo["multi_key_index"] = common.GetContextKeyInt(ctx, constant.ContextKeyChannelMultiKeyIndex)
-	}
-
-	isLocalCountTokens := common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens)
-	if isLocalCountTokens {
-		adminInfo["local_count_tokens"] = isLocalCountTokens
-	}
-
-	AppendChannelAffinityAdminInfo(ctx, adminInfo)
-
-	other["admin_info"] = adminInfo
+	AppendRelayLogAdminInfo(ctx, relayInfo, other)
 	appendRequestPath(ctx, relayInfo, other)
 	appendRequestConversionChain(relayInfo, other)
 	appendFinalRequestFormat(relayInfo, other)
@@ -449,14 +128,14 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	return other
 }
 
-func appendParamOverrideInfo(relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {
+func appendParamOverrideInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
 	if relayInfo == nil || other == nil || len(relayInfo.ParamOverrideAudit) == 0 {
 		return
 	}
-	other["po"] = relayInfo.ParamOverrideAudit
+	other.SetPublic("po", relayInfo.ParamOverrideAudit)
 }
 
-func appendStreamStatus(relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {
+func appendStreamStatus(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
 	if relayInfo == nil || other == nil || !relayInfo.IsStream || relayInfo.StreamStatus == nil {
 		return
 	}
@@ -480,36 +159,36 @@ func appendStreamStatus(relayInfo *relaycommon.RelayInfo, other map[string]inter
 		}
 		streamInfo["errors"] = messages
 	}
-	other["stream_status"] = streamInfo
+	other.SetPublic("stream_status", streamInfo)
 }
 
-func appendBillingInfo(relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {
+func appendBillingInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
 	if relayInfo == nil || other == nil {
 		return
 	}
 	// billing_source: "wallet" or "subscription"
 	if relayInfo.BillingSource != "" {
-		other["billing_source"] = relayInfo.BillingSource
+		other.SetPublic("billing_source", relayInfo.BillingSource)
 	}
 	if relayInfo.UserSetting.BillingPreference != "" {
-		other["billing_preference"] = relayInfo.UserSetting.BillingPreference
+		other.SetPublic("billing_preference", relayInfo.UserSetting.BillingPreference)
 	}
 	if relayInfo.BillingSource == "subscription" {
 		if relayInfo.SubscriptionId != 0 {
-			other["subscription_id"] = relayInfo.SubscriptionId
+			other.SetPublic("subscription_id", relayInfo.SubscriptionId)
 		}
 		if relayInfo.SubscriptionPreConsumed > 0 {
-			other["subscription_pre_consumed"] = relayInfo.SubscriptionPreConsumed
+			other.SetPublic("subscription_pre_consumed", relayInfo.SubscriptionPreConsumed)
 		}
 		// post_delta: settlement delta applied after actual usage is known (can be negative for refund)
 		if relayInfo.SubscriptionPostDelta != 0 {
-			other["subscription_post_delta"] = relayInfo.SubscriptionPostDelta
+			other.SetPublic("subscription_post_delta", relayInfo.SubscriptionPostDelta)
 		}
 		if relayInfo.SubscriptionPlanId != 0 {
-			other["subscription_plan_id"] = relayInfo.SubscriptionPlanId
+			other.SetPublic("subscription_plan_id", relayInfo.SubscriptionPlanId)
 		}
 		if relayInfo.SubscriptionPlanTitle != "" {
-			other["subscription_plan_title"] = relayInfo.SubscriptionPlanTitle
+			other.SetPublic("subscription_plan_title", relayInfo.SubscriptionPlanTitle)
 		}
 		// Compute "this request" subscription consumed + remaining
 		consumed := relayInfo.SubscriptionPreConsumed + relayInfo.SubscriptionPostDelta
@@ -525,19 +204,19 @@ func appendBillingInfo(relayInfo *relaycommon.RelayInfo, other map[string]interf
 			if remain < 0 {
 				remain = 0
 			}
-			other["subscription_total"] = relayInfo.SubscriptionAmountTotal
-			other["subscription_used"] = usedFinal
-			other["subscription_remain"] = remain
+			other.SetPublic("subscription_total", relayInfo.SubscriptionAmountTotal)
+			other.SetPublic("subscription_used", usedFinal)
+			other.SetPublic("subscription_remain", remain)
 		}
 		if consumed > 0 {
-			other["subscription_consumed"] = consumed
+			other.SetPublic("subscription_consumed", consumed)
 		}
 		// Wallet quota is not deducted when billed from subscription.
-		other["wallet_quota_deducted"] = 0
+		other.SetPublic("wallet_quota_deducted", 0)
 	}
 }
 
-func appendRequestConversionChain(relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {
+func appendRequestConversionChain(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
 	if relayInfo == nil || other == nil {
 		return
 	}
@@ -562,41 +241,41 @@ func appendRequestConversionChain(relayInfo *relaycommon.RelayInfo, other map[st
 	if len(chain) == 0 {
 		return
 	}
-	other["request_conversion"] = chain
+	other.SetPublic("request_conversion", chain)
 }
 
-func appendFinalRequestFormat(relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {
+func appendFinalRequestFormat(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
 	if relayInfo == nil || other == nil {
 		return
 	}
 	if relayInfo.GetFinalRequestRelayFormat() == types.RelayFormatClaude {
 		// claude indicates the final upstream request format is Claude Messages.
 		// Frontend log rendering uses this to keep the original Claude input display.
-		other["claude"] = true
+		other.SetPublic("claude", true)
 	}
 }
 
-func GenerateWssOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.RealtimeUsage, modelRatio, groupRatio, completionRatio, audioRatio, audioCompletionRatio, modelPrice, userGroupRatio float64) map[string]interface{} {
+func GenerateWssOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.RealtimeUsage, modelRatio, groupRatio, completionRatio, audioRatio, audioCompletionRatio, modelPrice, userGroupRatio float64) *model.LogOther {
 	info := GenerateTextOtherInfo(ctx, relayInfo, modelRatio, groupRatio, completionRatio, 0, 0.0, modelPrice, userGroupRatio)
-	info["ws"] = true
-	info["audio_input"] = usage.InputTokenDetails.AudioTokens
-	info["audio_output"] = usage.OutputTokenDetails.AudioTokens
-	info["text_input"] = usage.InputTokenDetails.TextTokens
-	info["text_output"] = usage.OutputTokenDetails.TextTokens
-	info["audio_ratio"] = audioRatio
-	info["audio_completion_ratio"] = audioCompletionRatio
+	info.SetPublic("ws", true)
+	info.SetPublic("audio_input", usage.InputTokenDetails.AudioTokens)
+	info.SetPublic("audio_output", usage.OutputTokenDetails.AudioTokens)
+	info.SetPublic("text_input", usage.InputTokenDetails.TextTokens)
+	info.SetPublic("text_output", usage.OutputTokenDetails.TextTokens)
+	info.SetPublic("audio_ratio", audioRatio)
+	info.SetPublic("audio_completion_ratio", audioCompletionRatio)
 	return info
 }
 
-func GenerateAudioOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, modelRatio, groupRatio, completionRatio, audioRatio, audioCompletionRatio, modelPrice, userGroupRatio float64) map[string]interface{} {
+func GenerateAudioOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, modelRatio, groupRatio, completionRatio, audioRatio, audioCompletionRatio, modelPrice, userGroupRatio float64) *model.LogOther {
 	info := GenerateTextOtherInfo(ctx, relayInfo, modelRatio, groupRatio, completionRatio, 0, 0.0, modelPrice, userGroupRatio)
-	info["audio"] = true
-	info["audio_input"] = usage.PromptTokensDetails.AudioTokens
-	info["audio_output"] = usage.CompletionTokenDetails.AudioTokens
-	info["text_input"] = usage.PromptTokensDetails.TextTokens
-	info["text_output"] = usage.CompletionTokenDetails.TextTokens
-	info["audio_ratio"] = audioRatio
-	info["audio_completion_ratio"] = audioCompletionRatio
+	info.SetPublic("audio", true)
+	info.SetPublic("audio_input", usage.PromptTokensDetails.AudioTokens)
+	info.SetPublic("audio_output", usage.CompletionTokenDetails.AudioTokens)
+	info.SetPublic("text_input", usage.PromptTokensDetails.TextTokens)
+	info.SetPublic("text_output", usage.CompletionTokenDetails.TextTokens)
+	info.SetPublic("audio_ratio", audioRatio)
+	info.SetPublic("audio_completion_ratio", audioCompletionRatio)
 	return info
 }
 
@@ -605,28 +284,28 @@ func GenerateClaudeOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 	cacheCreationTokens int, cacheCreationRatio float64,
 	cacheCreationTokens5m int, cacheCreationRatio5m float64,
 	cacheCreationTokens1h int, cacheCreationRatio1h float64,
-	modelPrice float64, userGroupRatio float64) map[string]interface{} {
+	modelPrice float64, userGroupRatio float64) *model.LogOther {
 	info := GenerateTextOtherInfo(ctx, relayInfo, modelRatio, groupRatio, completionRatio, cacheTokens, cacheRatio, modelPrice, userGroupRatio)
-	info["claude"] = true
-	info["cache_creation_tokens"] = cacheCreationTokens
-	info["cache_creation_ratio"] = cacheCreationRatio
+	info.SetPublic("claude", true)
+	info.SetPublic("cache_creation_tokens", cacheCreationTokens)
+	info.SetPublic("cache_creation_ratio", cacheCreationRatio)
 	if cacheCreationTokens5m != 0 {
-		info["cache_creation_tokens_5m"] = cacheCreationTokens5m
-		info["cache_creation_ratio_5m"] = cacheCreationRatio5m
+		info.SetPublic("cache_creation_tokens_5m", cacheCreationTokens5m)
+		info.SetPublic("cache_creation_ratio_5m", cacheCreationRatio5m)
 	}
 	if cacheCreationTokens1h != 0 {
-		info["cache_creation_tokens_1h"] = cacheCreationTokens1h
-		info["cache_creation_ratio_1h"] = cacheCreationRatio1h
+		info.SetPublic("cache_creation_tokens_1h", cacheCreationTokens1h)
+		info.SetPublic("cache_creation_ratio_1h", cacheCreationRatio1h)
 	}
 	return info
 }
 
-func GenerateMjOtherInfo(relayInfo *relaycommon.RelayInfo, priceData hosttypes.PriceData) map[string]interface{} {
-	other := make(map[string]interface{})
-	other["model_price"] = priceData.ModelPrice
-	other["group_ratio"] = priceData.GroupRatioInfo.GroupRatio
+func GenerateMjOtherInfo(relayInfo *relaycommon.RelayInfo, priceData hosttypes.PriceData) *model.LogOther {
+	other := model.NewLogOther()
+	other.SetPublic("model_price", priceData.ModelPrice)
+	other.SetPublic("group_ratio", priceData.GroupRatioInfo.GroupRatio)
 	if priceData.GroupRatioInfo.HasSpecialRatio {
-		other["user_group_ratio"] = priceData.GroupRatioInfo.GroupSpecialRatio
+		other.SetPublic("user_group_ratio", priceData.GroupRatioInfo.GroupSpecialRatio)
 	}
 	appendRequestPath(nil, relayInfo, other)
 	return other
@@ -635,7 +314,7 @@ func GenerateMjOtherInfo(relayInfo *relaycommon.RelayInfo, priceData hosttypes.P
 // InjectTieredBillingInfo overlays tiered billing fields onto an existing
 // module-specific other map. Call this after GenerateTextOtherInfo /
 // GenerateClaudeOtherInfo / etc. when the request used tiered_expr billing.
-func InjectTieredBillingInfo(other map[string]interface{}, relayInfo *relaycommon.RelayInfo, result *billingexpr.TieredResult) {
+func InjectTieredBillingInfo(other *model.LogOther, relayInfo *relaycommon.RelayInfo, result *billingexpr.TieredResult) {
 	if relayInfo == nil || other == nil {
 		return
 	}
@@ -643,12 +322,12 @@ func InjectTieredBillingInfo(other map[string]interface{}, relayInfo *relaycommo
 	if snap == nil {
 		return
 	}
-	other["billing_mode"] = "tiered_expr"
-	other["expr_b64"] = base64.StdEncoding.EncodeToString([]byte(snap.ExprString))
+	other.SetPublic("billing_mode", "tiered_expr")
+	other.SetPublic("expr_b64", base64.StdEncoding.EncodeToString([]byte(snap.ExprString)))
 	if result != nil {
-		other["matched_tier"] = result.MatchedTier
+		other.SetPublic("matched_tier", result.MatchedTier)
 		if len(result.RequestRules) > 0 {
-			other["request_rules"] = result.RequestRules
+			other.SetPublic("request_rules", result.RequestRules)
 		}
 	}
 }
