@@ -204,14 +204,23 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 
 ## fork-owned 目录（永不与上游冲突）
 
-以下目录/文件上游不存在，纯增量，`git merge official/main` 不会产生冲突，故不在台账内：
+上游不存在的纯增量路径，`git merge official/main` 不会冲突，故不进台账（台账只管「改了上游已有文件」）。**清单用命令派生，不手抄**——手抄必腐：
 
-- `pkg/relay_observer/`、`pkg/vision_relay/`
-- `model/model_vendor_fallback.go`、`service/rankings_vendor_fallback.go`、`setting/model_setting/effort_tail_families.go`
-- `docs/dev/*`（本文件所在目录，上游不存在）
+```bash
+# fork-owned 新增文件全量（A = 上游没有）；剔掉四个大件目录后就是零散增量
+MB=$(git merge-base official/main dev)
+git diff --name-status "$MB" dev | awk '/^A/ {print $2}' | \
+  grep -vE '^(pkg/relay_observer|pkg/vision_relay|web/src|docs/dev)/'
+```
+
+形状（判断新改动该落哪时用）：
+
+- 自有包：`pkg/relay_observer/`、`pkg/vision_relay/`、`pkg/geoip/`
+- 上游包内的自有文件：`service/{upstream_error_extract,upstream_error_classify,upstream_stream_error,vision_relay,relay_observation,cache_usage_aggregation_task,rankings_vendor_fallback}.go`、`controller/{relay_observer,relay_observer_query,invitation_code,cache_usage_aggregation}.go`、`model/{model_vendor_fallback,invitation_code,cache_usage_aggregation}.go`、`setting/model_setting/{effort_tail_families,vision_relay,cache_usage_aggregation}.go`
+- 自有工程面：`docs/dev/*`（本文件所在目录）、`docs/product/tokendance-gateway.md`、`RELEASE.md`、`scripts/{sync-upstream.sh,update-geoip-data.py}`、`.github/workflows/{release-tag,upstream-sync,upstream-drift-check}.yml`
 - 前端 fork 自有 feature 文件（`web/src/features/**` 中上游没有的部分）
 
-> `relaykit/` 上游存在同名独立 go module（上游 #6369 抽出），不算 fork-owned；当前 fork 对其 **零差异**（曾有一处改动已被上游 #6862 吸收），见上表 relaykit 条目。
+> `relaykit/` 上游存在同名独立 go module（上游 #6369 抽出），**不算 fork-owned 目录**：fork 对它已有真实分歧，必须按台账维护并守「独立可构建」硬约束（体检命令 #2）。2026-09-05 对 merge-base `3a9f41ee8` 实测的类型一差异恰好 4 个文件——`relaykit/dto/channel_settings.go`、`channel_settings_test.go`、`relaykit/types/error.go`、`types/error_test.go`（见上表对应行）。同日 `git diff official/main dev -- relaykit/` 报 14 个文件，多出的 10 个是上游领先 1 个提交（`7c044d7c5`）造成的类型二滞后，不是我们的负担。**先对 merge-base 求差再判分歧。**
 
 ## 上游收敛计划（过渡方案 → 上游合入 → 退役/吸收）
 
@@ -241,16 +250,42 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 ### sync 后复查（体检命令）
 
 ```bash
-# 1. 分歧体检：fork 改动的上游 .go 文件（每个都应能在本台账找到理由）
-git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}' | \
-  while read -r f; do n=$(git log official/main..dev --oneline -- "$f" | wc -l | tr -d ' '); \
-  [ "$n" -gt 0 ] && printf "%s\t%s\n" "$n" "$f"; done | sort -rn
+MB=$(git merge-base official/main dev)
+
+# 1. 分歧体检：fork 改动的上游已有 .go 文件（每个都应能在本台账找到理由）
+#    对 merge-base 求差 + 计数，天然剔除类型二（同步滞后）噪声。旧写法
+#    `git diff official/main dev` 配 `git log official/main..dev -- <file>`
+#    会把「上游领先提交碰过的文件」误报成 fork 分歧：2026-09-05 relaykit
+#    实测 14 报 vs 4 真。
+git diff --name-status "$MB" dev | awk '/^M/ && $2 ~ /\.go$/ {print $2}' | \
+  while read -r f; do n=$(git log "$MB"..dev --oneline -- "$f" | wc -l | tr -d ' '); \
+  printf "%s\t%s\n" "$n" "$f"; done | sort -rn
 
 # 2. relaykit 独立可构建（host 依赖漏入 = 设计 bug）
-cd relaykit && GOWORK=off go build ./... && GOWORK=off go test ./types/ -count=1
+cd relaykit && GOWORK=off go build ./... && GOWORK=off go test ./types/ -count=1 && cd ..
 
 # 3. 上游落后度（应为 0；>0 立即评估 merge）
 git rev-list --count dev..official/main
+
+# 4. 防合并吞噬：fork 钩子必须仍有生产调用方
+#    merge 式 sync 会静默丢掉「打在上游文件里的 fork 接线」——函数还在、调用点
+#    没了，编译照过、单测照绿、生产不生效。已发生两次：affinity 软失败解绑
+#    （issue #39，被 sync 合并 9d2a2d34b 吞掉，#173 复归）、effort tail 家族
+#    规则（#175）。只查生产文件（不含 _test.go / docs/）；任何 MISS 都必须
+#    当场复归再发版。
+for pair in \
+  "RecordChannelAffinitySoftFailure=controller/relay.go" \
+  "ClearCurrentChannelAffinityCache=controller/relay.go" \
+  "ShouldPreserveEffortTail=relay/common/relay_info.go" \
+  "ShouldPreserveEffortTail=setting/reasoning/suffix.go" \
+  "ObserveTurnSettlement=service/text_quota.go" \
+  "ObserveTurnSettlement=service/quota.go"
+do
+  sym="${pair%%=*}"; f="${pair##*=}"
+  n=$(git grep -c "$sym" -- "$f" 2>/dev/null | cut -d: -f2)
+  if [ "${n:-0}" -gt 0 ]; then echo "OK   $sym -> $f ($n)"; \
+  else echo "MISS $sym -> $f  <== 接线被吞，复归后才可发版"; fi
+done
 ```
 
 ## 维护流程
@@ -258,5 +293,6 @@ git rev-list --count dev..official/main
 1. **改上游文件前**：先确认能否用 fork-owned 文件实现（`docs/dev/`、`pkg/*/`、`model/*_fallback.go`、`service/*_fallback.go`）。能就不用改上游文件。
 2. **必须改上游文件时**：只打最小钩子，逻辑放 fork-owned 文件；改完更新本表对应行。
 3. **同步上游时**：`main` 由 `upstream-sync.yml` 每日强制同步，勿手改；把 `official/main` 合入 `dev` 时，冲突文件对照本表判断保留 fork 侧还是上游侧。
-4. **定期体检**：`dev` 落后 `official/main` 越多，merge 冲突越大；保持低频次、小步 merge（当前落后 0 个提交，已吸收至上游最新，2026-08-19）。
+4. **定期体检**：`dev` 落后 `official/main` 越多，merge 冲突越大；保持低频次、小步 merge。落后度是运行态数字，用体检命令 #3 现查，不在本文抄快照。
 5. **热点文件红线**：`router/api-router.go`、`model/log.go`、`main.go`、`controller/channel-test.go`、`service/text_quota.go` 为上游高频改动文件，非必要不新增改动，必要改动前在对应 issue 里声明理由。
+6. **新增「打在上游文件里的 fork 钩子」后**：把 `符号=必须命中的生产文件` 补进体检命令 #4 的断言清单。那份清单是防合并吞噬的唯一网，漏登记 = 下次 sync 静默失效且无人发现（#39 就是这么丢了 3 周）。
