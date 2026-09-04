@@ -61,7 +61,7 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 
 | 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
 |---|---|---|---|---|
-| `router/api-router.go` | vision/settings 原子更新路由 + observer transcript API 路由 + cache 用量预聚合状态路由 | `787da7e5a` `7c0205bc4` | `docs/dev/vision-relay.md`、`docs/dev/relay-observer.md`、`docs/dev/database-compatibility.md`（Cache 用量聚合表节） | **高** |
+| `router/api-router.go` | vision/settings 原子更新路由 + observer transcript API 路由 + cache 用量预聚合状态路由 + cache 统计两个端点（`/stat/cache/batch` `/stat/cache/daily`）AdminAuth→UserAuth + 名下 token 归属过滤 | `787da7e5a` `7c0205bc4` `dda7f491` | `docs/dev/vision-relay.md`、`docs/dev/relay-observer.md`、`docs/dev/database-compatibility.md`（Cache 用量聚合表节） | **高** |
 | `controller/option.go` | 设置端点：批量原子更新、完整写入守卫、secret keep/clear 契约 + cache_usage_aggregation 写侧校验 case | `787da7e5a` | `docs/dev/vision-relay.md` | 中 |
 
 ### 计费 / 配额（billing）
@@ -149,7 +149,8 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 |---|---|---|---|---|
 | `main.go` | observer runtime init（fail-open）+ geoip 引入与热更新接线 + embed 基线 | `847829bca` `6f2d26993` | `docs/dev/relay-observer.md`、`docs/dev/geoip.md` | **高** |
 | `controller/relay.go` | vision relay 钩子 + observer 观测 + channel affinity 软失败解绑 + SSE 诊断落库（#152：message 脱敏 + request_id 截断 + 每轮重试清 key） | `847829bca` `8fdbbff9e` | `docs/dev/vision-relay.md`、`docs/dev/relay-observer.md` | 中 |
-| `controller/log.go` | 缓存用量聚合统计 + 90 天窗口限制 + cache 用量预聚合三段选路（水位 fail-safe 回退全实时） | `847829bca` | `docs/dev/database-compatibility.md`（Cache 用量聚合表节） | 中 |
+| `controller/log.go` | 缓存用量聚合统计 + 90 天窗口限制 + cache 用量预聚合三段选路（水位 fail-safe 回退全实时）+ cache 统计归属过滤 `resolveCacheStatTokenScope`（非管理员仅名下 token，daily 空=全站点收敛为名下） | `847829bca` `dda7f491` | `docs/dev/database-compatibility.md`（Cache 用量聚合表节） | 中 |
+| `model/token.go` | `GetUserTokenIds(userId)` 返回名下 token id，供 cache 统计归属过滤 | `dda7f491` | — | 低 |
 | `model/log.go` | 日志 locality 提示（`attachGeoInfoToOther`/geoip）+ 品牌注释 scrub | `847829bca` `c178e645e` `6f2d26993` | `docs/dev/geoip.md` | **高** |
 | `pkg/geoip/*` | fork 包：ip2region 城市覆盖层 + DB-IP 兜底/ASN + known-answer 门禁 + mtime 热更新 | `6f2d26993` | `docs/dev/geoip.md` | 中 |
 | `Dockerfile` | geoip stage 增 pinned `IP2REGION_XDB_REV`（xdb 与 mmdb 同机制烘焙） | `2b0250ab5` | `docs/dev/geoip.md` | 低 |

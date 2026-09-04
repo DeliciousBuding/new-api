@@ -441,6 +441,17 @@ func CountUserTokens(userId int) (int64, error) {
 	return total, err
 }
 
+// GetUserTokenIds 返回 userId 名下的所有 token id。
+// 用于缓存用量统计的归属过滤：非管理员只能统计自己的 token。
+func GetUserTokenIds(userId int) ([]int64, error) {
+	var ids []int64
+	if userId <= 0 {
+		return nil, nil
+	}
+	err := DB.Model(&Token{}).Where("user_id = ?", userId).Pluck("id", &ids).Error
+	return ids, err
+}
+
 // BatchDeleteTokens 删除指定用户的一组令牌，返回成功删除数量
 func BatchDeleteTokens(ids []int, userId int) (int, error) {
 	if len(ids) == 0 {
