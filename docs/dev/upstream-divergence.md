@@ -41,6 +41,20 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 |---|---|---|---|---|
 | `service/log_info_generate.go` | UA/客户端画像检测：Codex VS Code 发起方分类、第三方 Claude Desktop 识别、Claude 变体画像、品牌图标 | `508d145c6` `abadd4f99` `738d6d98e` | `docs/dev/client-profile.md` | 中 |
 
+### 日志 IP 控制面（全局单开关，用户级 UI 移除）
+
+> 契约：审计日志是否记录客户端 IP **只由全局 `LogRecordIpEnabled` 决定**（管理端运维开关）。后端 gate 见「基础设施 / 基线」表的 `model/log.go` 行；`controller/user.go` 与 `relaykit/dto/user_settings.go` 里的 `record_ip_log` 只是上游设置 DTO 的透传字段、**不参与 gate**，保留原样以缩小冲突面。上游 v1.0.0-rc.34 又把用户级开关 UI（Security → Privacy）加了回来，与本契约冲突，按下表移除；后续 sync 若上游再动这块，一律以「全局单开关」为准（事故背景见「结构化错误码分类 + 审计」节末的第 3 条）。
+
+| 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
+|---|---|---|---|---|
+| `web/src/features/security/index.tsx` | 移除 Privacy 区块与 PrivacyCard 引用 | v1.0.0-rc.34 sync | 本节 | 中 |
+| `web/src/features/security/components/privacy-card.tsx` + `__tests__/privacy-card.test.tsx` | 整文件删除（用户级 IP 开关 UI 本体） | v1.0.0-rc.34 sync | 本节 | 中 |
+| `web/src/features/profile/types.ts` | `UserSettings` / `UpdateUserSettingsRequest` 不含 `record_ip_log`（类型层 SSOT） | v1.0.0-rc.34 sync | 本节 | 低 |
+| `web/src/features/profile/lib/user-settings.ts` | `normalizeUserSettings` 不再产出 `record_ip_log` | v1.0.0-rc.34 sync | 本节 | 低 |
+| `web/src/features/profile/components/tabs/notification-tab.tsx` | 保存时不再剥离该字段，直接提交 settings | v1.0.0-rc.34 sync | 本节 | 低 |
+| `web/src/features/profile/__tests__/settings.test.tsx` | 上游用例改写为等价契约：部分补丁合并到最新完整设置、读档失败不写库、通知表单**不出现**用户级 IP 开关 | v1.0.0-rc.34 sync | 本节 | 低 |
+| `web/src/features/security/__tests__/page.test.tsx` | 区块断言去掉 Privacy，IP 开关断言反转为「不存在」 | v1.0.0-rc.34 sync | 本节 | 低 |
+
 ### 响应模型名回显（response_model 开关）
 
 > 全协议面收敛原则：所有「响应里带 model 字段」的出口统一走 `RelayInfo.ResponseModelName()`（默认返回 `UpstreamModelName`，与上游原值严格等价）；直通透传路径仅 origin 模式做轻量改写（`ResponseModelOriginEnabled()` 门控，nil-safe）。 #7137 sync 后 gemini 路径由 converter 原生转换，回声仅挂上表两个出口。P2 记录不修：rerank/image/TTS 响应无 model 字段；legacy 原生渠道硬编码占位名（palm/baidu/zhipu 等）；task 类已用 OriginModelName。
@@ -109,6 +123,8 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 | `setting/model_setting/global.go` | `ShouldPreserveEffortTail` 末尾追加一行 fork 家族规则调用（additive，精确匹配白名单语义不变）：真实模型 ID 以 effort-like token 结尾的厂商家族不再被当成 effort 别名。事故：上游 sync 带入的 suffix 解析把 `qwen3.8-max` 读成 base `qwen3.8` + effort `max`，客户端显式 `reasoning_effort=high` 时 400 `reasoning settings conflict`（v2026.09.04.2 上线后 36 分钟 24 次），无显式 effort 时凭空注入 `effort=max` | `1f746b9ce` | — | 中 |
 
 > 规则本体是 fork-owned 新文件 `setting/model_setting/effort_tail_families.go`（当前只有 `qwen` + `-max` 一条，刻意窄），不在本表。**不能用「目录里是否存在该模型名」判定**：合成别名（如 `grok-4.20-multi-agent-high`）与真实模型在渠道 models 列表里形状完全相同，base 也同样不在目录内。上游的精确匹配白名单 `EffortTailModelIDs`（运维可改 `global.effort_tail_model_ids`）继续作为 `gpt-5.1-codex-max` 这类单点例外的逃生口；家族规则与它是 OR 关系，改过的选项值不会把整个家族重新暴露。
+
+> **2026-09-06 rc.34 收敛**：上游独立实现了同名 `ShouldPreserveEffortTail` 与运维可改的 `EffortTailModelIDs` 精确白名单，fork 在这一域只剩「`global.go` 末尾一行 additive 家族规则调用」，语义与上游兼容（体检 #4 已登记该符号）。同一版上游把 effort tail 解析收窄为**正向家族白名单**：`relaykit` 的 `legacyOpenAIModelPattern` = `^(gpt-…|o[1-9]…)$`，注释明写「未知 OpenAI 兼容名刻意不动」。实测合并后行为——`gpt-5.6-sol-high` → base `gpt-5.6-sol` + effort=high；`grok-4.20-multi-agent-high` **不再裁剪、也不再凭空注入 effort**；`qwen3.8-max`、`gpt-5.1-codex-max` 原样保留。非白名单合成别名不再被裁剪是**上游设计变更，不是 fork 回归**；依赖旧裁剪行为的渠道必须显式映射 effort。`relay/helper/reasoning_suffix_qwen_family_test.go` 已按新契约改写，同时锁定「白名单内仍裁剪」与「白名单外原样」两条边。
 
 ### 上游错误诊断（SSE，事故修复 #143 + 加固 #152 + 流内错误 20260904）
 
@@ -203,6 +219,21 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 | `web/src/i18n/locales/*.json` + `web/src/i18n/static-keys.ts` | 前端七语全量 | #165 | — | 低 |
 | `web/src/routeTree.gen.ts` | 生成文件（新增路由） | #165 | — | 低 |
 
+### 前端 i18n 语言包（七语 sync 程序）
+
+> `web/src/i18n/locales/*.json` 是扁平 `{"translation": {英文原句: 译文}}`（无嵌套对象）。**sync 必须做真三方并集**——base=merge-base、dev、upstream 三份逐键合并；不能「以 dev 为底再补几个上游键」：2026-09-06 rc.34 sync 第一次尝试就漏掉 442 个上游新键（审计/安全文案），直接打红 6 个本地化测试。合并规则：两侧都有 → dev 未改则取上游值、上游未改则取 dev 值、两侧都改取 dev 值；仅上游有 → base 里也有说明 fork 删过（尊重删除），否则收上游新键（含其译文）；仅 dev 有 → 收 fork 新键。合并后跑 `bun run i18n:sync` 归一化顺序与格式（以最富语言 en 为基准）。注意 `_reports/` 是**已入库**产物，要随 sync 一起提交；`_extras/` 没进 .gitignore，一旦出现就说明某语言键集与 en 不一致。
+
+| 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
+|---|---|---|---|---|
+| `web/src/i18n/locales/*.json` | 七语真三方并集（6183 键，七语一致）+ 把 fork 误置在 `translation` 外的 10 个 cache 用量聚合键搬进 `translation`（此前运行时取不到，属 dev 潜在缺陷） | v1.0.0-rc.34 sync | 本节 | 低 |
+
+### 前端依赖锁与上游自带缺陷（rc.34 sync）
+
+| 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
+|---|---|---|---|---|
+| `web/bun.lock` | `axios` 解析版本对齐上游锁值 1.18.1（fork 锁曾漂到 1.20.0）。1.20 给 `AxiosRequestConfig` 加了泛型 `P`，令上游测试里 `config?.params?.x` 在 vitest mock 推断下退化成 `{}`，typecheck 报 TS2339/TS2353。`package.json` 两侧都是 `^1.18.1`，不动；`bun update` 后需复查此处 | v1.0.0-rc.34 sync | 本节 | 低 |
+| `web/src/features/usage-logs/audit/__tests__/viewer.test.tsx` | 移动端抽屉里的选项点击改 `fireEvent.click`：Base UI 弹窗 portal 到模态抽屉外，jsdom 下该容器 `pointer-events: none`，`user.click` 直接抛错。**已实测纯净 upstream v1.0.0-rc.34 + 上游自带锁同样失败**（同一断言、同一报错），属上游缺陷而非 fork 回归；后续断言链（选中后按 `success=false` 重新查询）未削弱 | v1.0.0-rc.34 sync | 本节 | 低 |
+
 ## fork-owned 目录（永不与上游冲突）
 
 上游不存在的纯增量路径，`git merge official/main` 不会冲突，故不进台账（台账只管「改了上游已有文件」）。**清单用命令派生，不手抄**——手抄必腐：
@@ -280,7 +311,8 @@ for pair in \
   "ShouldPreserveEffortTail=relay/common/relay_info.go" \
   "ShouldPreserveEffortTail=setting/reasoning/suffix.go" \
   "ObserveTurnSettlement=service/text_quota.go" \
-  "ObserveTurnSettlement=service/quota.go"
+  "ObserveTurnSettlement=service/quota.go" \
+  "shouldRecordLogIP=model/log.go"
 do
   sym="${pair%%=*}"; f="${pair##*=}"
   n=$(git grep -c "$sym" -- "$f" 2>/dev/null | cut -d: -f2)
@@ -288,6 +320,8 @@ do
   else echo "MISS $sym -> $f  <== 接线被吞，复归后才可发版"; fi
 done
 ```
+
+> **本地 Windows 跑 `go test ./...` 的噪声**：rc.34 起上游新增大量 SQLite 临时库用例（security/audit/model-management matrix），在 Windows 上会报成片 `testing.go: TempDir RemoveAll cleanup: unlinkat ...audit.db: The process cannot access the file because it is being used by another process.`——Windows 不能删除仍被句柄占用的文件，**断言阶段已通过**，Linux CI 不复现。判据：失败明细里只有 `TempDir RemoveAll cleanup` 与 `t.Logf` 行、没有 `Error Trace` / `Error:` 才算环境噪声；出现后者才是真失败。同理，前端全量 `bun run test` 在高核数机器上并行跑会有 1-2 个上游用例因默认 1s 异步超时竞态偶发红（单独跑与 `--no-file-parallelism` 全绿）；判定回归前先串行复跑一次。
 
 ## 维护流程
 

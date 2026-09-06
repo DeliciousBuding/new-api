@@ -25,7 +25,7 @@ func TestApplyReasoningModelSuffixKeepsMappedQwenMaxModelId(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, ApplyReasoningModelSuffix(info))
+	require.NoError(t, ApplyReasoningModelSuffix(nil, info))
 	assert.Equal(t, "qwen3.8-max-0902", info.UpstreamModelName)
 	assert.Equal(t, "qwen3.8-max-0902", req.Model)
 	assert.Nil(t, info.ReasoningConversion)
@@ -43,23 +43,37 @@ func TestApplyReasoningModelSuffixDoesNotInventEffortForQwenMax(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, ApplyReasoningModelSuffix(info))
+	require.NoError(t, ApplyReasoningModelSuffix(nil, info))
 	assert.Equal(t, "qwen-vl-max", info.UpstreamModelName)
 	assert.Nil(t, info.ReasoningConversion)
 }
 
-// The family rule is narrow on purpose: a real synthetic alias still trims to
-// its base model plus the requested effort.
-func TestApplyReasoningModelSuffixStillTrimsNonFamilyAlias(t *testing.T) {
+// The family rule is narrow on purpose: inside a family whose suffix vocabulary
+// relaykit defines, a synthetic alias still trims to its base model plus the
+// requested effort. Upstream v1.0.0-rc.34 narrowed that trimming to a positive
+// GPT/o-series whitelist, so a name from any other family now stays verbatim
+// instead of gaining an effort nobody asked for.
+func TestApplyReasoningModelSuffixStillTrimsWhitelistedFamilyAlias(t *testing.T) {
 	info := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-5.6-sol-high",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gpt-5.6-sol-high",
+		},
+	}
+
+	require.NoError(t, ApplyReasoningModelSuffix(nil, info))
+	assert.Equal(t, "gpt-5.6-sol", info.UpstreamModelName)
+	require.NotNil(t, info.ReasoningConversion)
+	assert.Equal(t, "high", info.ReasoningConversion.Effort)
+
+	unknown := &relaycommon.RelayInfo{
 		OriginModelName: "grok-4.20-multi-agent-high",
 		ChannelMeta: &relaycommon.ChannelMeta{
 			UpstreamModelName: "grok-4.20-multi-agent-high",
 		},
 	}
 
-	require.NoError(t, ApplyReasoningModelSuffix(info))
-	assert.Equal(t, "grok-4.20-multi-agent", info.UpstreamModelName)
-	require.NotNil(t, info.ReasoningConversion)
-	assert.Equal(t, "high", info.ReasoningConversion.Effort)
+	require.NoError(t, ApplyReasoningModelSuffix(nil, unknown))
+	assert.Equal(t, "grok-4.20-multi-agent-high", unknown.UpstreamModelName)
+	assert.Nil(t, unknown.ReasoningConversion)
 }
