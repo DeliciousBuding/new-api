@@ -148,6 +148,7 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 > **sync 合并丢失接线（2026-09-04 复核）**：`9d2a2d34b`（合并 `official/main` 到 `sync/upstream-20260904`）的冲突解决吞掉了两处 fork 接线，`0afb2b3a7` 的重放也没补回——
 > 1. `controller/relay.go` `shouldRetry` 里的 `service.IsNonRetryableUpstreamError`（#156）：**不恢复**，理由见上表。因此 `authFatalCodes` 当前只影响分类正确性，无运行时效果（`IsAccountFatalError`→auto-ban 分支仍在用）。
 > 2. `controller/relay.go` `processChannelError` 里的 `service.RecordChannelAffinitySoftFailure` + `ClearCurrentChannelAffinityCache`（issue #39 affinity 软失败解绑）：**已在 #173 复归**。它是「基础设施 / 基线」表中 `controller/relay.go` 行声明的「channel affinity 软失败解绑」，丢失后软失败会话会一直绑死到缓存 TTL，正是百炼坏渠道连续命中 12 次却不改绑的直接原因。
+> 3. `model/log.go` 的日志 IP gate：`0afb2b3a7` 对上游基线重放全局 `LogRecordIpEnabled` 时保留了上游按用户 `record_ip_log` 的判断，但本 fork 的用户级设置 UI 已移除，生产用户全为默认 false → 2026-09-04 部署后消费/错误日志 IP 全部为空。修复：恢复为全局开关单一控制面，并以 `model/log_ip_test.go` 锁定。后续 sync 不得再把该开关改回「全局 AND 用户级」。
 
 ### 渠道测试（channel test）
 
@@ -165,7 +166,7 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 | `controller/relay.go` | vision relay 钩子 + observer 观测 + channel affinity 软失败解绑 + SSE 诊断落库（#152：message 脱敏 + request_id 截断 + 每轮重试清 key） | `847829bca` `8fdbbff9e` | `docs/dev/vision-relay.md`、`docs/dev/relay-observer.md` | 中 |
 | `controller/log.go` | 缓存用量聚合统计 + 90 天窗口限制 + cache 用量预聚合三段选路（水位 fail-safe 回退全实时）+ cache 统计归属过滤 `resolveCacheStatTokenScope`（非管理员仅名下 token，daily 空=全站点收敛为名下） | `847829bca` `dda7f491` | `docs/dev/database-compatibility.md`（Cache 用量聚合表节） | 中 |
 | `model/token.go` | `GetUserTokenIds(userId)` 返回名下 token id，供 cache 统计归属过滤 | `dda7f491` | — | 低 |
-| `model/log.go` | 日志 locality 提示（`attachGeoInfoToOther`/geoip）+ 品牌注释 scrub | `847829bca` `c178e645e` `6f2d26993` | `docs/dev/geoip.md` | **高** |
+| `model/log.go` | 日志 locality 提示（`attachGeoInfoToOther`/geoip）+ 品牌注释 scrub + 日志 IP 全局开关单一控制面（上游用户级 `record_ip_log` 不作为 gate） | `847829bca` `c178e645e` `6f2d26993` | `docs/dev/geoip.md` | **高** |
 | `pkg/geoip/*` | fork 包：ip2region 城市覆盖层 + DB-IP 兜底/ASN + known-answer 门禁 + mtime 热更新 | `6f2d26993` | `docs/dev/geoip.md` | 中 |
 | `Dockerfile` | geoip stage 增 pinned `IP2REGION_XDB_REV`（xdb 与 mmdb 同机制烘焙） | `2b0250ab5` | `docs/dev/geoip.md` | 低 |
 | `scripts/update-geoip-data.py` | 门禁式数据刷新（staging → KAT → 原子 promote） | `415c6609d` | `docs/dev/geoip.md` | 低 |
