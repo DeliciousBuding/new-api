@@ -276,6 +276,14 @@ func RecordTopupLog(userId int, content string, callerIp string, paymentMethod s
 	}
 }
 
+// shouldRecordLogIP returns whether audit logs should capture the client IP.
+// This fork intentionally exposes one global control plane: the per-user
+// record_ip_log opt-in was removed from the UI, so upstream must not gate
+// audit IP recording on stale per-user settings after sync.
+func shouldRecordLogIP() bool {
+	return common.LogRecordIpEnabled
+}
+
 func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string, tokenName string, content string, tokenId int, useTimeSeconds int,
 	isStream bool, group string, other *LogOther) {
 	logger.LogInfo(c, fmt.Sprintf("record error log: userId=%d, channelId=%d, modelName=%s, tokenName=%s, content=%s", userId, channelId, modelName, tokenName, common.LocalLogPreview(content)))
@@ -283,13 +291,10 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
 	otherStr := other.JSONString()
-	// 判断是否需要记录 IP
-	needRecordIp := false
-	if settingMap, err := GetUserSetting(userId, false); err == nil {
-		if settingMap.RecordIpLog {
-			needRecordIp = true
-		}
-	}
+	// Fork contract: global LogRecordIpEnabled is the only IP control plane.
+	// The per-user record_ip_log opt-in was removed from this fork UI, so it
+	// must not silently gate audit IP recording after upstream sync.
+	needRecordIp := shouldRecordLogIP()
 	log := &Log{
 		UserId:           userId,
 		Username:         username,
@@ -346,15 +351,10 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
 	createdAt := common.GetTimestamp()
-	// 判断是否需要记录 IP（全局开关作为总闸，用户级 RecordIpLog 保留兼容）
-	needRecordIp := false
-	if common.LogRecordIpEnabled {
-		if settingMap, err := GetUserSetting(userId, false); err == nil {
-			if settingMap.RecordIpLog {
-				needRecordIp = true
-			}
-		}
-	}
+	// Fork contract: global LogRecordIpEnabled is the only IP control plane.
+	// The per-user record_ip_log opt-in was removed from this fork UI, so it
+	// must not silently gate audit IP recording after upstream sync.
+	needRecordIp := shouldRecordLogIP()
 	ip := ""
 	if needRecordIp {
 		ip = c.ClientIP()
