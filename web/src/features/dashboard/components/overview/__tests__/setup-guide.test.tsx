@@ -231,9 +231,14 @@ describe('overview setup guide', () => {
     keyLookupError = new Error('Key lookup unavailable')
     await renderOverview()
 
-    expect(
-      await screen.findByRole('button', { name: 'Hide setup guide' })
-    ).toBeVisible()
+    // The guide only reaches its expanded, visible state after the failed key
+    // lookup settles, so wait for visibility instead of asserting it the
+    // instant the button mounts.
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Hide setup guide' })
+      ).toBeVisible()
+    )
     expect(
       screen.queryByRole('button', { name: 'Setup guide' })
     ).not.toBeInTheDocument()

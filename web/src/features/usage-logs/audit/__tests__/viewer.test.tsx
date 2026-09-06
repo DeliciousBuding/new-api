@@ -168,7 +168,14 @@ it.each([
         <AuditLogViewer scope='self' />
       </QueryClientProvider>
     )
-    const cell = await screen.findByRole('cell', { name: new RegExp(headline) })
+    // Shared CI runners can exceed testing-library's 1s default while this
+    // first case warms up i18n and the query cache. Only the wait bound
+    // changes; the assertions below are untouched.
+    const cell = await screen.findByRole(
+      'cell',
+      { name: new RegExp(headline) },
+      { timeout: 5000 }
+    )
     expect(cell).toHaveTextContent(headline)
     if ('id' in params || 'target_user_id' in params) {
       expect(cell).toHaveTextContent('(ID: 11)')

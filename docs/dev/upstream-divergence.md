@@ -232,7 +232,10 @@ git diff official/main dev --name-status | awk '/^M/ && $2 ~ /\.go$/ {print $2}'
 | 文件 | 改动理由 | 代表提交 | 治理文档 | 风险 |
 |---|---|---|---|---|
 | `web/bun.lock` | `axios` 解析版本对齐上游锁值 1.18.1（fork 锁曾漂到 1.20.0）。1.20 给 `AxiosRequestConfig` 加了泛型 `P`，令上游测试里 `config?.params?.x` 在 vitest mock 推断下退化成 `{}`，typecheck 报 TS2339/TS2353。`package.json` 两侧都是 `^1.18.1`，不动；`bun update` 后需复查此处 | v1.0.0-rc.34 sync | 本节 | 低 |
-| `web/src/features/usage-logs/audit/__tests__/viewer.test.tsx` | 移动端抽屉里的选项点击改 `fireEvent.click`：Base UI 弹窗 portal 到模态抽屉外，jsdom 下该容器 `pointer-events: none`，`user.click` 直接抛错。**已实测纯净 upstream v1.0.0-rc.34 + 上游自带锁同样失败**（同一断言、同一报错），属上游缺陷而非 fork 回归；后续断言链（选中后按 `success=false` 重新查询）未削弱 | v1.0.0-rc.34 sync | 本节 | 低 |
+| `web/src/features/usage-logs/audit/__tests__/viewer.test.tsx` | 移动端抽屉里的选项点击改 `fireEvent.click`：Base UI 弹窗 portal 到模态抽屉外，jsdom 下该容器 `pointer-events: none`，`user.click` 直接抛错。**已实测纯净 upstream v1.0.0-rc.34 + 上游自带锁同样失败**（同一断言、同一报错），属上游缺陷而非 fork 回归；后续断言链（选中后按 `success=false` 重新查询）未削弱。② 事件单元格 `findByRole` 的等待上限 1s → 5s（见下「上游用例的机器速度假设」） | v1.0.0-rc.34 sync | 本节 | 低 |
+| `web/src/features/dashboard/components/overview/__tests__/setup-guide.test.tsx` | 「Hide setup guide」可见性断言包进 `waitFor`：该按钮要等失败的 key lookup 落定后才进入展开可见态，原写法在 `findByRole` 命中的瞬间就同步断言可见性（见下「上游用例的机器速度假设」） | v1.0.0-rc.34 sync | 本节 | 低 |
+
+> **上游用例的机器速度假设**：上游测试按「跑得快」的 runner 写——用 testing-library 默认 1s 异步超时，并在 `findByRole` 命中后立刻同步断言可见性。本 fork 前端套件比上游多 18 个测试文件（106 vs 88），并行度更高，GitHub Actions 4 核 runner 上就会超时：rc.34 sync 的 CI 首跑即红这两个用例（viewer 事件单元格实测 1711ms > 1s），而**同一份代码在纯净 upstream rc.34 全量跑下是绿的**。判据（先判竞态、再判回归）：单文件跑与 `bun run test --no-file-parallelism` 全绿、只有并行全量红 ⇒ 竞态；修法是放宽等待上限或把同步断言包进 `waitFor`，**不改被断言的契约**。修完以 `--maxWorkers=4`（对齐 CI 核数）全量复跑，106 文件 / 821 用例全绿。
 
 ## fork-owned 目录（永不与上游冲突）
 
@@ -321,7 +324,7 @@ do
 done
 ```
 
-> **本地 Windows 跑 `go test ./...` 的噪声**：rc.34 起上游新增大量 SQLite 临时库用例（security/audit/model-management matrix），在 Windows 上会报成片 `testing.go: TempDir RemoveAll cleanup: unlinkat ...audit.db: The process cannot access the file because it is being used by another process.`——Windows 不能删除仍被句柄占用的文件，**断言阶段已通过**，Linux CI 不复现。判据：失败明细里只有 `TempDir RemoveAll cleanup` 与 `t.Logf` 行、没有 `Error Trace` / `Error:` 才算环境噪声；出现后者才是真失败。同理，前端全量 `bun run test` 在高核数机器上并行跑会有 1-2 个上游用例因默认 1s 异步超时竞态偶发红（单独跑与 `--no-file-parallelism` 全绿）；判定回归前先串行复跑一次。
+> **本地 Windows 跑 `go test ./...` 的噪声**：rc.34 起上游新增大量 SQLite 临时库用例（security/audit/model-management matrix），在 Windows 上会报成片 `testing.go: TempDir RemoveAll cleanup: unlinkat ...audit.db: The process cannot access the file because it is being used by another process.`——Windows 不能删除仍被句柄占用的文件，**断言阶段已通过**，Linux CI 不复现。判据：失败明细里只有 `TempDir RemoveAll cleanup` 与 `t.Logf` 行、没有 `Error Trace` / `Error:` 才算环境噪声；出现后者才是真失败。前端同理：全量 `bun run test` 并行跑若有用例红，先单文件跑再 `--no-file-parallelism` 复跑，全绿即竞态而非回归（判据与修法见「前端依赖锁与上游自带缺陷」节）。
 
 ## 维护流程
 
