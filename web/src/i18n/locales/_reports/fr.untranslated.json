@@ -31,5 +31,7 @@
   "No turns have been recorded yet. Turns appear here once the observer captures traffic.": "No turns have been recorded yet. Turns appear here once the observer captures traffic.",
   "Select a turn from the list to view its reconstructed content.": "Select a turn from the list to view its reconstructed content.",
   "The observer could not reconstruct this turn.": "The observer could not reconstruct this turn.",
-  "The observer list request failed.": "The observer list request failed."
+  "The observer list request failed.": "The observer list request failed.",
+  "Aggregate cache usage from logs into an hourly table so the Keys page and dashboard trend load in under a second instead of running slow scans over the logs table.": "Aggregate cache usage from logs into an hourly table so the Keys page and dashboard trend load in under a second instead of running slow scans over the logs table.",
+  "Between 5 and 60 minutes. Default is 15.": "Between 5 and 60 minutes. Default is 15."
 }

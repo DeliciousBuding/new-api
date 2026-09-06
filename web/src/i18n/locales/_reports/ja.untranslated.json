@@ -1,4 +1,6 @@
 {
+  "All results": "All results",
+  "Client": "Client",
   "Cache Efficiency": "Cache Efficiency",
   "Cache Filters": "Cache Filters",
   "Cache Rate": "Cache Rate",
@@ -30,7 +32,6 @@
   "Structured Transcription": "Structured Transcription",
   "Record client IP addresses": "Record client IP addresses",
   "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.": "Store the client source IP with each consume and error log entry. Disable to reduce log footprint.",
-  "Client": "Client",
   "No sessions have been recorded yet. Sessions will appear here once the observer captures traffic.": "No sessions have been recorded yet. Sessions will appear here once the observer captures traffic.",
   "Turn volume per {{window_seconds}}s window over the last {{windows}} windows.": "Turn volume per {{window_seconds}}s window over the last {{windows}} windows.",
   "Since process start": "Since process start",
@@ -116,7 +117,6 @@
   "Error Code": "Error Code",
   "Error Type": "Error Type",
   "Message": "Message",
-  "All results": "All results",
   "All turns": "All turns",
   "Failed to load turn content": "Failed to load turn content",
   "No Content": "No Content",
@@ -127,5 +127,15 @@
   "The observer list request failed.": "The observer list request failed.",
   "This turn has no session binding, so no content was persisted.": "This turn has no session binding, so no content was persisted.",
   "Turn Detail": "Turn Detail",
-  "truncated": "truncated"
+  "truncated": "truncated",
+  "Cache Usage Aggregation": "Cache Usage Aggregation",
+  "Cache Usage Aggregation Enabled": "Cache Usage Aggregation Enabled",
+  "Aggregate cache usage from logs into an hourly table so the Keys page and dashboard trend load in under a second instead of running slow scans over the logs table.": "Aggregate cache usage from logs into an hourly table so the Keys page and dashboard trend load in under a second instead of running slow scans over the logs table.",
+  "Aggregation Interval (minutes)": "Aggregation Interval (minutes)",
+  "Between 5 and 60 minutes. Default is 15.": "Between 5 and 60 minutes. Default is 15.",
+  "Covered From": "Covered From",
+  "Ready Through": "Ready Through",
+  "Last Run": "Last Run",
+  "Latest Task": "Latest Task",
+  "No task yet": "No task yet"
 }
